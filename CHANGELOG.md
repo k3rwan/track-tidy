@@ -3,6 +3,27 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6]
+
+### Added
+- Updates can now be installed directly from the app: "Update available"
+  offers to download and install right away (with a progress bar) instead
+  of sending you to a browser. Falls back to the old open-in-browser flow
+  if a release ever has no installer asset attached. Takes effect starting
+  with the update *after* this one - whichever version you're updating
+  from still uses its own (older) update-check code for this one jump.
+- "Info" in the row right-click menu: a read-only summary popup (current
+  vs. suggested tags, cover match source, detected mention, apply/convert
+  state).
+
+### Fixed
+- Native dialogs (message boxes, including the startup update-available
+  prompt) centered on the screen instead of over the app window - every
+  call site now explicitly parents them to the window (or the specific
+  popup) that triggered them.
+- Noticeably empty gap between the "Advanced" toggle and the scan results
+  table's column headers - tightened the table's top padding.
+
 ## [0.5]
 
 ### Added
