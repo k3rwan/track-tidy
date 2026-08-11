@@ -875,6 +875,19 @@ def strip_generic_mix_suffix(text):
     return text
 
 
+FEATURE_SUFFIX_RE = re.compile(r"\s*[\(\[](?:feat\.?|ft\.?|featuring)\s+[^)\]]*[\)\]]\s*$", re.IGNORECASE)
+
+
+def strip_feature_suffix(text):
+    """
+    Removes a trailing "(feat. X)" / "(ft. X)" / "[featuring X]" credit, for
+    comparison purposes only - a store's listing often includes the featured
+    artist in the title even when our own tags/filename don't, which
+    shouldn't by itself count as a mismatch.
+    """
+    return FEATURE_SUFFIX_RE.sub("", text).strip()
+
+
 def exact_match(text_a, text_b):
     """Case/whitespace-insensitive EXACT match (not the looser substring/word-based checks below)."""
     def normalize(text):
@@ -997,8 +1010,8 @@ def search_cover_itunes(artist, title, log=print):
         returned_artist = result.get("artistName", "")
         returned_title = result.get("trackName", "")
 
-        title_normalized = strip_generic_mix_suffix(title)
-        returned_title_normalized = strip_generic_mix_suffix(returned_title)
+        title_normalized = strip_feature_suffix(strip_generic_mix_suffix(title))
+        returned_title_normalized = strip_feature_suffix(strip_generic_mix_suffix(returned_title))
 
         artist_ok = artist_sets_match(artist, returned_artist) and exact_match(title_normalized, returned_title_normalized)
         swapped_ok = exact_match(title, returned_artist) and artist_sets_match(artist, returned_title_normalized)
