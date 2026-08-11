@@ -1,11 +1,14 @@
 """
-Unit tests for the pure parsing/matching logic in track_tidy.py (no network,
-no file I/O, no GUI). Run with: python -m unittest discover -s tests
+Unit tests for the pure parsing/matching logic in track_tidy.py, plus the
+history log (isolated to a temp file - no network, no GUI).
+Run with: python -m unittest discover -s tests
 """
 
 import os
 import sys
+import json
 import unittest
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import track_tidy as tagger
@@ -163,6 +166,41 @@ class MentionDetectionTests(unittest.TestCase):
     def test_detect_parenthetical_mentions_skips_remix_and_edit(self):
         mentions = tagger.detect_parenthetical_mentions("Song (Radio Edit) (AMAPIANO) (DJ Snake Remix)")
         self.assertEqual(mentions, ["(AMAPIANO)"])
+
+
+class HistoryLogTests(unittest.TestCase):
+    def setUp(self):
+        self._original_history_file = tagger.HISTORY_FILE
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        tagger.HISTORY_FILE = os.path.join(self._tmp_dir.name, "history.jsonl")
+
+    def tearDown(self):
+        tagger.HISTORY_FILE = self._original_history_file
+        self._tmp_dir.cleanup()
+
+    def test_appends_one_json_line_per_entry(self):
+        tagger.log_history_entry(
+            old_file="Old Artist - Old Title.wav", new_file="New Artist - New Title.mp3",
+            old_artist="Old Artist", old_title="Old Title",
+            new_artist="New Artist", new_title="New Title",
+            cover_updated=True, converted=True,
+        )
+        tagger.log_history_entry(
+            old_file="Another.wav", new_file="Another.mp3",
+            old_artist=None, old_title=None,
+            new_artist="Someone", new_title="Something",
+            cover_updated=False, converted=True,
+        )
+
+        with open(tagger.HISTORY_FILE, encoding="utf-8") as f:
+            entries = [json.loads(line) for line in f]
+
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(entries[0]["old_file"], "Old Artist - Old Title.wav")
+        self.assertEqual(entries[0]["new_file"], "New Artist - New Title.mp3")
+        self.assertTrue(entries[0]["converted"])
+        self.assertIsNone(entries[1]["old_artist"])
+        self.assertIn("timestamp", entries[0])
 
 
 if __name__ == "__main__":

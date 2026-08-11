@@ -33,9 +33,11 @@ import shutil
 import re
 import sys
 import time
+import json
 import base64
 import subprocess
 import unicodedata
+from datetime import datetime, timezone
 import requests
 from mutagen import File as MutagenFile
 from mutagen.mp3 import MP3
@@ -72,6 +74,35 @@ def user_config_dir():
 
 CLIENT_ID_FILE = os.path.join(user_config_dir(), "clientID.txt")
 CLIENT_SECRET_FILE = os.path.join(user_config_dir(), "clientSecret.txt")
+HISTORY_FILE = os.path.join(user_config_dir(), "history.jsonl")
+
+
+def log_history_entry(old_file, new_file, old_artist, old_title, new_artist, new_title,
+                       cover_updated, converted):
+    """
+    Appends one line of JSON to HISTORY_FILE for a file that was actually
+    processed (tags written and/or renamed), keeping a permanent record of
+    what it used to be and what changed - independent of the music folder
+    itself, which files get moved/deleted from over time.
+    One file per line (JSON Lines) so appending never requires re-reading or
+    re-writing the whole history.
+    """
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "old_file": old_file,
+        "new_file": new_file,
+        "old_artist": old_artist,
+        "old_title": old_title,
+        "new_artist": new_artist,
+        "new_title": new_title,
+        "cover_updated": cover_updated,
+        "converted": converted,
+    }
+    try:
+        with open(HISTORY_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as error:
+        print(f"  Could not write history entry: {error}")
 
 
 def read_credential(file_path):
@@ -1338,6 +1369,7 @@ def process_files(plan, log=print, on_progress=None, on_file_processed=None, sho
         log(f"File: {file_name}")
 
         full_path = os.path.join(MUSIC_FOLDER, file_name)
+        converted_this_file = False
 
         if not file_name.lower().endswith(".mp3") and info.get("convert"):
             source_extension = os.path.splitext(file_name)[1].lstrip(".").upper()
@@ -1355,6 +1387,7 @@ def process_files(plan, log=print, on_progress=None, on_file_processed=None, sho
 
             full_path = new_path
             file_name = os.path.relpath(new_path, MUSIC_FOLDER)
+            converted_this_file = True
             log(f"  Converted to: '{file_name}'")
 
         artist = info.get("artist_override") or info.get("detected_artist")
@@ -1395,6 +1428,17 @@ def process_files(plan, log=print, on_progress=None, on_file_processed=None, sho
                 file_name = new_name
 
         info["final_path"] = file_name  # actual current path, useful for a later fix
+
+        log_history_entry(
+            old_file=info["file"],
+            new_file=file_name,
+            old_artist=info.get("current_artist"),
+            old_title=info.get("current_title"),
+            new_artist=artist if update_artist else info.get("current_artist"),
+            new_title=title if update_title else info.get("current_title"),
+            cover_updated=bool(update_cover and (cover_image or force_remove_if_missing)),
+            converted=converted_this_file,
+        )
 
         if update_cover and cover_image:
             log("  Tags updated (cover found and added).\n")
