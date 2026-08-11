@@ -1054,49 +1054,34 @@ def scan_one_file(file_name, soundcloud_token, log=safe_print, on_new_mention=No
         search_title = strip_parentheses(search_source_title)
         has_parenthetical = search_title != search_source_title
 
-        match_result = None
-        if has_parenthetical:
-            # Likely a remix/edit -> those live on SoundCloud far more often than
-            # iTunes, so try it FIRST with a specific query (parentheses/brackets
-            # kept, since they help pinpoint the exact remix - only noise words
-            # like "Master" are removed).
-            if not SOUNDCLOUD_RATE_LIMITED and not SOUNDCLOUD_UNAVAILABLE:
-                soundcloud_title = strip_trailing_noise_words(search_source_title)
-                match_result = search_cover_soundcloud(
-                    search_source_artist, soundcloud_title, soundcloud_token, log=log
-                )
-                if match_result:
-                    cover_source = "SoundCloud"
+        # iTunes first (no token needed, and in practice finds most tracks -
+        # including most remixes) - SoundCloud is only queried as a fallback,
+        # to conserve its request quota.
+        match_result = search_cover_itunes(search_source_artist, search_title, log=log)
+        if match_result:
+            cover_source = "iTunes"
 
-            if not match_result:
-                match_result = search_cover_itunes(search_source_artist, search_title, log=log)
+        if not match_result and has_parenthetical:
+            # The remix-agnostic query above can rank a DIFFERENT remix of a
+            # heavily-remixed song ahead of the one we actually want, pushing
+            # it out of the checked candidates entirely (e.g. "World Hold On"
+            # has a dozen+ official remixes) - retry keeping the remix
+            # qualifier in the query to narrow it down.
+            remix_qualified_title = strip_trailing_noise_words(search_source_title)
+            if remix_qualified_title != search_title:
+                match_result = search_cover_itunes(
+                    search_source_artist, remix_qualified_title, log=log, allow_loose_remix_match=True
+                )
                 if match_result:
                     cover_source = "iTunes"
 
-            if not match_result:
-                # The remix-agnostic query above can rank a DIFFERENT remix of
-                # a heavily-remixed song ahead of the one we actually want,
-                # pushing it out of the checked candidates entirely (e.g.
-                # "World Hold On" has a dozen+ official remixes) - retry
-                # keeping the remix qualifier in the query to narrow it down.
-                remix_qualified_title = strip_trailing_noise_words(search_source_title)
-                if remix_qualified_title != search_title:
-                    match_result = search_cover_itunes(
-                        search_source_artist, remix_qualified_title, log=log, allow_loose_remix_match=True
-                    )
-                    if match_result:
-                        cover_source = "iTunes"
-        else:
-            match_result = search_cover_itunes(search_source_artist, search_title, log=log)
+        if not match_result and not SOUNDCLOUD_RATE_LIMITED and not SOUNDCLOUD_UNAVAILABLE:
+            soundcloud_title = strip_trailing_noise_words(search_source_title)
+            match_result = search_cover_soundcloud(
+                search_source_artist, soundcloud_title, soundcloud_token, log=log
+            )
             if match_result:
-                cover_source = "iTunes"
-            elif not SOUNDCLOUD_RATE_LIMITED and not SOUNDCLOUD_UNAVAILABLE:
-                soundcloud_title = strip_trailing_noise_words(search_source_title)
-                match_result = search_cover_soundcloud(
-                    search_source_artist, soundcloud_title, soundcloud_token, log=log
-                )
-                if match_result:
-                    cover_source = "SoundCloud"
+                cover_source = "SoundCloud"
 
         if match_result:
             found_cover_image, returned_artist, returned_title = match_result
