@@ -17,6 +17,7 @@ import os
 import re
 import sys
 import subprocess
+import tempfile
 import threading
 import queue
 import winsound
@@ -385,13 +386,82 @@ class TaggerInterface:
     def _offer_update(self, latest_version, release_url, installer_url):
         """Shared by the silent startup check and the manual button - both
         end up here once they've decided a newer version really exists."""
-        open_page = messagebox.askyesno(
+        if not installer_url:
+            # No .exe asset on the release - fall back to the old flow.
+            open_page = messagebox.askyesno(
+                "Update available",
+                f"A new version ({latest_version}) of Track-Tidy is available "
+                f"(you have v{tagger.APP_VERSION}).\n\nOpen the download page?",
+                parent=self.window,
+            )
+            if open_page:
+                webbrowser.open(release_url)
+            return
+
+        update_now = messagebox.askyesno(
             "Update available",
             f"A new version ({latest_version}) of Track-Tidy is available "
-            f"(you have v{tagger.APP_VERSION}).\n\nOpen the download page?"
+            f"(you have v{tagger.APP_VERSION}).\n\n"
+            "Download and install it now? Track Tidy will close to finish the update.",
+            parent=self.window,
         )
-        if open_page:
-            webbrowser.open(installer_url or release_url)
+        if update_now:
+            self._start_in_app_update(installer_url, latest_version)
+
+    def _start_in_app_update(self, installer_url, latest_version):
+        """Downloads the installer straight into the app (with a progress
+        bar) and launches it once done, instead of sending the user to a
+        browser to fetch it manually."""
+        dialog = tk.Toplevel(self.window)
+        self._style_toplevel(dialog)
+        dialog.title("Updating...")
+        dialog.resizable(False, False)
+        dialog.transient(self.window)
+        dialog.grab_set()
+        dialog.protocol("WM_DELETE_WINDOW", lambda: None)  # can't close mid-download
+
+        ttk.Label(dialog, text=f"Downloading Track Tidy v{latest_version}...", padding=(20, 15, 20, 5)).pack()
+        self._update_progress_var = tk.DoubleVar(value=0)
+        ttk.Progressbar(
+            dialog, variable=self._update_progress_var, maximum=100, length=320
+        ).pack(padx=20, pady=(0, 10))
+        self._update_percent_label = ttk.Label(dialog, text="0%")
+        self._update_percent_label.pack(pady=(0, 15))
+
+        self._update_dialog = dialog
+        self._center_dialog(dialog)
+
+        def on_progress(downloaded, total):
+            self.message_queue.put(("update_download_progress", (downloaded, total)))
+
+        def _run():
+            dest_path = os.path.join(tempfile.gettempdir(), f"Track-Tidy-Setup-v{latest_version}.exe")
+            success = tagger.download_installer(installer_url, dest_path, on_progress=on_progress)
+            self.message_queue.put(("update_download_done", (success, dest_path)))
+
+        self._run_in_background(_run)
+
+    def _finish_in_app_update(self, success, dest_path):
+        dialog = getattr(self, "_update_dialog", None)
+        if dialog is not None and dialog.winfo_exists():
+            dialog.destroy()
+        self._update_dialog = None
+
+        if not success:
+            messagebox.showerror(
+                "Update failed",
+                "Could not download the update - check your internet connection and try again.",
+                parent=self.window,
+            )
+            return
+
+        try:
+            subprocess.Popen([dest_path])
+        except Exception as error:
+            messagebox.showerror("Update failed", f"Could not launch the installer: {error}", parent=self.window)
+            return
+
+        self.window.destroy()
 
     # --- Startup checks ---
 
@@ -400,7 +470,8 @@ class TaggerInterface:
             messagebox.showinfo(
                 "SoundCloud not configured",
                 "No SoundCloud Client ID / Client Secret is configured yet.\n"
-                "Cover search will only use iTunes until you add them in Settings."
+                "Cover search will only use iTunes until you add them in Settings.",
+                parent=self.window,
             )
             self.notebook.select(2)  # Settings tab
 
@@ -847,9 +918,9 @@ class TaggerInterface:
             tagger.SOUNDCLOUD_CLIENT_SECRET = client_secret or None
             tagger.invalidate_soundcloud_token()  # in case the credentials changed
 
-            messagebox.showinfo("Saved", "SoundCloud credentials saved.")
+            messagebox.showinfo("Saved", "SoundCloud credentials saved.", parent=self.window)
         except Exception as error:
-            messagebox.showerror("Error", f"Could not save credentials: {error}")
+            messagebox.showerror("Error", f"Could not save credentials: {error}", parent=self.window)
 
     def _open_soundcloud_registration(self):
         webbrowser.open("https://soundcloud.com/you/apps")
@@ -865,7 +936,7 @@ class TaggerInterface:
     def _start_extraction(self):
         folder = self.extract_folder_var.get().strip()
         if not folder or not os.path.isdir(folder):
-            messagebox.showwarning("Missing folder", "Please choose a valid folder first.")
+            messagebox.showwarning("Missing folder", "Please choose a valid folder first.", parent=self.window)
             return
 
         self.extract_browse_button.configure(state="disabled")
@@ -997,7 +1068,7 @@ class TaggerInterface:
         """Clears the current scan/table state, so a different parent folder can
         be picked and scanned fresh, without restarting the whole app."""
         if self.processing_in_progress:
-            messagebox.showwarning("Processing in progress", "Wait for the current run to finish first.")
+            messagebox.showwarning("Processing in progress", "Wait for the current run to finish first.", parent=self.window)
             return
 
         for row in self.table.get_children():
@@ -1046,7 +1117,7 @@ class TaggerInterface:
     def _start_scan(self):
         folder = self.folder_variable.get().strip()
         if not folder:
-            messagebox.showwarning("Missing folder", "Please choose a folder before scanning.")
+            messagebox.showwarning("Missing folder", "Please choose a folder before scanning.", parent=self.window)
             return
 
         tagger.MUSIC_FOLDER = folder
@@ -1300,7 +1371,7 @@ class TaggerInterface:
             f"{len(duplicate_pairs)} duplicate file(s) detected (same name and duration, "
             f"just prefixed with '._').\n\nMerge them now? This will delete the '._' copies."
         )
-        if not messagebox.askyesno("Duplicate tracks found", message):
+        if not messagebox.askyesno("Duplicate tracks found", message, parent=self.window):
             return
 
         for dot_file, normal_file in duplicate_pairs:
@@ -1535,7 +1606,7 @@ class TaggerInterface:
         def apply_new_cover(new_bytes):
             full_path = self._resolve_full_path(info)
             if not os.path.exists(full_path):
-                messagebox.showerror("File not found", "Could not locate this file on disk anymore.")
+                messagebox.showerror("File not found", "Could not locate this file on disk anymore.", parent=dialog)
                 return
             try:
                 tagger.write_tags(
@@ -1543,7 +1614,7 @@ class TaggerInterface:
                     force_remove_if_missing=True, update_title=False, update_artist=False, update_cover=True,
                 )
             except Exception as error:
-                messagebox.showerror("Error", f"Could not update the cover: {error}")
+                messagebox.showerror("Error", f"Could not update the cover: {error}", parent=dialog)
                 return
 
             info["current_cover_bytes"] = new_bytes
@@ -1574,12 +1645,12 @@ class TaggerInterface:
                 pil_image.save(buffer, format="JPEG", quality=90)
                 jpeg_bytes = buffer.getvalue()
             except Exception as error:
-                messagebox.showerror("Import failed", f"Could not read that image: {error}")
+                messagebox.showerror("Import failed", f"Could not read that image: {error}", parent=dialog)
                 return
             apply_new_cover(jpeg_bytes)
 
         def remove_cover():
-            if messagebox.askyesno("Remove cover", "Remove the cover from this file?"):
+            if messagebox.askyesno("Remove cover", "Remove the cover from this file?", parent=dialog):
                 apply_new_cover(None)
 
         render()
@@ -1691,7 +1762,7 @@ class TaggerInterface:
             selection = tree.selection()  # already parent-only, enforced above
             entries = [entries_by_parent[item_id] for item_id in selection if item_id in entries_by_parent]
             if not entries:
-                messagebox.showinfo("Restore", "Select one or more entries first.")
+                messagebox.showinfo("Restore", "Select one or more entries first.", parent=dialog)
                 return
 
             if len(entries) == 1:
@@ -1702,7 +1773,7 @@ class TaggerInterface:
             else:
                 prompt = f"Restore {len(entries)} files to their previous tags and cover?\n\nThis changes the files on disk right now."
 
-            if not messagebox.askyesno("Restore previous version(s)", prompt):
+            if not messagebox.askyesno("Restore previous version(s)", prompt, parent=dialog):
                 return
 
             successes, failures = 0, []
@@ -1718,12 +1789,14 @@ class TaggerInterface:
                 if len(failures) > 5:
                     detail += f"\n...and {len(failures) - 5} more"
                 messagebox.showwarning(
-                    "Restore finished with errors", f"{successes} restored, {len(failures)} failed:\n\n{detail}"
+                    "Restore finished with errors", f"{successes} restored, {len(failures)} failed:\n\n{detail}",
+                    parent=dialog,
                 )
             else:
                 messagebox.showinfo(
                     "Restored",
                     f"{successes} file(s) restored." if successes > 1 else "The file's previous tags and cover have been restored.",
+                    parent=dialog,
                 )
 
         populate()
@@ -2068,7 +2141,8 @@ class TaggerInterface:
                         messagebox.showwarning(
                             "SoundCloud rate limit reached",
                             "SoundCloud's request limit has been reached for now.\n"
-                            "No cover will be fetched for this scan — try again later."
+                            "No cover will be fetched for this scan — try again later.",
+                            parent=self.window,
                         )
 
                 elif message_type == "scan_done":
@@ -2080,11 +2154,12 @@ class TaggerInterface:
                     self.extract_button.configure(state="normal")
 
                     if error:
-                        messagebox.showerror("Extraction error", error)
+                        messagebox.showerror("Extraction error", error, parent=self.window)
                     else:
                         messagebox.showinfo(
                             "Extraction complete",
-                            f"{moved_count} file(s) extracted, {removed_count} empty folder(s) removed."
+                            f"{moved_count} file(s) extracted, {removed_count} empty folder(s) removed.",
+                            parent=self.window,
                         )
                         try:
                             os.startfile(folder)
@@ -2103,13 +2178,26 @@ class TaggerInterface:
                         self._offer_update(latest_version, release_url, installer_url)
                     elif latest_version:
                         messagebox.showinfo(
-                            "Up to date", f"You already have the latest version (v{tagger.APP_VERSION})."
+                            "Up to date", f"You already have the latest version (v{tagger.APP_VERSION}).",
+                            parent=self.window,
                         )
                     else:
                         messagebox.showerror(
                             "Update check failed",
-                            "Could not check for updates - check your internet connection and try again."
+                            "Could not check for updates - check your internet connection and try again.",
+                            parent=self.window,
                         )
+
+                elif message_type == "update_download_progress":
+                    downloaded, total = content
+                    if total:
+                        percent = downloaded / total * 100
+                        self._update_progress_var.set(percent)
+                        self._update_percent_label.configure(text=f"{percent:.0f}%")
+
+                elif message_type == "update_download_done":
+                    success, dest_path = content
+                    self._finish_in_app_update(success, dest_path)
 
                 elif message_type == "row_rescanned":
                     self._apply_rescan_result(content)
@@ -2120,7 +2208,8 @@ class TaggerInterface:
                         self._append_to_journal("Track reported, thanks!")
                     else:
                         messagebox.showerror(
-                            "Report failed", "Could not send the report - check your internet connection and try again."
+                            "Report failed", "Could not send the report - check your internet connection and try again.",
+                            parent=self.window,
                         )
 
                 elif message_type == "file_processed":
@@ -2142,14 +2231,14 @@ class TaggerInterface:
             return
 
         if not self.scanned_plan:
-            messagebox.showwarning("No scan", "Please scan the files first before processing them.")
+            messagebox.showwarning("No scan", "Please scan the files first before processing them.", parent=self.window)
             return
 
         to_process = [i for i in self.scanned_plan if not i.get("processed")]
         fixes = [i for i in self.scanned_plan if i.get("processed") and i.get("fix_pending")]
 
         if not to_process and not fixes:
-            messagebox.showinfo("Nothing to do", "No new file and no pending change.")
+            messagebox.showinfo("Nothing to do", "No new file and no pending change.", parent=self.window)
             return
 
         conversions_count = sum(
@@ -2161,6 +2250,7 @@ class TaggerInterface:
                 f"{conversions_count} file(s) will be converted to MP3 (320 kbps).\n"
                 "This takes noticeably longer than just updating tags.\n\n"
                 "Continue?",
+                parent=self.window,
             )
             if not confirmed:
                 return
