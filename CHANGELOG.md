@@ -15,8 +15,15 @@ on [Keep a Changelog](https://keepachangelog.com/).
   (click the popup, or press Escape, to close it). Hovering a cover that has
   one shows a small magnifier badge as a hint.
 - "View processing history" button in Settings: a table of every file ever
-  processed (old/new filename and tags, cover updated, converted), most
-  recent first, read from `history.jsonl`.
+  processed, most recent first. Each entry shows its old file/tags, with the
+  applied (new) file/tags indented right below as a child row.
+- "Restore selected" in the history window: reverts a file's tags and cover
+  back to what they were before that run - writes to the file immediately.
+  Requires the entry to have been logged by this version or later (older
+  entries don't have enough information saved to locate the file again).
+- Cover zoom popup: "Import cover..." (pick any image file) and "Remove
+  cover" buttons, both writing straight to the file on disk immediately.
+  The popup now also opens for a file with no cover yet, to import one.
 
 ### Removed
 - The "Default (follow Windows)" appearance option - only Light/Dark remain.
@@ -42,6 +49,11 @@ on [Keep a Changelog](https://keepachangelog.com/).
 - A popup wider than the main window (e.g. the history table) could get
   centered partly or fully off-screen. All dialogs now share one centering
   helper that clamps to the screen bounds.
+- The cover zoom popup's Import/Remove buttons were invisible: they were
+  created with the dialog as their Tk parent but packed inside a separate
+  frame via `pack(in_=...)`, which only moves geometry management, not the
+  actual widget hierarchy - Tk never rendered them. Created directly inside
+  their container frame instead.
 
 ## [0.3]
 
