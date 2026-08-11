@@ -18,6 +18,11 @@ on [Keep a Changelog](https://keepachangelog.com/).
   cover-match logic - 32 tests, no external test framework needed.
 - `requirements.txt` for a reproducible install (previously undocumented,
   and missing `tkinterdnd2`).
+- `CHANGELOG.md` (this file).
+- A permanent history log: every file that's actually processed (tagged
+  and/or renamed) gets one line appended to `%APPDATA%\Track-Tidy\history.jsonl`
+  recording its old filename/tags, new filename/tags, whether the cover was
+  updated, and whether it was converted to MP3.
 
 ## [0.2]
 
