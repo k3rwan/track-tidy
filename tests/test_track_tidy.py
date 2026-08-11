@@ -7,6 +7,7 @@ Run with: python -m unittest discover -s tests
 import os
 import sys
 import json
+import shutil
 import unittest
 import tempfile
 
@@ -224,6 +225,53 @@ class HistoryLogTests(unittest.TestCase):
             f.write('{"old_file": "AlsoGood.wav"}\n')
         entries = tagger.load_history_entries()
         self.assertEqual([e["old_file"] for e in entries], ["Good.wav", "AlsoGood.wav"])
+
+
+class RestoreHistoryEntryTests(unittest.TestCase):
+    """Uses a real temp copy of fart.wav - restore_history_entry does real
+    file I/O (tag writing, renaming), not worth mocking out."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.file_path = os.path.join(self._tmp_dir.name, "Current Artist - Current Title.wav")
+        shutil.copy(os.path.join(project_root, "fart.wav"), self.file_path)
+        tagger.write_tags(
+            self.file_path, "Current Artist", "Current Title", None, False,
+            update_title=True, update_artist=True, update_cover=False,
+        )
+
+    def tearDown(self):
+        self._tmp_dir.cleanup()
+
+    def test_restores_tags_and_removes_cover_when_none_was_logged(self):
+        entry = {
+            "folder": self._tmp_dir.name,
+            "new_file": "Current Artist - Current Title.wav",
+            "old_artist": "Old Artist", "old_title": "Old Title",
+            "old_cover_b64": None,
+        }
+        new_relative = tagger.restore_history_entry(entry, log=lambda *_: None)
+        restored_path = os.path.join(self._tmp_dir.name, new_relative)
+
+        self.assertTrue(os.path.exists(restored_path))
+        _, artist, title, cover = tagger.read_current_info(restored_path)
+        self.assertEqual(artist, "Old Artist")
+        self.assertEqual(title, "Old Title")
+        self.assertIsNone(cover)
+
+    def test_raises_filenotfound_when_file_missing(self):
+        entry = {
+            "folder": self._tmp_dir.name, "new_file": "Does Not Exist.mp3",
+            "old_artist": "X", "old_title": "Y", "old_cover_b64": None,
+        }
+        with self.assertRaises(FileNotFoundError):
+            tagger.restore_history_entry(entry, log=lambda *_: None)
+
+    def test_raises_valueerror_when_entry_has_no_folder(self):
+        entry = {"folder": None, "new_file": "x.mp3", "old_artist": "X", "old_title": "Y"}
+        with self.assertRaises(ValueError):
+            tagger.restore_history_entry(entry, log=lambda *_: None)
 
 
 class SettingsPersistenceTests(unittest.TestCase):

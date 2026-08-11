@@ -1415,36 +1415,112 @@ class TaggerInterface:
             info["convert"] = not info["convert"]
             self.table.item(item_id, values=self._build_row_values(info))
 
+    def _resolve_full_path(self, info):
+        """Absolute on-disk path for a scanned/processed row's file."""
+        relative_path = info.get("final_path") or info["file"]
+        base_folder = tagger.MUSIC_FOLDER
+        if not os.path.isabs(base_folder):
+            base_folder = os.path.join(tagger.app_base_dir(), base_folder)
+        return os.path.abspath(os.path.join(base_folder, relative_path))
+
     def _show_cover_zoom(self, info):
-        """Click on the cover thumbnail: shows it full-size in a popup.
-        Same source (suggested vs. current) as whatever's currently thumbnailed."""
-        image_bytes = info["found_cover_image"] if info["apply_changes"] else info["current_cover_bytes"]
-        if not image_bytes:
-            return
-
-        try:
-            image = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
-        except Exception:
-            return
-
-        # Covers are typically already small (iTunes/SoundCloud artwork rarely
-        # exceeds ~600px) - cap the popup size without upscaling anything past
-        # its native resolution.
-        max_size = (500, 500)
-        display_image = image.copy()
-        display_image.thumbnail(max_size, Image.LANCZOS)
-
+        """Click on the cover thumbnail: shows it full-size in a popup, with
+        buttons to import a replacement or remove it - both write straight to
+        the file on disk immediately, independent of the Apply workflow."""
         dialog = tk.Toplevel(self.window)
         self._style_toplevel(dialog)
         dialog.title(tagger.build_display_name(info.get("detected_artist"), info.get("detected_title")))
         dialog.resizable(False, False)
         dialog.transient(self.window)
 
-        image_tk = ImageTk.PhotoImage(display_image)
-        dialog.zoomed_image_ref = image_tk  # keep a reference, otherwise Tkinter clears it
-        label = ttk.Label(dialog, image=image_tk)
-        label.pack(padx=12, pady=12)
-        label.bind("<Button-1>", lambda _event: dialog.destroy())
+        # Covers are typically already small (iTunes/SoundCloud artwork rarely
+        # exceeds ~600px) - cap the popup size without upscaling anything past
+        # its native resolution.
+        max_size = (500, 500)
+
+        image_label = ttk.Label(dialog)
+        image_label.pack(padx=12, pady=(12, 6))
+
+        button_row = ttk.Frame(dialog)
+        button_row.pack(padx=12, pady=(0, 12), fill="x")
+        import_button = ttk.Button(button_row, text="Import cover...", command=lambda: import_cover())
+        remove_button = ttk.Button(button_row, text="Remove cover", command=lambda: remove_cover())
+        import_button.pack(side="left", expand=True, fill="x", padx=(0, 5))
+        remove_button.pack(side="left", expand=True, fill="x", padx=(5, 0))
+
+        def current_cover_bytes():
+            return info["found_cover_image"] if info["apply_changes"] else info["current_cover_bytes"]
+
+        def render():
+            image_bytes = current_cover_bytes()
+            if image_bytes:
+                try:
+                    display_image = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+                    display_image.thumbnail(max_size, Image.LANCZOS)
+                    image_tk = ImageTk.PhotoImage(display_image)
+                    dialog.zoomed_image_ref = image_tk  # keep a reference, otherwise Tkinter clears it
+                    image_label.configure(image=image_tk, text="")
+                except Exception:
+                    image_label.configure(image="", text="Couldn't read this cover image.")
+            else:
+                image_label.configure(image="", text="No cover.")
+            remove_button.configure(state="normal" if image_bytes else "disabled")
+            dialog.update_idletasks()
+            self._center_dialog(dialog)
+
+        def apply_new_cover(new_bytes):
+            full_path = self._resolve_full_path(info)
+            if not os.path.exists(full_path):
+                messagebox.showerror("File not found", "Could not locate this file on disk anymore.")
+                return
+            try:
+                tagger.write_tags(
+                    full_path, artist="", title="", cover_image=new_bytes,
+                    force_remove_if_missing=True, update_title=False, update_artist=False, update_cover=True,
+                )
+            except Exception as error:
+                messagebox.showerror("Error", f"Could not update the cover: {error}")
+                return
+
+            info["current_cover_bytes"] = new_bytes
+            info["found_cover_image"] = new_bytes
+            info["has_cover"] = new_bytes is not None
+            info["cover_source"] = "Manual" if new_bytes else None
+            self._refresh_row(info)
+            self._append_to_journal(
+                f"Cover {'updated' if new_bytes else 'removed'} for '{info['file']}'"
+            )
+            render()
+
+        def import_cover():
+            file_path = filedialog.askopenfilename(
+                title="Choose a cover image",
+                filetypes=[("Image files", "*.jpg *.jpeg *.png *.webp *.bmp"), ("All files", "*.*")],
+            )
+            if not file_path:
+                return
+            try:
+                with open(file_path, "rb") as f:
+                    raw_bytes = f.read()
+                # Re-encode through PIL as JPEG - write_tags always embeds
+                # image/jpeg, and this also rejects anything that isn't
+                # actually a readable image before it touches the file.
+                pil_image = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+                buffer = io.BytesIO()
+                pil_image.save(buffer, format="JPEG", quality=90)
+                jpeg_bytes = buffer.getvalue()
+            except Exception as error:
+                messagebox.showerror("Import failed", f"Could not read that image: {error}")
+                return
+            apply_new_cover(jpeg_bytes)
+
+        def remove_cover():
+            if messagebox.askyesno("Remove cover", "Remove the cover from this file?"):
+                apply_new_cover(None)
+
+        render()
+        label_click_target = image_label
+        label_click_target.bind("<Button-1>", lambda _event: dialog.destroy())
         dialog.bind("<Escape>", lambda _event: dialog.destroy())
 
         self._center_dialog(dialog)
@@ -1452,62 +1528,111 @@ class TaggerInterface:
 
     def _show_history_window(self):
         """Settings -> 'View processing history': every file ever actually
-        processed (tagger.HISTORY_FILE), most recent first."""
-        entries = list(reversed(tagger.load_history_entries()))
-
+        processed (tagger.HISTORY_FILE), most recent first. Each entry shows
+        its old file/tags on one line, with the applied (new) file/tags
+        indented right below it as a child row."""
         dialog = tk.Toplevel(self.window)
         self._style_toplevel(dialog)
         dialog.title("Processing history")
-        dialog.geometry("900x420")
+        dialog.geometry("760x440")
         dialog.transient(self.window)
 
-        if not entries:
-            ttk.Label(dialog, text="No files have been processed yet.", padding=20).pack()
-            self._center_dialog(dialog)
-            return
-
-        columns = ("date", "old_file", "new_file", "old_tags", "new_tags", "cover", "converted")
-        headings = {
-            "date": "Date", "old_file": "Old file", "new_file": "New file",
-            "old_tags": "Old tags", "new_tags": "New tags", "cover": "Cover", "converted": "Converted",
-        }
-        widths = {
-            "date": 150, "old_file": 150, "new_file": 150,
-            "old_tags": 150, "new_tags": 150, "cover": 55, "converted": 65,
-        }
+        columns = ("file", "tags", "cover", "converted")
+        headings = {"file": "File", "tags": "Artist - Title", "cover": "Cover", "converted": "Converted"}
+        widths = {"file": 220, "tags": 220, "cover": 60, "converted": 75}
 
         table_frame = ttk.Frame(dialog)
-        table_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        table_frame.pack(fill="both", expand=True, padx=10, pady=(10, 5))
 
-        tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=15)
+        tree = ttk.Treeview(table_frame, columns=columns, show="tree headings", height=15)
+        tree.heading("#0", text="When")
+        tree.column("#0", width=140, anchor="w")
         for col in columns:
             tree.heading(col, text=headings[col])
             tree.column(col, width=widths[col], anchor="w")
-
-        for entry in entries:
-            timestamp = entry.get("timestamp", "")
-            try:
-                date_display = datetime.fromisoformat(timestamp).astimezone().strftime("%Y-%m-%d %H:%M")
-            except ValueError:
-                date_display = timestamp
-
-            old_tags = tagger.build_display_name(entry.get("old_artist") or "", entry.get("old_title") or "")
-            new_tags = tagger.build_display_name(entry.get("new_artist") or "", entry.get("new_title") or "")
-
-            tree.insert("", "end", values=(
-                date_display,
-                entry.get("old_file", ""),
-                entry.get("new_file", ""),
-                old_tags or "-",
-                new_tags or "-",
-                "Yes" if entry.get("cover_updated") else "No",
-                "Yes" if entry.get("converted") else "No",
-            ))
 
         scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=scrollbar.set)
         tree.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="left", fill="y")
+
+        empty_label = ttk.Label(dialog, text="No files have been processed yet.", padding=20)
+        entries_by_parent = {}
+
+        def populate():
+            for row in tree.get_children():
+                tree.delete(row)
+            entries_by_parent.clear()
+
+            entries = list(reversed(tagger.load_history_entries()))
+            empty_label.pack_forget()
+            if not entries:
+                empty_label.pack()
+                return
+
+            for entry in entries:
+                timestamp = entry.get("timestamp", "")
+                try:
+                    date_display = datetime.fromisoformat(timestamp).astimezone().strftime("%Y-%m-%d %H:%M")
+                except ValueError:
+                    date_display = timestamp
+
+                old_tags = tagger.build_display_name(entry.get("old_artist") or "", entry.get("old_title") or "")
+                new_tags = tagger.build_display_name(entry.get("new_artist") or "", entry.get("new_title") or "")
+
+                parent_id = tree.insert(
+                    "", "end", text=date_display,
+                    values=(entry.get("old_file", ""), old_tags or "-", "", ""),
+                )
+                tree.insert(
+                    parent_id, "end", text="↳ Applied",
+                    values=(
+                        entry.get("new_file", ""), new_tags or "-",
+                        "Yes" if entry.get("cover_updated") else "No",
+                        "Yes" if entry.get("converted") else "No",
+                    ),
+                )
+                tree.item(parent_id, open=True)
+                entries_by_parent[parent_id] = entry
+
+        def restore_selected():
+            selection = tree.selection()
+            if not selection:
+                messagebox.showinfo("Restore", "Select an entry first.")
+                return
+            item_id = selection[0]
+            parent_id = item_id if item_id in entries_by_parent else tree.parent(item_id)
+            entry = entries_by_parent.get(parent_id)
+            if not entry:
+                return
+
+            old_tags = tagger.build_display_name(entry.get("old_artist") or "", entry.get("old_title") or "") or "(no tags)"
+            if not messagebox.askyesno(
+                "Restore previous version",
+                f"Restore this file's tags and cover to:\n\n{old_tags}\n\n"
+                "This changes the file on disk right now.",
+            ):
+                return
+
+            try:
+                tagger.restore_history_entry(entry, log=self._append_to_journal)
+            except FileNotFoundError:
+                messagebox.showerror("Restore failed", "This file can't be found anymore - it may have been moved, renamed, or deleted since.")
+                return
+            except ValueError as error:
+                messagebox.showerror("Restore failed", str(error))
+                return
+            except Exception as error:
+                messagebox.showerror("Restore failed", f"Could not restore this file: {error}")
+                return
+
+            messagebox.showinfo("Restored", "The file's previous tags and cover have been restored.")
+
+        populate()
+
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Button(button_frame, text="Restore selected", command=restore_selected).pack(side="left")
 
         self._center_dialog(dialog)
 
