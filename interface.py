@@ -824,15 +824,6 @@ class TaggerInterface:
             command=self._on_auto_convert_changed,
         ).pack(anchor="w", padx=10, pady=(0, 10))
 
-        self.check_update_button = ttk.Button(
-            soundcloud_tab, text="Check for updates", command=self._check_for_update_manual,
-        )
-        self.check_update_button.pack(fill="x", padx=10, pady=(0, 5))
-
-        ttk.Button(
-            soundcloud_tab, text="View processing history", command=self._show_history_window,
-        ).pack(fill="x", padx=10, pady=(0, 10))
-
         ttk.Label(
             soundcloud_tab,
             text="SoundCloud requires registering an app yourself (Artist Pro account).\n"
@@ -869,6 +860,15 @@ class TaggerInterface:
         ).pack(side="left", fill="x", expand=True)
 
         self._update_soundcloud_save_state()
+
+        self.check_update_button = ttk.Button(
+            soundcloud_tab, text="Check for updates", command=self._check_for_update_manual,
+        )
+        self.check_update_button.pack(fill="x", padx=10, pady=(0, 5))
+
+        ttk.Button(
+            soundcloud_tab, text="View processing history", command=self._show_history_window,
+        ).pack(fill="x", padx=10, pady=(0, 10))
 
         legal_text_label = ttk.Label(
             soundcloud_tab,
