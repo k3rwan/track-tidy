@@ -3,7 +3,7 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.4]
 
 ### Added
 - "Check for updates" button in Settings - reports back either way (up to
