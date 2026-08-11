@@ -120,6 +120,23 @@ class ArtistMatchingTests(unittest.TestCase):
     def test_artist_names_match_no_returned_artist(self):
         self.assertFalse(tagger.artist_names_match("Vegedream", ""))
 
+    def test_strip_sanitized_chars_removes_forbidden_windows_chars_and_underscore(self):
+        self.assertEqual(tagger.strip_sanitized_chars('blond_ish'), "blondish")
+        self.assertEqual(tagger.strip_sanitized_chars('blond:ish'), "blondish")
+        self.assertEqual(tagger.strip_sanitized_chars('a/b\\c*d?e"f<g>h|i'), "abcdefghi")
+
+    def test_artist_sets_match_tolerates_sanitized_colon(self):
+        # "BLOND:ISH" can't appear in a Windows filename/tag copied from one -
+        # sanitize_filename() turns it into "BLOND_ISH". The real iTunes
+        # credit still has the colon, plus a different artist order.
+        self.assertTrue(tagger.artist_sets_match(
+            "BLOND_ISH, Amadou & Mariam, Francis Mercier",
+            "BLOND:ISH, Francis Mercier & Amadou & Mariam",
+        ))
+
+    def test_artist_names_match_tolerates_sanitized_colon(self):
+        self.assertTrue(tagger.artist_names_match("BLOND_ISH", "BLOND:ISH, Francis Mercier"))
+
 
 class TitleWordsOverlapTests(unittest.TestCase):
     def test_shared_meaningful_word_overlaps(self):
