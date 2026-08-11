@@ -5,7 +5,7 @@ A Windows desktop app that cleans up and tags your audio files automatically.
 Given a folder of tracks named `Artist - Title.ext`, Track-Tidy:
 
 - Parses the filename to fill in **Artist** / **Title** tags
-- Fetches a matching **cover** online - iTunes or Spotify (your pick in Settings, iTunes by default) as the primary source, SoundCloud as a fallback for either - click a thumbnail to see it full-size, and import/remove a cover manually from that popup. SoundCloud can be turned off in Settings.
+- Fetches a matching **cover** online from iTunes, Spotify, and/or SoundCloud - each independently toggled in Settings (iTunes and SoundCloud on, Spotify off, by default), tried in that order until one finds a match - click a thumbnail to see it full-size, and import/remove a cover manually from that popup.
 - Converts any non-MP3 format (WAV, FLAC, AAC, M4A, OGG, WMA, AIFF, OPUS...) to **MP3 (320 kbps)** before tagging - can be turned off in Settings, in which case `.wav` files (the only format taggable without converting) are skipped instead
 - Right-click a row for more: Info, Rescan this file (or "Rescan selected" with multiple rows picked), Open file location, Move up/down, Report track... (sends the row's details to the developer), Remove from list
 - "Only show tracks with no cover match" filter (Advanced) to quickly find what still needs attention
