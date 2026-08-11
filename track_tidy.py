@@ -7,9 +7,14 @@ MP3 (WAV, FLAC, AAC, M4A, OGG, WMA, AIFF, OPUS...) is converted to MP3
 Expected filename format: "Artist - Title.ext"
 
 Contents (in the order they appear below):
-    1. Configuration & credentials       - app_base_dir, user_config_dir,
-                                            SOUNDCLOUD_CLIENT_ID/SECRET, MUSIC_FOLDER,
-                                            SUPPORTED_EXTENSIONS, MENTIONS_TO_REMOVE
+    1. Configuration & credentials       - path helpers (app_base_dir,
+                                            user_config_dir); SoundCloud
+                                            credentials; APP_VERSION and the
+                                            update check; saved UI settings
+                                            (theme...); the processing
+                                            history log; MUSIC_FOLDER,
+                                            SUPPORTED_EXTENSIONS,
+                                            MENTIONS_TO_REMOVE
     2. Filename & title cleaning          - clean_title, parse_filename, and every
                                             small cleanup rule (track numbers,
                                             brackets, noise words, mentions...)
@@ -49,6 +54,8 @@ from mutagen.id3 import TIT2, TPE1, APIC
 # 1. CONFIGURATION & CREDENTIALS
 # ============================================================================
 
+# --- Path helpers ---
+
 def app_base_dir():
     """
     Folder the app's own files (credentials, .music by default) should live next
@@ -60,7 +67,6 @@ def app_base_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
-# --- SoundCloud credentials (read from separate files, next to the app) ---
 def user_config_dir():
     """
     A per-user folder that's always writable, regardless of where the app itself
@@ -72,60 +78,10 @@ def user_config_dir():
     return config_dir
 
 
+# --- SoundCloud credentials (read from separate files, next to the app) ---
+
 CLIENT_ID_FILE = os.path.join(user_config_dir(), "clientID.txt")
 CLIENT_SECRET_FILE = os.path.join(user_config_dir(), "clientSecret.txt")
-HISTORY_FILE = os.path.join(user_config_dir(), "history.jsonl")
-SETTINGS_FILE = os.path.join(user_config_dir(), "settings.json")
-
-
-def load_settings():
-    """Returns the saved UI settings (e.g. theme choice) as a dict, or {} if none saved yet."""
-    if not os.path.exists(SETTINGS_FILE):
-        return {}
-    try:
-        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-
-def save_setting(key, value):
-    """Persists a single UI setting, keeping whatever else was already saved."""
-    settings = load_settings()
-    settings[key] = value
-    try:
-        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-            json.dump(settings, f, indent=2)
-    except Exception as error:
-        print(f"  Could not save setting '{key}': {error}")
-
-
-def log_history_entry(old_file, new_file, old_artist, old_title, new_artist, new_title,
-                       cover_updated, converted):
-    """
-    Appends one line of JSON to HISTORY_FILE for a file that was actually
-    processed (tags written and/or renamed), keeping a permanent record of
-    what it used to be and what changed - independent of the music folder
-    itself, which files get moved/deleted from over time.
-    One file per line (JSON Lines) so appending never requires re-reading or
-    re-writing the whole history.
-    """
-    entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "old_file": old_file,
-        "new_file": new_file,
-        "old_artist": old_artist,
-        "old_title": old_title,
-        "new_artist": new_artist,
-        "new_title": new_title,
-        "cover_updated": cover_updated,
-        "converted": converted,
-    }
-    try:
-        with open(HISTORY_FILE, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    except Exception as error:
-        print(f"  Could not write history entry: {error}")
 
 
 def read_credential(file_path):
@@ -165,10 +121,125 @@ if _id_txt_client_id and _id_txt_client_secret:
     SOUNDCLOUD_CLIENT_ID = _id_txt_client_id
     SOUNDCLOUD_CLIENT_SECRET = _id_txt_client_secret
 
+
+# --- App version & update check ---
+
 # Single source of truth for the app's version - shown in the GUI and used to
 # check for updates. Bump this (and installer.iss's MyAppVersion) on release.
 APP_VERSION = "0.3"
 GITHUB_REPO = "k3rwan/track-tidy-releases"  # public, installer-only repo - the source repo is private
+
+
+def parse_version(version_string):
+    """
+    Parses a version like "v1.2.3" or "1.2" into a tuple of ints, e.g.
+    (1, 2, 3), so versions can be compared with plain tuple comparison.
+    Non-numeric/missing parts become 0 rather than raising.
+    """
+    cleaned = (version_string or "").strip().lstrip("vV")
+    parts = []
+    for part in cleaned.split("."):
+        match = re.match(r"\d+", part)
+        parts.append(int(match.group()) if match else 0)
+    return tuple(parts) or (0,)
+
+
+def check_for_update(log=print, timeout=5):
+    """
+    Checks GitHub for the latest release of GITHUB_REPO and compares it to
+    APP_VERSION. Returns (is_newer, latest_version, release_url,
+    installer_download_url) - or (False, None, None, None) on any failure
+    (offline, GitHub down, rate-limited...), since this check should never
+    block or crash the app over a network hiccup.
+    """
+    try:
+        response = requests.get(
+            f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+            timeout=timeout,
+        )
+        if response.status_code != 200:
+            log(f"  [Update check] GitHub returned HTTP {response.status_code}")
+            return False, None, None, None
+
+        data = response.json()
+        latest_tag = data.get("tag_name", "")
+        release_url = data.get("html_url") or f"https://github.com/{GITHUB_REPO}/releases/latest"
+
+        installer_url = None
+        for asset in data.get("assets", []):
+            if asset.get("name", "").lower().endswith(".exe"):
+                installer_url = asset.get("browser_download_url")
+                break
+
+        is_newer = parse_version(latest_tag) > parse_version(APP_VERSION)
+        return is_newer, latest_tag, release_url, installer_url
+
+    except Exception as error:
+        log(f"  [Update check] Failed: {error}")
+        return False, None, None, None
+
+
+# --- Saved UI settings (theme choice...) ---
+
+SETTINGS_FILE = os.path.join(user_config_dir(), "settings.json")
+
+
+def load_settings():
+    """Returns the saved UI settings (e.g. theme choice) as a dict, or {} if none saved yet."""
+    if not os.path.exists(SETTINGS_FILE):
+        return {}
+    try:
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_setting(key, value):
+    """Persists a single UI setting, keeping whatever else was already saved."""
+    settings = load_settings()
+    settings[key] = value
+    try:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+    except Exception as error:
+        print(f"  Could not save setting '{key}': {error}")
+
+
+# --- Processing history log ---
+
+HISTORY_FILE = os.path.join(user_config_dir(), "history.jsonl")
+
+
+def log_history_entry(old_file, new_file, old_artist, old_title, new_artist, new_title,
+                       cover_updated, converted):
+    """
+    Appends one line of JSON to HISTORY_FILE for a file that was actually
+    processed (tags written and/or renamed), keeping a permanent record of
+    what it used to be and what changed - independent of the music folder
+    itself, which files get moved/deleted from over time.
+    One file per line (JSON Lines) so appending never requires re-reading or
+    re-writing the whole history.
+    """
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "old_file": old_file,
+        "new_file": new_file,
+        "old_artist": old_artist,
+        "old_title": old_title,
+        "new_artist": new_artist,
+        "new_title": new_title,
+        "cover_updated": cover_updated,
+        "converted": converted,
+    }
+    try:
+        with open(HISTORY_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as error:
+        print(f"  Could not write history entry: {error}")
+
+
+# --- Runtime config (set by the UI at startup / per scan) ---
 
 # Folder containing the audio files to process
 MUSIC_FOLDER = ""
@@ -180,7 +251,6 @@ MUSIC_FOLDER = ""
 SUPPORTED_EXTENSIONS = (
     ".mp3", ".wav", ".flac", ".aac", ".m4a", ".ogg", ".wma", ".aiff", ".opus",
 )
-
 
 # List of mentions to automatically strip out (add more if needed)
 MENTIONS_TO_REMOVE = []
@@ -661,55 +731,6 @@ def get_audio_duration(file_path):
     except Exception:
         pass
     return None
-
-
-def parse_version(version_string):
-    """
-    Parses a version like "v1.2.3" or "1.2" into a tuple of ints, e.g.
-    (1, 2, 3), so versions can be compared with plain tuple comparison.
-    Non-numeric/missing parts become 0 rather than raising.
-    """
-    cleaned = (version_string or "").strip().lstrip("vV")
-    parts = []
-    for part in cleaned.split("."):
-        match = re.match(r"\d+", part)
-        parts.append(int(match.group()) if match else 0)
-    return tuple(parts) or (0,)
-
-
-def check_for_update(log=print, timeout=5):
-    """
-    Checks GitHub for the latest release of GITHUB_REPO and compares it to
-    APP_VERSION. Returns (is_newer, latest_version, release_url,
-    installer_download_url) - or (False, None, None, None) on any failure
-    (offline, GitHub down, rate-limited...), since this check should never
-    block or crash the app over a network hiccup.
-    """
-    try:
-        response = requests.get(
-            f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
-            timeout=timeout,
-        )
-        if response.status_code != 200:
-            log(f"  [Update check] GitHub returned HTTP {response.status_code}")
-            return False, None, None, None
-
-        data = response.json()
-        latest_tag = data.get("tag_name", "")
-        release_url = data.get("html_url") or f"https://github.com/{GITHUB_REPO}/releases/latest"
-
-        installer_url = None
-        for asset in data.get("assets", []):
-            if asset.get("name", "").lower().endswith(".exe"):
-                installer_url = asset.get("browser_download_url")
-                break
-
-        is_newer = parse_version(latest_tag) > parse_version(APP_VERSION)
-        return is_newer, latest_tag, release_url, installer_url
-
-    except Exception as error:
-        log(f"  [Update check] Failed: {error}")
-        return False, None, None, None
 
 
 def find_dot_underscore_duplicates(file_list):
