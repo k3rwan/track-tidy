@@ -300,10 +300,14 @@ class TaggerInterface:
                 ) == 0:
                     break
             # DWM doesn't always repaint the title bar immediately after the
-            # attribute changes - nudge it with a no-op frame-changed resize.
-            SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_FRAMECHANGED = 0x2, 0x1, 0x4, 0x20
-            ctypes.windll.user32.SetWindowPos(
-                hwnd, 0, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED
+            # attribute changes - nudge it with a plain repaint. Deliberately
+            # NOT using SetWindowPos(..., SWP_FRAMECHANGED): that's a real
+            # resize/reposition call even as a no-op, and Windows' window
+            # animations can turn it into a visible "jump". RedrawWindow only
+            # asks for a repaint, no size/position semantics at all.
+            RDW_INVALIDATE, RDW_UPDATENOW, RDW_FRAME = 0x1, 0x100, 0x400
+            ctypes.windll.user32.RedrawWindow(
+                hwnd, None, None, RDW_INVALIDATE | RDW_UPDATENOW | RDW_FRAME
             )
         except Exception:
             pass
@@ -1369,7 +1373,9 @@ class TaggerInterface:
         if info.get("processed"):
             return  # checkbox and format are locked once the file has been processed
 
-        if column_id == f"#{COLUMNS.index('apply') + 1}":
+        if column_id == "#0":
+            self._show_cover_zoom(info)
+        elif column_id == f"#{COLUMNS.index('apply') + 1}":
             info["apply_changes"] = not info["apply_changes"]
             self._refresh_row(info)  # the image also changes based on current/suggested
         elif column_id == f"#{COLUMNS.index('format') + 1}":
@@ -1377,6 +1383,44 @@ class TaggerInterface:
                 return  # nothing to toggle for mp3s
             info["convert"] = not info["convert"]
             self.table.item(item_id, values=self._build_row_values(info))
+
+    def _show_cover_zoom(self, info):
+        """Click on the cover thumbnail: shows it full-size in a popup.
+        Same source (suggested vs. current) as whatever's currently thumbnailed."""
+        image_bytes = info["found_cover_image"] if info["apply_changes"] else info["current_cover_bytes"]
+        if not image_bytes:
+            return
+
+        try:
+            image = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+        except Exception:
+            return
+
+        # Covers are typically already small (iTunes/SoundCloud artwork rarely
+        # exceeds ~600px) - cap the popup size without upscaling anything past
+        # its native resolution.
+        max_size = (500, 500)
+        display_image = image.copy()
+        display_image.thumbnail(max_size, Image.LANCZOS)
+
+        dialog = tk.Toplevel(self.window)
+        self._style_toplevel(dialog)
+        dialog.title(tagger.build_display_name(info.get("detected_artist"), info.get("detected_title")))
+        dialog.resizable(False, False)
+        dialog.transient(self.window)
+
+        image_tk = ImageTk.PhotoImage(display_image)
+        dialog.zoomed_image_ref = image_tk  # keep a reference, otherwise Tkinter clears it
+        label = ttk.Label(dialog, image=image_tk)
+        label.pack(padx=12, pady=12)
+        label.bind("<Button-1>", lambda _event: dialog.destroy())
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+
+        dialog.update_idletasks()
+        x = self.window.winfo_x() + (self.window.winfo_width() - dialog.winfo_width()) // 2
+        y = self.window.winfo_y() + (self.window.winfo_height() - dialog.winfo_height()) // 2
+        dialog.geometry(f"+{x}+{y}")
+        dialog.focus_set()
 
     def _toggle_cell_double_click(self, event):
         """Double-click on Title/Artist: opens editing (still editable even after processing)."""
