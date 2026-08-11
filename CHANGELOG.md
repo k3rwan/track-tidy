@@ -10,6 +10,9 @@ on [Keep a Changelog](https://keepachangelog.com/).
   latest GitHub release and, if a newer one exists, asks to open the
   download page.
 - Installer filename now includes the version (`Track-Tidy-Setup-v{version}.exe`).
+- Dark mode. New "Appearance" section in Settings: Default (follows Windows'
+  own light/dark setting), Light, or Dark - persisted across restarts. Covers
+  the whole app, including the native title bar (Windows 10 1809+ / 11).
 
 ### Changed
 - `APP_VERSION` in `track_tidy.py` is now the single source of truth for the
