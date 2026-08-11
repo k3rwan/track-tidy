@@ -989,13 +989,28 @@ def fix_swapped_artist_title(detected_artist, detected_title, returned_artist, r
 # 9. COVER SEARCH - ITUNES
 # ============================================================================
 
-def search_cover_itunes(artist, title, log=print):
+def search_cover_itunes(artist, title, log=print, max_retries=2):
+    """
+    Retries on HTTP 429 (rate limited) with a short backoff before giving up.
+    Unlike SoundCloud, iTunes needs no token to reuse - a plain retry is
+    enough to ride out a short burst instead of silently returning no cover
+    for a track that would otherwise have matched.
+    """
     try:
-        response = requests.get(
-            "https://itunes.apple.com/search",
-            params={"term": f"{artist} {title}", "entity": "song", "limit": 1},
-            timeout=10,
-        )
+        for attempt in range(max_retries + 1):
+            response = requests.get(
+                "https://itunes.apple.com/search",
+                params={"term": f"{artist} {title}", "entity": "song", "limit": 1},
+                timeout=10,
+            )
+
+            if response.status_code == 429 and attempt < max_retries:
+                wait_seconds = 2 * (attempt + 1)
+                log(f"  [iTunes] Rate limited, retrying in {wait_seconds}s...")
+                time.sleep(wait_seconds)
+                continue
+
+            break
 
         if response.status_code != 200:
             log(f"  [iTunes] Search failed: HTTP {response.status_code} - {response.text[:300]}")
