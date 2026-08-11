@@ -1249,11 +1249,15 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
 
 def strip_generic_mix_suffix(text):
     """
-    Removes a trailing GENERIC descriptor in parentheses, like "(Mixed)" or
-    "(Extended Mix)", for comparison purposes only - a NAMED remix (e.g.
-    "(DJ Name Remix)") is left untouched, since that's a real difference.
+    Removes a trailing GENERIC descriptor, in parentheses like "(Mixed)"/
+    "(Extended Mix)" or dash-separated like "- Radio Edit", for comparison
+    purposes only - a NAMED remix (e.g. "(DJ Name Remix)") is left untouched,
+    since that's a real difference.
     """
     match = re.search(r"\s*\(([^)]*)\)\s*$", text)
+    if match and match.group(1).strip().lower() in GENERIC_MIX_LABELS:
+        return text[:match.start()].strip()
+    match = re.search(r"\s+-\s+([^-]+)$", text)
     if match and match.group(1).strip().lower() in GENERIC_MIX_LABELS:
         return text[:match.start()].strip()
     return text
