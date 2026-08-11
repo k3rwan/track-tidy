@@ -167,8 +167,8 @@ if _id_txt_client_id and _id_txt_client_secret:
 
 # Single source of truth for the app's version - shown in the GUI and used to
 # check for updates. Bump this (and installer.iss's MyAppVersion) on release.
-APP_VERSION = "0.2"
-GITHUB_REPO = "k3rwan/track-tidy"
+APP_VERSION = "0.3"
+GITHUB_REPO = "k3rwan/track-tidy-releases"  # public, installer-only repo - the source repo is private
 
 # Folder containing the audio files to process
 MUSIC_FOLDER = ""
