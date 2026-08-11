@@ -1233,10 +1233,22 @@ def extract_feature_names(text):
     return split_artist_names(match.group(1))
 
 
+def strip_accents(text):
+    """
+    Folds accented characters to their base ASCII form for comparison
+    purposes (e.g. "é" -> "e") - some taggers/download sources strip
+    accents from filenames/tags for filesystem compatibility while a
+    store's official listing keeps them (or vice versa), which would
+    otherwise be treated as a completely different artist/title.
+    """
+    normalized = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in normalized if not unicodedata.combining(c))
+
+
 def exact_match(text_a, text_b):
-    """Case/whitespace-insensitive EXACT match (not the looser substring/word-based checks below)."""
+    """Case/whitespace/accent-insensitive EXACT match (not the looser substring/word-based checks below)."""
     def normalize(text):
-        return re.sub(r"\s+", " ", text.strip().lower())
+        return strip_accents(re.sub(r"\s+", " ", text.strip().lower()))
     return normalize(text_a) == normalize(text_b)
 
 
@@ -1316,7 +1328,7 @@ def strip_sanitized_chars(text):
 def split_artist_names(text):
     """Splits a multi-artist string on any common separator (,  &  x  X  vs  feat.  ft.  and)."""
     parts = re.split(r"\s*(?:,|&|/|\bx\b|\bvs\b|\bfeat\.?\b|\bft\.?\b|\band\b)\s*", text, flags=re.IGNORECASE)
-    return {strip_sanitized_chars(p.strip().lower()) for p in parts if p.strip()}
+    return {strip_accents(strip_sanitized_chars(p.strip().lower())) for p in parts if p.strip()}
 
 
 def artist_sets_match(expected_artist, returned_artist, returned_title=""):
@@ -1341,8 +1353,8 @@ def artist_names_match(expected_artist, returned_artist):
     if not returned_artist:
         return False
 
-    expected_lower = strip_sanitized_chars(expected_artist.lower())
-    returned_lower = strip_sanitized_chars(returned_artist.lower())
+    expected_lower = strip_accents(strip_sanitized_chars(expected_artist.lower()))
+    returned_lower = strip_accents(strip_sanitized_chars(returned_artist.lower()))
 
     # Split on common multi-artist separators (filenames often list several artists)
     fragments = re.split(r"[,&]| feat\.?| ft\.?| x ", expected_lower)
