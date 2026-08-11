@@ -1,0 +1,22 @@
+# Credentials - never commit
+id.txt
+clientID.txt
+clientSecret.txt
+
+# Python
+__pycache__/
+*.pyc
+venv/
+venv_build/
+
+# Build artifacts
+build/
+dist/
+installer_output/
+
+# Large binaries / bundled tools
+ffmpeg.exe
+
+# Audio test/sample files
+*.mp3
+*.wav
