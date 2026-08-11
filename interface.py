@@ -1850,7 +1850,7 @@ class TaggerInterface:
                     self.processing_in_progress = False
                     self._set_buttons_enabled(True)
                     self.apply_button.configure(text="Apply", command=self._start_processing)
-                    self._update_progress_bar(1.0 if not cancelled else 0, "Cancelled" if cancelled else "Done ✅")
+                    self._update_progress_bar(1.0 if not cancelled else 0, "Cancelled" if cancelled else "Done,")
                     if not cancelled:
                         self._show_success_dialog()
 
