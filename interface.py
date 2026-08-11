@@ -211,11 +211,16 @@ class TaggerInterface:
             style.map("TNotebook.Tab", background=[("selected", colors["bg"])])
             style.configure(
                 "TButton", background=colors["entry_bg"], foreground=colors["fg"], focuscolor=colors["bg"],
+                # clam's default vertical button padding is much taller than
+                # the native theme's (which ignores this option entirely and
+                # uses its own compact OS metrics instead) - trimmed down so
+                # switching themes doesn't visibly resize the window.
+                padding=(5, 0),
             )
             style.map("TButton", background=[("active", colors["select_bg"])])
             style.configure(
                 "TEntry", fieldbackground=colors["entry_bg"], foreground=colors["entry_fg"],
-                insertcolor=colors["fg"],
+                insertcolor=colors["fg"], padding=(1, 0),
             )
             style.configure("TSeparator", background=colors["border"])
             style.configure(
@@ -307,6 +312,18 @@ class TaggerInterface:
             is_newer, latest_version, release_url, installer_url = tagger.check_for_update()
             if is_newer:
                 self.message_queue.put(("update_available", (latest_version, release_url, installer_url)))
+
+        thread = threading.Thread(target=_run_check, daemon=True)
+        thread.start()
+
+    def _check_for_update_manual(self):
+        """Same check as on startup, but always reports back (up to date /
+        failed / available) since the user explicitly asked for it here."""
+        self.check_update_button.configure(state="disabled", text="Checking...")
+
+        def _run_check():
+            result = tagger.check_for_update()
+            self.message_queue.put(("manual_update_check_result", result))
 
         thread = threading.Thread(target=_run_check, daemon=True)
         thread.start()
@@ -611,6 +628,11 @@ class TaggerInterface:
                 appearance_frame, text=label, value=value, variable=self.theme_var,
                 command=self._on_theme_changed,
             ).pack(anchor="w", padx=10, pady=(5, 0) if value == "light" else (0, 5))
+
+        self.check_update_button = ttk.Button(
+            soundcloud_tab, text="Check for updates", command=self._check_for_update_manual,
+        )
+        self.check_update_button.pack(fill="x", padx=10, pady=(0, 10))
 
         ttk.Label(
             soundcloud_tab,
@@ -1554,6 +1576,28 @@ class TaggerInterface:
                     )
                     if open_page:
                         webbrowser.open(installer_url or release_url)
+
+                elif message_type == "manual_update_check_result":
+                    is_newer, latest_version, release_url, installer_url = content
+                    self.check_update_button.configure(state="normal", text="Check for updates")
+
+                    if is_newer:
+                        open_page = messagebox.askyesno(
+                            "Update available",
+                            f"A new version ({latest_version}) of Track-Tidy is available "
+                            f"(you have v{tagger.APP_VERSION}).\n\nOpen the download page?"
+                        )
+                        if open_page:
+                            webbrowser.open(installer_url or release_url)
+                    elif latest_version:
+                        messagebox.showinfo(
+                            "Up to date", f"You already have the latest version (v{tagger.APP_VERSION})."
+                        )
+                    else:
+                        messagebox.showerror(
+                            "Update check failed",
+                            "Could not check for updates - check your internet connection and try again."
+                        )
 
                 elif message_type == "file_processed":
                     identifier = content
