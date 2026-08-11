@@ -1413,13 +1413,22 @@ def artist_names_match(expected_artist, returned_artist):
 
     expected_lower = strip_accents(strip_sanitized_chars(expected_artist.lower()))
     returned_lower = strip_accents(strip_sanitized_chars(returned_artist.lower()))
+    returned_compact = re.sub(r"\s+", "", returned_lower)
 
     # Split on common multi-artist separators (filenames often list several artists)
     fragments = re.split(r"[,&]| feat\.?| ft\.?| x ", expected_lower)
 
     for fragment in fragments:
         fragment = fragment.strip()
-        if fragment and (fragment in returned_lower or returned_lower in fragment):
+        if not fragment:
+            continue
+        if fragment in returned_lower or returned_lower in fragment:
+            return True
+        # Some platforms (e.g. SoundCloud usernames/handles) drop spaces
+        # entirely - "Spicy Market" becomes "SpicyMarket" - so also compare
+        # with whitespace stripped from both sides before giving up.
+        fragment_compact = re.sub(r"\s+", "", fragment)
+        if fragment_compact and (fragment_compact in returned_compact or returned_compact in fragment_compact):
             return True
 
     return False
