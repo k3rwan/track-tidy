@@ -169,6 +169,46 @@ class MentionDetectionTests(unittest.TestCase):
         self.assertEqual(mentions, ["(AMAPIANO)"])
 
 
+class EffectiveCoverBytesTests(unittest.TestCase):
+    def test_no_online_match_keeps_existing_cover(self):
+        # e.g. an unofficial remix absent from iTunes/SoundCloud: nothing found
+        # online, but the file already has a good cover -> must not preview as empty.
+        info = {
+            "apply_changes": True,
+            "found_cover_image": None,
+            "current_cover_bytes": b"original-cover-bytes",
+            "file": "JUL, Kevz (FR) - J'oublie Tout (KEVZ Remix).mp3",
+        }
+        self.assertEqual(tagger.effective_cover_bytes(info), b"original-cover-bytes")
+
+    def test_online_match_found_uses_new_cover(self):
+        info = {
+            "apply_changes": True,
+            "found_cover_image": b"new-cover-bytes",
+            "current_cover_bytes": b"original-cover-bytes",
+            "file": "Some Artist - Some Title.mp3",
+        }
+        self.assertEqual(tagger.effective_cover_bytes(info), b"new-cover-bytes")
+
+    def test_fuviclan_mention_with_no_match_previews_as_removed(self):
+        info = {
+            "apply_changes": True,
+            "found_cover_image": None,
+            "current_cover_bytes": b"original-cover-bytes",
+            "file": "Song (Extended Mix By Fuvi Clan).mp3",
+        }
+        self.assertIsNone(tagger.effective_cover_bytes(info))
+
+    def test_apply_changes_unchecked_keeps_current_cover(self):
+        info = {
+            "apply_changes": False,
+            "found_cover_image": b"new-cover-bytes",
+            "current_cover_bytes": b"original-cover-bytes",
+            "file": "Song.mp3",
+        }
+        self.assertEqual(tagger.effective_cover_bytes(info), b"original-cover-bytes")
+
+
 class HistoryLogTests(unittest.TestCase):
     def setUp(self):
         self._original_history_file = tagger.HISTORY_FILE
