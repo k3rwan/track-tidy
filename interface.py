@@ -634,9 +634,18 @@ class TaggerInterface:
         # --- Advanced section (collapsible): mentions to remove ---
         self.advanced_section_visible = False
 
-        self.advanced_toggle = ttk.Label(tagger_tab, text="▸ Advanced", cursor="hand2", foreground="#1a73e8")
-        self.advanced_toggle.pack(anchor="w", padx=10, pady=(0, 2))
+        toggles_row = ttk.Frame(tagger_tab)
+        toggles_row.pack(fill="x", padx=10, pady=(0, 2))
+
+        self.advanced_toggle = ttk.Label(toggles_row, text="▸ Advanced", cursor="hand2", foreground="#1a73e8")
+        self.advanced_toggle.pack(side="left")
         self.advanced_toggle.bind("<Button-1>", lambda event: self._toggle_advanced_section())
+
+        self.rescan_missing_link = ttk.Label(
+            toggles_row, text="Rescan all with no cover", cursor="hand2", foreground="#1a73e8"
+        )
+        self.rescan_missing_link.pack(side="right")
+        self.rescan_missing_link.bind("<Button-1>", lambda event: self._rescan_all_missing_covers())
 
         self.advanced_frame = ttk.LabelFrame(tagger_tab, text="")
         # not shown by default (pack() is called/undone in _toggle_advanced_section)
@@ -1412,13 +1421,20 @@ class TaggerInterface:
         if not self.scanned_plan:
             self._append_to_journal("No audio file (.mp3/.wav) found in this folder.")
             self._show_no_files_dialog()
-        elif number_new == 0 and not removed_files:
-            self._append_to_journal("Scan complete: no new file detected.")
         else:
-            self._append_to_journal(
-                f"Scan complete: {number_new} new, "
-                f"{len(removed_files)} removed, {len(self.scanned_plan)} total."
+            if number_new == 0 and not removed_files:
+                self._append_to_journal("Scan complete: no new file detected.")
+            else:
+                self._append_to_journal(
+                    f"Scan complete: {number_new} new, "
+                    f"{len(removed_files)} removed, {len(self.scanned_plan)} total."
+                )
+
+            missing_count = sum(
+                1 for info in self.scanned_plan if not info.get("processed") and not info.get("cover_source")
             )
+            if missing_count:
+                self._append_to_journal(f"{missing_count} track(s) currently have no cover match.")
 
         self._check_for_duplicates()
 
@@ -2045,6 +2061,49 @@ class TaggerInterface:
             self._refresh_row(new_info)
 
         self._append_to_journal(f"Rescanned '{new_info['file']}'.")
+
+    def _rescan_all_missing_covers(self):
+        """Re-runs the online cover search for every unprocessed row that
+        doesn't have an online match yet - e.g. after fixing SoundCloud
+        credentials, or after a matching improvement, without rescanning
+        the whole folder from scratch."""
+        targets = [
+            info for info in self.scanned_plan
+            if not info.get("processed") and not info.get("cover_source")
+        ]
+        if not targets:
+            messagebox.showinfo(
+                "Nothing to rescan", "No track is currently missing a cover match.", parent=self.window
+            )
+            return
+
+        confirmed = messagebox.askyesno(
+            "Rescan tracks with no cover",
+            f"{len(targets)} track(s) currently have no online cover match.\n\nRescan them now?",
+            parent=self.window,
+        )
+        if not confirmed:
+            return
+
+        # Tk widget calls must happen on the main thread - resolve this now,
+        # before handing off to the background thread below.
+        tagger.MENTIONS_TO_REMOVE = list(self.mentions_listbox.get(0, "end"))
+        file_names = [info["file"] for info in targets]
+
+        def _run():
+            def _on_file_scanned(info):
+                self.message_queue.put(("row_rescanned", info))
+
+            tagger.scan_files(
+                file_names,
+                on_file_scanned=_on_file_scanned,
+                log=self._append_to_journal,
+                on_new_mention=lambda mention: self.message_queue.put(("mention_added", mention)),
+                on_rate_limited=lambda: self.message_queue.put(("soundcloud_rate_limited", None)),
+            )
+            self._append_to_journal(f"Rescan complete: {len(file_names)} track(s) checked.")
+
+        self._run_in_background(_run)
 
     def _show_context_menu(self, event):
         """Right-click on a row: shows a small context menu (e.g. open file location)."""
