@@ -1193,10 +1193,25 @@ def exact_match(text_a, text_b):
     return normalize(text_a) == normalize(text_b)
 
 
+FORBIDDEN_FILENAME_CHARS_RE = re.compile(r'[\\/:*?"<>|_]')
+
+
+def strip_sanitized_chars(text):
+    """
+    sanitize_filename() replaces every character forbidden in Windows
+    filenames (\\/:*?"<>|) with '_' - so an artist whose real name has one
+    of those (e.g. "BLOND:ISH") ends up as "BLOND_ISH" in the filename and
+    often the tags too. Stripping all of those chars (including '_', since
+    it's what they all collapse to) before comparing artist names avoids
+    rejecting an otherwise-correct match over a single sanitized character.
+    """
+    return FORBIDDEN_FILENAME_CHARS_RE.sub("", text)
+
+
 def split_artist_names(text):
     """Splits a multi-artist string on any common separator (,  &  x  X  vs  feat.  ft.  and)."""
     parts = re.split(r"\s*(?:,|&|/|\bx\b|\bvs\b|\bfeat\.?\b|\bft\.?\b|\band\b)\s*", text, flags=re.IGNORECASE)
-    return {p.strip().lower() for p in parts if p.strip()}
+    return {strip_sanitized_chars(p.strip().lower()) for p in parts if p.strip()}
 
 
 def artist_sets_match(expected_artist, returned_artist):
@@ -1216,8 +1231,8 @@ def artist_names_match(expected_artist, returned_artist):
     if not returned_artist:
         return False
 
-    expected_lower = expected_artist.lower()
-    returned_lower = returned_artist.lower()
+    expected_lower = strip_sanitized_chars(expected_artist.lower())
+    returned_lower = strip_sanitized_chars(returned_artist.lower())
 
     # Split on common multi-artist separators (filenames often list several artists)
     fragments = re.split(r"[,&]| feat\.?| ft\.?| x ", expected_lower)
