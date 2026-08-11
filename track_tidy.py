@@ -1204,7 +1204,11 @@ def search_cover_itunes(artist, title, log=print, max_retries=2):
         for attempt in range(max_retries + 1):
             response = requests.get(
                 "https://itunes.apple.com/search",
-                params={"term": f"{artist} {title}", "entity": "song", "limit": 1},
+                # Without an explicit country, the API defaults to the US store,
+                # where a lot of French content (esp. explicit-tagged rap) simply
+                # isn't licensed and returns zero results even though it's on the
+                # French store.
+                params={"term": f"{artist} {title}", "entity": "song", "limit": 1, "country": "FR"},
                 timeout=10,
             )
 
