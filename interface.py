@@ -218,7 +218,7 @@ class TaggerInterface:
         self.notebook = ttk.Notebook(self.window)
         self.notebook.pack(fill="both", expand=True)
 
-        version_label = ttk.Label(self.window, text="v0.1", foreground="#999999")
+        version_label = ttk.Label(self.window, text="v0.2", foreground="#999999")
         version_label.place(relx=1.0, rely=1.0, x=-6, y=-4, anchor="se")
 
         tagger_tab = ttk.Frame(self.notebook)
