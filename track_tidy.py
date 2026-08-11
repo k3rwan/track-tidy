@@ -454,9 +454,6 @@ SUPPORTED_EXTENSIONS = (
 # List of mentions to automatically strip out (add more if needed)
 MENTIONS_TO_REMOVE = []
 
-# Whether the album tag should be stripped when writing tags (set by the UI)
-DELETE_ALBUM_TAG = True
-
 # Whether SoundCloud is used as a cover source at all (set by the UI) - lets
 # the user opt out entirely to conserve SoundCloud's request quota.
 USE_SOUNDCLOUD = True
@@ -1767,9 +1764,6 @@ def write_tags(file_path, artist, title, cover_image, force_remove_if_missing,
         tags.setall("TIT2", [TIT2(encoding=3, text=[title])])
     if update_artist:
         tags.setall("TPE1", [TPE1(encoding=3, text=[artist])])
-
-    if DELETE_ALBUM_TAG:
-        tags.delall("TALB")
 
     if update_cover:
         if cover_image:
