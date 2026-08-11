@@ -369,19 +369,6 @@ def build_display_name(artist, title):
     return f"{artist} - {title}" if artist else title
 
 
-def clean_filename(file_name):
-    """
-    Removes unwanted mentions from the BASE NAME only (keeping the extension and
-    any subfolder), then cleans up any leftover extra spaces.
-    """
-    folder_part, base_name = os.path.split(file_name)
-    name_no_ext, extension = os.path.splitext(base_name)
-    cleaned = clean_title(name_no_ext)
-    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
-    new_base = cleaned + extension
-    return os.path.join(folder_part, new_base) if folder_part else new_base
-
-
 def contains_mention_to_remove(file_name):
     base_name = os.path.basename(file_name)
     for mention in MENTIONS_TO_REMOVE:
@@ -1286,6 +1273,14 @@ def search_cover_itunes(artist, title, log=print, max_retries=2):
 
 _cached_soundcloud_token = None
 _cached_token_expiry = 0  # Unix timestamp
+
+
+def invalidate_soundcloud_token():
+    """Forces the next get_soundcloud_token() call to authenticate again
+    instead of reusing the cached token - e.g. after the credentials change."""
+    global _cached_soundcloud_token, _cached_token_expiry
+    _cached_soundcloud_token = None
+    _cached_token_expiry = 0
 
 
 def get_soundcloud_token(log=print, on_rate_limited=None):

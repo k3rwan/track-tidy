@@ -1,5 +1,6 @@
 """
-Graphical interface for the audio tagging script (tagger.py).
+Graphical interface for the audio tagging module (track_tidy.py, imported
+below as `tagger`).
 
 Flow:
 1. Choose the folder
@@ -171,6 +172,8 @@ class TaggerInterface:
         self._check_soundcloud_credentials_on_startup()
         self._check_for_update_on_startup()
 
+    # --- Theme & dialog helpers ---
+
     def _on_theme_changed(self):
         choice = self.theme_var.get()
         self._apply_theme(choice)
@@ -184,6 +187,15 @@ class TaggerInterface:
             dialog.configure(bg=self.theme_colors["bg"])
         dialog.update_idletasks()  # make sure the native HWND exists before DwmSetWindowAttribute
         self._set_titlebar_dark(dialog, bool(self.theme_colors))
+
+    def _run_in_background(self, target, *args):
+        """Runs target(*args) in a daemon thread - the pattern every
+        long-running action (scan, process, extract, update check) uses to
+        keep the UI responsive, since none of them are safe to call directly
+        from the Tk main thread."""
+        thread = threading.Thread(target=target, args=args, daemon=True)
+        thread.start()
+        return thread
 
     def _center_dialog(self, dialog):
         """Centers a dialog over the main window, clamped to stay fully
@@ -327,14 +339,15 @@ class TaggerInterface:
         except Exception:
             pass
 
+    # --- Update check ---
+
     def _check_for_update_on_startup(self):
         def _run_check():
             is_newer, latest_version, release_url, installer_url = tagger.check_for_update()
             if is_newer:
                 self.message_queue.put(("update_available", (latest_version, release_url, installer_url)))
 
-        thread = threading.Thread(target=_run_check, daemon=True)
-        thread.start()
+        self._run_in_background(_run_check)
 
     def _check_for_update_manual(self):
         """Same check as on startup, but always reports back (up to date /
@@ -345,8 +358,20 @@ class TaggerInterface:
             result = tagger.check_for_update()
             self.message_queue.put(("manual_update_check_result", result))
 
-        thread = threading.Thread(target=_run_check, daemon=True)
-        thread.start()
+        self._run_in_background(_run_check)
+
+    def _offer_update(self, latest_version, release_url, installer_url):
+        """Shared by the silent startup check and the manual button - both
+        end up here once they've decided a newer version really exists."""
+        open_page = messagebox.askyesno(
+            "Update available",
+            f"A new version ({latest_version}) of Track-Tidy is available "
+            f"(you have v{tagger.APP_VERSION}).\n\nOpen the download page?"
+        )
+        if open_page:
+            webbrowser.open(installer_url or release_url)
+
+    # --- Startup checks ---
 
     def _check_soundcloud_credentials_on_startup(self):
         if not tagger.SOUNDCLOUD_CLIENT_ID or not tagger.SOUNDCLOUD_CLIENT_SECRET:
@@ -356,6 +381,8 @@ class TaggerInterface:
                 "Cover search will only use iTunes until you add them in Settings."
             )
             self.notebook.select(2)  # Settings tab
+
+    # --- Drag and drop ---
 
     def _setup_drag_and_drop(self):
         """Lets the user drag audio files (or a folder) onto the window to set
@@ -409,8 +436,7 @@ class TaggerInterface:
 
         self.notebook.select(0)
         self._set_buttons_enabled(False)
-        thread = threading.Thread(target=self._run_scan, daemon=True)
-        thread.start()
+        self._run_in_background(self._run_scan)
 
     def _start_single_file_scan(self, file_path):
         """Drop of a single audio file: tag just that file, without scanning
@@ -432,8 +458,9 @@ class TaggerInterface:
 
         self.notebook.select(0)
         self._set_buttons_enabled(False)
-        thread = threading.Thread(target=self._run_scan, args=([relative_name],), daemon=True)
-        thread.start()
+        self._run_in_background(self._run_scan, [relative_name])
+
+    # --- UI construction ---
 
     def _build_interface(self):
         self.notebook = ttk.Notebook(self.window)
@@ -729,6 +756,8 @@ class TaggerInterface:
         self._native_listbox_bg = self.suggested_listbox.cget("bg")
         self._native_listbox_fg = self.suggested_listbox.cget("fg")
 
+    # --- Window / progress bar helpers ---
+
     def _adjust_window_height(self):
         """Recomputes the needed window height based on the currently visible sections."""
         self.window.update_idletasks()
@@ -755,6 +784,18 @@ class TaggerInterface:
             self.advanced_toggle.configure(text="▸ Advanced")
         self._adjust_window_height()
 
+    def _toggle_journal_section(self):
+        self.journal_section_visible = not self.journal_section_visible
+        if self.journal_section_visible:
+            self.journal_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10), after=self.journal_toggle)
+            self.journal_toggle.configure(text="▾ Log")
+        else:
+            self.journal_frame.pack_forget()
+            self.journal_toggle.configure(text="▸ Log")
+        self._adjust_window_height()
+
+    # --- Settings tab actions ---
+
     def _update_soundcloud_save_state(self, event=None):
         id_value = self.sc_client_id_entry.get().strip()
         secret_value = self.sc_client_secret_entry.get().strip()
@@ -774,13 +815,16 @@ class TaggerInterface:
 
             tagger.SOUNDCLOUD_CLIENT_ID = client_id or None
             tagger.SOUNDCLOUD_CLIENT_SECRET = client_secret or None
-            # Force a fresh token next time, in case the credentials changed.
-            tagger._cached_soundcloud_token = None
-            tagger._cached_token_expiry = 0
+            tagger.invalidate_soundcloud_token()  # in case the credentials changed
 
             messagebox.showinfo("Saved", "SoundCloud credentials saved.")
         except Exception as error:
             messagebox.showerror("Error", f"Could not save credentials: {error}")
+
+    def _open_soundcloud_registration(self):
+        webbrowser.open("https://soundcloud.com/you/apps")
+
+    # --- Extracter tab actions ---
 
     def _choose_extract_folder(self):
         folder = filedialog.askdirectory(title="Choose the folder to flatten")
@@ -797,30 +841,15 @@ class TaggerInterface:
         self.extract_browse_button.configure(state="disabled")
         self.extract_button.configure(state="disabled")
 
-        thread = threading.Thread(target=self._run_extraction, args=(folder,), daemon=True)
-        thread.start()
+        self._run_in_background(self._run_extraction, folder)
 
     def _run_extraction(self, folder):
         try:
-            moved_count = tagger.extract_audio_files(folder, log=print)
-            removed_count = tagger.remove_empty_subfolders(folder, log=print)
+            moved_count = tagger.extract_audio_files(folder, log=self._append_to_journal)
+            removed_count = tagger.remove_empty_subfolders(folder, log=self._append_to_journal)
             self.message_queue.put(("extract_done", (folder, moved_count, removed_count, None)))
         except Exception as error:
             self.message_queue.put(("extract_done", (folder, 0, 0, str(error))))
-
-    def _open_soundcloud_registration(self):
-        import webbrowser
-        webbrowser.open("https://soundcloud.com/you/apps")
-
-    def _toggle_journal_section(self):
-        self.journal_section_visible = not self.journal_section_visible
-        if self.journal_section_visible:
-            self.journal_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10), after=self.journal_toggle)
-            self.journal_toggle.configure(text="▾ Log")
-        else:
-            self.journal_frame.pack_forget()
-            self.journal_toggle.configure(text="▸ Log")
-        self._adjust_window_height()
 
     # --- Folder / mention actions ---
 
@@ -1005,8 +1034,7 @@ class TaggerInterface:
 
         self._set_buttons_enabled(False)
 
-        thread = threading.Thread(target=self._run_scan, daemon=True)
-        thread.start()
+        self._run_in_background(self._run_scan)
 
     def _run_scan(self, explicit_files=None):
         number_before = len(self.scanned_plan)
@@ -1261,6 +1289,8 @@ class TaggerInterface:
             self._thumbnail_pil_images.pop(dot_file, None)
             self.scanned_plan = [info for info in self.scanned_plan if info["file"] != dot_file]
 
+    # --- Table row rendering ---
+
     def _create_thumbnail(self, info):
         """Builds the cover thumbnail (image only, no checkbox)."""
         image_bytes = info["found_cover_image"] if info["apply_changes"] else info["current_cover_bytes"]
@@ -1329,6 +1359,8 @@ class TaggerInterface:
             displayed_format = info["format"]
 
         return (apply_box, displayed_title, displayed_artist, displayed_format)
+
+    # --- Table interactions (sort, toggle, reorder) ---
 
     def _toggle_all(self):
         """Checks or unchecks 'apply_changes' for all rows not yet processed."""
@@ -1414,6 +1446,8 @@ class TaggerInterface:
                 return  # nothing to toggle for mp3s
             info["convert"] = not info["convert"]
             self.table.item(item_id, values=self._build_row_values(info))
+
+    # --- Cover zoom ---
 
     def _resolve_full_path(self, info):
         """Absolute on-disk path for a scanned/processed row's file."""
@@ -1525,6 +1559,8 @@ class TaggerInterface:
 
         self._center_dialog(dialog)
         dialog.focus_set()
+
+    # --- Processing history window ---
 
     def _show_history_window(self):
         """Settings -> 'View processing history': every file ever actually
@@ -1668,6 +1704,8 @@ class TaggerInterface:
 
         self._center_dialog(dialog)
 
+    # --- Cover hover badge ---
+
     def _get_hover_thumbnail(self, file_name):
         """Lazily builds (and caches) the cover thumbnail with a small magnifier
         badge, hinting that clicking it opens the full-size zoom popup."""
@@ -1742,6 +1780,8 @@ class TaggerInterface:
             self.table.item(self._hovered_cover_row, image=self.tk_images.get(self._hovered_cover_row) or "")
         self._hovered_cover_row = None
         self.table.configure(cursor="")
+
+    # --- Table editing & context menu ---
 
     def _toggle_cell_double_click(self, event):
         """Double-click on Title/Artist: opens editing (still editable even after processing)."""
@@ -1937,26 +1977,14 @@ class TaggerInterface:
 
                 elif message_type == "update_available":
                     latest_version, release_url, installer_url = content
-                    open_page = messagebox.askyesno(
-                        "Update available",
-                        f"A new version ({latest_version}) of Track-Tidy is available "
-                        f"(you have v{tagger.APP_VERSION}).\n\nOpen the download page?"
-                    )
-                    if open_page:
-                        webbrowser.open(installer_url or release_url)
+                    self._offer_update(latest_version, release_url, installer_url)
 
                 elif message_type == "manual_update_check_result":
                     is_newer, latest_version, release_url, installer_url = content
                     self.check_update_button.configure(state="normal", text="Check for updates")
 
                     if is_newer:
-                        open_page = messagebox.askyesno(
-                            "Update available",
-                            f"A new version ({latest_version}) of Track-Tidy is available "
-                            f"(you have v{tagger.APP_VERSION}).\n\nOpen the download page?"
-                        )
-                        if open_page:
-                            webbrowser.open(installer_url or release_url)
+                        self._offer_update(latest_version, release_url, installer_url)
                     elif latest_version:
                         messagebox.showinfo(
                             "Up to date", f"You already have the latest version (v{tagger.APP_VERSION})."

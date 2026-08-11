@@ -67,6 +67,38 @@ on [Keep a Changelog](https://keepachangelog.com/).
   `Ctrl+A` selects every entry. "Restore selected" now restores all
   selected entries at once, with a summary if any fail.
 
+### Fixed (pre-v0.4 cleanup)
+- `fart.wav` and `success.wav` (the UI's two sound effects) were accidentally
+  matched by `.gitignore`'s `*.wav` rule and were never actually committed -
+  a fresh clone couldn't build a working installer without them. Added an
+  exception for these two specific files and committed them.
+- Extraction (`_run_extraction`) logged with `log=print` instead of
+  `log=self._append_to_journal` like every other background task. Since
+  stdout is redirected to `os.devnull` in the frozen .exe, every per-file
+  "Extracted: ..." line (and any per-file error) was completely invisible to
+  the user - only the final summary dialog showed. Now shows in the Journal
+  like everything else.
+
+### Changed (pre-v0.4 cleanup)
+- Removed `clean_filename()` from `track_tidy.py` - dead code, no longer
+  called from anywhere.
+- Fixed `interface.py`'s module docstring, which referenced a `tagger.py`
+  file that doesn't exist (`tagger` is just the local import alias for
+  `track_tidy`).
+- Added section-header comments throughout `interface.py` (theme/dialog
+  helpers, update check, drag and drop, table rendering, cover zoom,
+  history window, etc.) - it had none beyond a handful of inconsistent
+  ones, unlike `track_tidy.py`'s systematic numbered sections. Also moved
+  two small methods (`_open_soundcloud_registration`, `_toggle_journal_section`)
+  next to the sibling methods they actually belong with.
+- Consolidated the near-duplicate "update available" dialog (startup check
+  vs. manual button) into one `_offer_update()` helper.
+- Consolidated 6 duplicated `threading.Thread(target=..., daemon=True); thread.start()`
+  call sites into one `_run_in_background()` helper.
+- Added `tagger.invalidate_soundcloud_token()` instead of `interface.py`
+  reaching into `track_tidy`'s underscore-prefixed "private" module globals
+  directly to force a token refresh after credentials change.
+
 ## [0.3]
 
 ### Fixed
