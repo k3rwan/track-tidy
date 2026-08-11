@@ -171,22 +171,21 @@ class TaggerInterface:
         self.theme_var = tk.StringVar(value=saved_theme)
 
         saved_settings = tagger.load_settings()
+        self.use_itunes_var = tk.BooleanVar(value=saved_settings.get("use_itunes", True))
+        self.use_spotify_var = tk.BooleanVar(value=saved_settings.get("use_spotify", False))
         self.use_soundcloud_var = tk.BooleanVar(value=saved_settings.get("use_soundcloud", True))
         self.auto_convert_var = tk.BooleanVar(value=saved_settings.get("auto_convert_mp3", True))
-        saved_cover_source = saved_settings.get("primary_cover_source", "itunes")
-        if saved_cover_source not in ("itunes", "spotify"):
-            saved_cover_source = "itunes"
-        self.cover_source_var = tk.StringVar(value=saved_cover_source)
+        tagger.USE_ITUNES = self.use_itunes_var.get()
+        tagger.USE_SPOTIFY = self.use_spotify_var.get()
         tagger.USE_SOUNDCLOUD = self.use_soundcloud_var.get()
         tagger.AUTO_CONVERT_MP3 = self.auto_convert_var.get()
-        tagger.PRIMARY_COVER_SOURCE = self.cover_source_var.get()
 
         self._build_interface()
         self._setup_drag_and_drop()
         self._adjust_window_height()
         self._apply_theme(self.theme_var.get())
         self._start_message_loop()
-        self._check_soundcloud_credentials_on_startup()
+        self._check_cover_source_credentials_on_startup()
         self._check_for_update_on_startup()
 
     # --- Theme & dialog helpers ---
@@ -196,10 +195,15 @@ class TaggerInterface:
         self._apply_theme(choice)
         tagger.save_setting("theme", choice)
 
-    def _on_cover_source_changed(self):
-        choice = self.cover_source_var.get()
-        tagger.PRIMARY_COVER_SOURCE = choice
-        tagger.save_setting("primary_cover_source", choice)
+    def _on_use_itunes_changed(self):
+        enabled = self.use_itunes_var.get()
+        tagger.USE_ITUNES = enabled
+        tagger.save_setting("use_itunes", enabled)
+
+    def _on_use_spotify_changed(self):
+        enabled = self.use_spotify_var.get()
+        tagger.USE_SPOTIFY = enabled
+        tagger.save_setting("use_spotify", enabled)
 
     def _on_use_soundcloud_changed(self):
         enabled = self.use_soundcloud_var.get()
@@ -512,25 +516,24 @@ class TaggerInterface:
 
     # --- Startup checks ---
 
-    def _check_soundcloud_credentials_on_startup(self):
-        if not tagger.SOUNDCLOUD_CLIENT_ID or not tagger.SOUNDCLOUD_CLIENT_SECRET:
-            primary_label = "Spotify" if tagger.PRIMARY_COVER_SOURCE == "spotify" else "iTunes"
+    def _check_cover_source_credentials_on_startup(self):
+        """Nags (once, on startup) about any ENABLED cover source that's
+        missing its credentials - iTunes needs none, so only SoundCloud/
+        Spotify can trigger this."""
+        if tagger.USE_SOUNDCLOUD and (not tagger.SOUNDCLOUD_CLIENT_ID or not tagger.SOUNDCLOUD_CLIENT_SECRET):
             messagebox.showinfo(
                 "SoundCloud not configured",
-                f"No SoundCloud Client ID / Client Secret is configured yet.\n"
-                f"Cover search will only use {primary_label} until you add them in Settings.",
+                "SoundCloud is enabled as a cover source in Settings, but no Client ID / "
+                "Client Secret is configured yet - add them in Settings, or turn it off.",
                 parent=self.window,
             )
             self.notebook.select(2)  # Settings tab
 
-        if tagger.PRIMARY_COVER_SOURCE == "spotify" and (
-            not tagger.SPOTIFY_CLIENT_ID or not tagger.SPOTIFY_CLIENT_SECRET
-        ):
+        if tagger.USE_SPOTIFY and (not tagger.SPOTIFY_CLIENT_ID or not tagger.SPOTIFY_CLIENT_SECRET):
             messagebox.showinfo(
                 "Spotify not configured",
-                "Spotify is set as the cover source in Settings, but no Client ID / "
-                "Client Secret is configured yet - add them in Settings, or switch back "
-                "to iTunes.",
+                "Spotify is enabled as a cover source in Settings, but no Client ID / "
+                "Client Secret is configured yet - add them in Settings, or turn it off.",
                 parent=self.window,
             )
             self.notebook.select(2)  # Settings tab
@@ -852,19 +855,21 @@ class TaggerInterface:
         behavior_frame = ttk.LabelFrame(soundcloud_tab, text="Behavior")
         behavior_frame.pack(fill="x", padx=10, pady=(0, 10))
 
-        ttk.Label(behavior_frame, text="Cover source:").pack(anchor="w", padx=10, pady=(10, 0))
-        cover_source_row = ttk.Frame(behavior_frame)
-        cover_source_row.pack(fill="x", padx=10, pady=(0, 5))
-        for value, label in (("itunes", "iTunes"), ("spotify", "Spotify")):
-            ttk.Radiobutton(
-                cover_source_row, text=label, value=value, variable=self.cover_source_var,
-                command=self._on_cover_source_changed,
-            ).pack(side="left", padx=(0, 15))
-
+        ttk.Label(behavior_frame, text="Cover sources (tried in this order):").pack(
+            anchor="w", padx=10, pady=(10, 0)
+        )
         ttk.Checkbutton(
-            behavior_frame, text="Search covers on SoundCloud (fallback)", variable=self.use_soundcloud_var,
+            behavior_frame, text="iTunes", variable=self.use_itunes_var,
+            command=self._on_use_itunes_changed,
+        ).pack(anchor="w", padx=10, pady=(2, 0))
+        ttk.Checkbutton(
+            behavior_frame, text="Spotify", variable=self.use_spotify_var,
+            command=self._on_use_spotify_changed,
+        ).pack(anchor="w", padx=10, pady=(2, 0))
+        ttk.Checkbutton(
+            behavior_frame, text="SoundCloud", variable=self.use_soundcloud_var,
             command=self._on_use_soundcloud_changed,
-        ).pack(anchor="w", padx=10, pady=(5, 5))
+        ).pack(anchor="w", padx=10, pady=(2, 5))
         ttk.Checkbutton(
             behavior_frame, text="Convert everything to MP3 (320 kbps)", variable=self.auto_convert_var,
             command=self._on_auto_convert_changed,
