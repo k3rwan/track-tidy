@@ -165,6 +165,12 @@ class TaggerInterface:
             saved_theme = "light"  # e.g. an old "system" preference from before that option existed
         self.theme_var = tk.StringVar(value=saved_theme)
 
+        saved_settings = tagger.load_settings()
+        self.use_soundcloud_var = tk.BooleanVar(value=saved_settings.get("use_soundcloud", True))
+        self.auto_convert_var = tk.BooleanVar(value=saved_settings.get("auto_convert_mp3", True))
+        tagger.USE_SOUNDCLOUD = self.use_soundcloud_var.get()
+        tagger.AUTO_CONVERT_MP3 = self.auto_convert_var.get()
+
         self._build_interface()
         self._setup_drag_and_drop()
         self._adjust_window_height()
@@ -179,6 +185,23 @@ class TaggerInterface:
         choice = self.theme_var.get()
         self._apply_theme(choice)
         tagger.save_setting("theme", choice)
+
+    def _on_use_soundcloud_changed(self):
+        enabled = self.use_soundcloud_var.get()
+        tagger.USE_SOUNDCLOUD = enabled
+        tagger.save_setting("use_soundcloud", enabled)
+
+    def _on_auto_convert_changed(self):
+        enabled = self.auto_convert_var.get()
+        if not enabled:
+            messagebox.showwarning(
+                "Convert to MP3 disabled",
+                "WAV files will now be ignored when scanning - they can't be "
+                "tagged without converting to MP3 first.",
+                parent=self.window,
+            )
+        tagger.AUTO_CONVERT_MP3 = enabled
+        tagger.save_setting("auto_convert_mp3", enabled)
 
     def _style_toplevel(self, dialog):
         """Applies the current theme's background (and title bar) to a dialog
@@ -540,6 +563,12 @@ class TaggerInterface:
             return
         if not file_path.lower().endswith(tagger.SUPPORTED_EXTENSIONS):
             return
+        if file_path.lower().endswith(".wav") and not tagger.AUTO_CONVERT_MP3:
+            self._append_to_journal(
+                f"Ignored '{os.path.basename(file_path)}' - WAV files are disabled "
+                "(Settings > Convert everything to MP3)."
+            )
+            return
 
         folder = os.path.dirname(file_path)
         relative_name = os.path.basename(file_path)
@@ -783,6 +812,17 @@ class TaggerInterface:
                 appearance_frame, text=label, value=value, variable=self.theme_var,
                 command=self._on_theme_changed,
             ).pack(anchor="w", padx=10, pady=(5, 0) if value == "light" else (0, 5))
+
+        behavior_frame = ttk.LabelFrame(soundcloud_tab, text="Behavior")
+        behavior_frame.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Checkbutton(
+            behavior_frame, text="Search covers on SoundCloud", variable=self.use_soundcloud_var,
+            command=self._on_use_soundcloud_changed,
+        ).pack(anchor="w", padx=10, pady=(10, 5))
+        ttk.Checkbutton(
+            behavior_frame, text="Convert everything to MP3 (320 kbps)", variable=self.auto_convert_var,
+            command=self._on_auto_convert_changed,
+        ).pack(anchor="w", padx=10, pady=(0, 10))
 
         self.check_update_button = ttk.Button(
             soundcloud_tab, text="Check for updates", command=self._check_for_update_manual,
