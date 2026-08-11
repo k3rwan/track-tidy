@@ -9,8 +9,9 @@ Expected filename format: "Artist - Title.ext"
 Contents (in the order they appear below):
     1. Configuration & credentials       - path helpers (app_base_dir,
                                             user_config_dir); SoundCloud
-                                            credentials; APP_VERSION and the
-                                            update check; track reporting
+                                            credentials; APP_VERSION, the
+                                            update check, and downloading the
+                                            installer; track reporting
                                             (Discord webhook); saved UI
                                             settings (theme...); the
                                             processing history log;
@@ -179,6 +180,43 @@ def check_for_update(log=print, timeout=5):
     except Exception as error:
         log(f"  [Update check] Failed: {error}")
         return False, None, None, None
+
+
+def download_installer(url, dest_path, on_progress=None, timeout=30):
+    """
+    Streams the installer at `url` to `dest_path`, so the app can launch it
+    directly instead of the user having to open a browser and download it
+    manually. Calls on_progress(downloaded_bytes, total_bytes) after every
+    chunk if given (total_bytes is 0 if the server didn't report a
+    Content-Length). Returns True on success, False on any failure (never
+    raises) - a partial download is removed rather than left behind.
+    """
+    try:
+        response = requests.get(url, stream=True, timeout=timeout)
+        if response.status_code != 200:
+            return False
+
+        total = int(response.headers.get("Content-Length", 0))
+        downloaded = 0
+
+        with open(dest_path, "wb") as f:
+            for chunk in response.iter_content(chunk_size=262144):
+                if not chunk:
+                    continue
+                f.write(chunk)
+                downloaded += len(chunk)
+                if on_progress:
+                    on_progress(downloaded, total)
+
+        return True
+
+    except Exception:
+        try:
+            if os.path.exists(dest_path):
+                os.remove(dest_path)
+        except Exception:
+            pass
+        return False
 
 
 # --- Reporting a track (user -> developer, via Discord) ---
