@@ -197,11 +197,29 @@ class TaggerInterface:
 
     def _on_use_itunes_changed(self):
         enabled = self.use_itunes_var.get()
+        if enabled and self.use_spotify_var.get():
+            messagebox.showinfo(
+                "iTunes and Spotify are exclusive",
+                "iTunes and Spotify can't both be enabled as cover sources at "
+                "the same time.\n\nTurn off Spotify first if you want to use iTunes.",
+                parent=self.window,
+            )
+            self.use_itunes_var.set(False)
+            return
         tagger.USE_ITUNES = enabled
         tagger.save_setting("use_itunes", enabled)
 
     def _on_use_spotify_changed(self):
         enabled = self.use_spotify_var.get()
+        if enabled and self.use_itunes_var.get():
+            # iTunes and Spotify are exclusive - Spotify silently wins here,
+            # since checking it is the more deliberate action (iTunes is the
+            # default already on, so unchecking it would take an extra step
+            # otherwise). Re-checking iTunes afterward is what explains the
+            # exclusivity, in _on_use_itunes_changed().
+            self.use_itunes_var.set(False)
+            tagger.USE_ITUNES = False
+            tagger.save_setting("use_itunes", False)
         tagger.USE_SPOTIFY = enabled
         tagger.save_setting("use_spotify", enabled)
 
