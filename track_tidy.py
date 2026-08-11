@@ -53,6 +53,24 @@ from mutagen.wave import WAVE
 from mutagen.id3 import TIT2, TPE1, APIC
 
 
+def safe_print(text=""):
+    """
+    Default log() implementation for CLI usage (process_folder()/main()) -
+    the GUI always passes its own logger instead. A Windows console using a
+    legacy codepage (cp1252 etc.) raises UnicodeEncodeError for text
+    containing characters outside that codepage (e.g. an emoji in a
+    SoundCloud username/title), which would otherwise abort whatever was
+    being logged - including mid-search, silently losing a match - instead
+    of just... logging it. Falls back to replacing unencodable characters
+    rather than crashing.
+    """
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        print(text.encode(encoding, errors="replace").decode(encoding))
+
+
 # ============================================================================
 # 1. CONFIGURATION & CREDENTIALS
 # ============================================================================
@@ -147,7 +165,7 @@ def parse_version(version_string):
     return tuple(parts) or (0,)
 
 
-def check_for_update(log=print, timeout=5):
+def check_for_update(log=safe_print, timeout=5):
     """
     Checks GitHub for the latest release of GITHUB_REPO and compares it to
     APP_VERSION. Returns (is_newer, latest_version, release_url,
@@ -341,7 +359,7 @@ def log_history_entry(old_file, new_file, old_artist, old_title, new_artist, new
         print(f"  Could not write history entry: {error}")
 
 
-def restore_history_entry(entry, log=print):
+def restore_history_entry(entry, log=safe_print):
     """
     Restores a file's artist/title/cover to what they were before a previous
     run changed them (a history.jsonl entry from load_history_entries()).
@@ -807,7 +825,7 @@ EXTRACTABLE_AUDIO_EXTENSIONS = SUPPORTED_EXTENSIONS + (".alac",)
 # 4. FOLDER EXTRACTION (FLATTEN)
 # ============================================================================
 
-def extract_audio_files(root_folder, log=print):
+def extract_audio_files(root_folder, log=safe_print):
     """
     Recursively finds audio files (mp3, wav, flac, aac, m4a, ogg, wma, aiff,
     alac, opus...) sitting inside subfolders of root_folder and moves them
@@ -847,7 +865,7 @@ def extract_audio_files(root_folder, log=print):
     return moved_count
 
 
-def remove_empty_subfolders(root_folder, log=print):
+def remove_empty_subfolders(root_folder, log=safe_print):
     """Removes now-empty subfolders left behind after extraction. Returns how many were removed."""
     removed_count = 0
     root_abspath = os.path.abspath(root_folder)
@@ -999,7 +1017,7 @@ def detect_parenthetical_mentions(text):
 # 7. SCANNING (READ-ONLY)
 # ============================================================================
 
-def scan_one_file(file_name, soundcloud_token, log=print, on_new_mention=None):
+def scan_one_file(file_name, soundcloud_token, log=safe_print, on_new_mention=None):
     """
     Analyzes a single file (path relative to MUSIC_FOLDER): current tags,
     info detected from the name, and online cover search.
@@ -1124,7 +1142,7 @@ SOUNDCLOUD_RATE_LIMITED = False  # set for the current run once a 429 is hit
 SOUNDCLOUD_UNAVAILABLE = False  # set for the current run when no credentials are configured at all
 
 
-def scan_files(file_list, on_file_scanned=None, log=print, on_new_mention=None, on_rate_limited=None,
+def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=None, on_rate_limited=None,
                should_cancel=None):
     """
     Scans ONLY the files in the given list (relative paths).
@@ -1408,7 +1426,7 @@ def build_itunes_query(artist, title):
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
-def search_cover_itunes(artist, title, log=print, max_retries=2, allow_loose_remix_match=False):
+def search_cover_itunes(artist, title, log=safe_print, max_retries=2, allow_loose_remix_match=False):
     """
     Retries on HTTP 429 (rate limited) with a short backoff before giving up.
     Unlike SoundCloud, iTunes needs no token to reuse - a plain retry is
@@ -1523,7 +1541,7 @@ def invalidate_soundcloud_token():
     _cached_token_expiry = 0
 
 
-def get_soundcloud_token(log=print, on_rate_limited=None):
+def get_soundcloud_token(log=safe_print, on_rate_limited=None):
     global _cached_soundcloud_token, _cached_token_expiry
 
     # Reuse the cached token if it's still valid (with a 60s safety margin)
@@ -1571,7 +1589,7 @@ def get_soundcloud_token(log=print, on_rate_limited=None):
         return None
 
 
-def search_cover_soundcloud(artist, title, token, log=print):
+def search_cover_soundcloud(artist, title, token, log=safe_print):
     if not token:
         return None
 
@@ -1778,7 +1796,7 @@ def fix_title_artist(info, artist, title):
 # 13. PROCESSING (APPLY)
 # ============================================================================
 
-def process_files(plan, log=print, on_progress=None, on_file_processed=None, should_cancel=None):
+def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None, should_cancel=None):
     """
     Processes a list of already-scanned files (see scan_files()).
     Each item in the plan carries its own options:
@@ -1894,14 +1912,14 @@ def process_files(plan, log=print, on_progress=None, on_file_processed=None, sho
     log("Processing complete.")
 
 
-def process_folder(log=print, on_progress=None):
+def process_folder(log=safe_print, on_progress=None):
     """Simple version: scans then processes the whole folder with default settings."""
     plan = scan_files(list_audio_files())
     process_files(plan, log=log, on_progress=on_progress)
 
 
 def main():
-    process_folder(log=print)
+    process_folder(log=safe_print)
 
 
 if __name__ == "__main__":
