@@ -1293,7 +1293,7 @@ class TaggerInterface:
 
     def _create_thumbnail(self, info):
         """Builds the cover thumbnail (image only, no checkbox)."""
-        image_bytes = info["found_cover_image"] if info["apply_changes"] else info["current_cover_bytes"]
+        image_bytes = tagger.effective_cover_bytes(info)
         # Stale either way - regenerated lazily next time this row is hovered.
         self.tk_images_hover.pop(info["file"], None)
 
@@ -1483,7 +1483,7 @@ class TaggerInterface:
         remove_button.pack(side="left", expand=True, fill="x", padx=(5, 0))
 
         def current_cover_bytes():
-            return info["found_cover_image"] if info["apply_changes"] else info["current_cover_bytes"]
+            return tagger.effective_cover_bytes(info)
 
         def render():
             image_bytes = current_cover_bytes()
