@@ -855,21 +855,21 @@ class TaggerInterface:
         behavior_frame = ttk.LabelFrame(soundcloud_tab, text="Behavior")
         behavior_frame.pack(fill="x", padx=10, pady=(0, 10))
 
-        ttk.Label(behavior_frame, text="Cover sources (tried in this order):").pack(
-            anchor="w", padx=10, pady=(10, 0)
-        )
+        ttk.Label(behavior_frame, text="Sources:").pack(anchor="w", padx=10, pady=(10, 0))
+        sources_row = ttk.Frame(behavior_frame)
+        sources_row.pack(fill="x", padx=10, pady=(2, 5))
         ttk.Checkbutton(
-            behavior_frame, text="iTunes", variable=self.use_itunes_var,
+            sources_row, text="iTunes", variable=self.use_itunes_var,
             command=self._on_use_itunes_changed,
-        ).pack(anchor="w", padx=10, pady=(2, 0))
+        ).pack(side="left", padx=(0, 15))
         ttk.Checkbutton(
-            behavior_frame, text="Spotify", variable=self.use_spotify_var,
+            sources_row, text="Spotify", variable=self.use_spotify_var,
             command=self._on_use_spotify_changed,
-        ).pack(anchor="w", padx=10, pady=(2, 0))
+        ).pack(side="left", padx=(0, 15))
         ttk.Checkbutton(
-            behavior_frame, text="SoundCloud", variable=self.use_soundcloud_var,
+            sources_row, text="SoundCloud", variable=self.use_soundcloud_var,
             command=self._on_use_soundcloud_changed,
-        ).pack(anchor="w", padx=10, pady=(2, 5))
+        ).pack(side="left")
         ttk.Checkbutton(
             behavior_frame, text="Convert everything to MP3 (320 kbps)", variable=self.auto_convert_var,
             command=self._on_auto_convert_changed,
