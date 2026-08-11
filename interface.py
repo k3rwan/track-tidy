@@ -634,18 +634,9 @@ class TaggerInterface:
         # --- Advanced section (collapsible): mentions to remove ---
         self.advanced_section_visible = False
 
-        toggles_row = ttk.Frame(tagger_tab)
-        toggles_row.pack(fill="x", padx=10, pady=(0, 2))
-
-        self.advanced_toggle = ttk.Label(toggles_row, text="▸ Advanced", cursor="hand2", foreground="#1a73e8")
-        self.advanced_toggle.pack(side="left")
+        self.advanced_toggle = ttk.Label(tagger_tab, text="▸ Advanced", cursor="hand2", foreground="#1a73e8")
+        self.advanced_toggle.pack(anchor="w", padx=10, pady=(0, 2))
         self.advanced_toggle.bind("<Button-1>", lambda event: self._toggle_advanced_section())
-
-        self.rescan_missing_link = ttk.Label(
-            toggles_row, text="Rescan all with no cover", cursor="hand2", foreground="#1a73e8"
-        )
-        self.rescan_missing_link.pack(side="right")
-        self.rescan_missing_link.bind("<Button-1>", lambda event: self._rescan_all_missing_covers())
 
         self.advanced_frame = ttk.LabelFrame(tagger_tab, text="")
         # not shown by default (pack() is called/undone in _toggle_advanced_section)
@@ -678,6 +669,12 @@ class TaggerInterface:
         self.delete_album_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(
             self.advanced_frame, text="Delete album tag", variable=self.delete_album_var
+        ).pack(anchor="w", padx=10, pady=(0, 5))
+
+        self.no_cover_filter_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            self.advanced_frame, text="Only show tracks with no cover match",
+            variable=self.no_cover_filter_var, command=self._apply_table_filter,
         ).pack(anchor="w", padx=10, pady=(0, 10))
 
         # --- Scan results table ---
@@ -1289,11 +1286,15 @@ class TaggerInterface:
         self._table_filter_after_id = self.window.after(300, self._apply_table_filter)
 
     def _apply_table_filter(self):
-        """Shows only rows whose title or artist match the search box (case-insensitive)."""
+        """Shows only rows whose title or artist match the search box
+        (case-insensitive), further narrowed to rows with no cover match if
+        the "Only show tracks with no cover match" checkbox is on."""
         if getattr(self.table_filter_entry, "placeholder_active", False):
             query = ""
         else:
             query = self.table_filter_entry.get().strip().lower()
+
+        no_cover_only = self.no_cover_filter_var.get()
 
         for info in self.scanned_plan:
             if self.table.exists(info["file"]):
@@ -1305,6 +1306,8 @@ class TaggerInterface:
             searchable = f"{title} {artist}".lower()
 
             if query and query not in searchable:
+                continue
+            if no_cover_only and info.get("cover_source"):
                 continue
 
             if self.table.exists(info["file"]):
@@ -2061,49 +2064,6 @@ class TaggerInterface:
             self._refresh_row(new_info)
 
         self._append_to_journal(f"Rescanned '{new_info['file']}'.")
-
-    def _rescan_all_missing_covers(self):
-        """Re-runs the online cover search for every unprocessed row that
-        doesn't have an online match yet - e.g. after fixing SoundCloud
-        credentials, or after a matching improvement, without rescanning
-        the whole folder from scratch."""
-        targets = [
-            info for info in self.scanned_plan
-            if not info.get("processed") and not info.get("cover_source")
-        ]
-        if not targets:
-            messagebox.showinfo(
-                "Nothing to rescan", "No track is currently missing a cover match.", parent=self.window
-            )
-            return
-
-        confirmed = messagebox.askyesno(
-            "Rescan tracks with no cover",
-            f"{len(targets)} track(s) currently have no online cover match.\n\nRescan them now?",
-            parent=self.window,
-        )
-        if not confirmed:
-            return
-
-        # Tk widget calls must happen on the main thread - resolve this now,
-        # before handing off to the background thread below.
-        tagger.MENTIONS_TO_REMOVE = list(self.mentions_listbox.get(0, "end"))
-        file_names = [info["file"] for info in targets]
-
-        def _run():
-            def _on_file_scanned(info):
-                self.message_queue.put(("row_rescanned", info))
-
-            tagger.scan_files(
-                file_names,
-                on_file_scanned=_on_file_scanned,
-                log=self._append_to_journal,
-                on_new_mention=lambda mention: self.message_queue.put(("mention_added", mention)),
-                on_rate_limited=lambda: self.message_queue.put(("soundcloud_rate_limited", None)),
-            )
-            self._append_to_journal(f"Rescan complete: {len(file_names)} track(s) checked.")
-
-        self._run_in_background(_run)
 
     def _show_context_menu(self, event):
         """Right-click on a row: shows a small context menu (e.g. open file location)."""
