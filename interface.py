@@ -1704,7 +1704,7 @@ class TaggerInterface:
             if displayed_artist is None:
                 displayed_artist = info["detected_artist"] if info["detected_artist"] else "(empty)"
             displayed_format = f"MP3 {PROCESSED_CHECK}" if (needs_conversion and info["convert"]) else info["format"]
-            return (PROCESSED_CHECK, displayed_title, displayed_artist, displayed_format)
+            return (CHECKED_BOX, displayed_title, displayed_artist, displayed_format)
 
         apply = info["apply_changes"]
 
