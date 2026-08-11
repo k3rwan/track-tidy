@@ -173,8 +173,13 @@ class TaggerInterface:
         saved_settings = tagger.load_settings()
         self.use_soundcloud_var = tk.BooleanVar(value=saved_settings.get("use_soundcloud", True))
         self.auto_convert_var = tk.BooleanVar(value=saved_settings.get("auto_convert_mp3", True))
+        saved_cover_source = saved_settings.get("primary_cover_source", "itunes")
+        if saved_cover_source not in ("itunes", "spotify"):
+            saved_cover_source = "itunes"
+        self.cover_source_var = tk.StringVar(value=saved_cover_source)
         tagger.USE_SOUNDCLOUD = self.use_soundcloud_var.get()
         tagger.AUTO_CONVERT_MP3 = self.auto_convert_var.get()
+        tagger.PRIMARY_COVER_SOURCE = self.cover_source_var.get()
 
         self._build_interface()
         self._setup_drag_and_drop()
@@ -190,6 +195,11 @@ class TaggerInterface:
         choice = self.theme_var.get()
         self._apply_theme(choice)
         tagger.save_setting("theme", choice)
+
+    def _on_cover_source_changed(self):
+        choice = self.cover_source_var.get()
+        tagger.PRIMARY_COVER_SOURCE = choice
+        tagger.save_setting("primary_cover_source", choice)
 
     def _on_use_soundcloud_changed(self):
         enabled = self.use_soundcloud_var.get()
@@ -504,10 +514,23 @@ class TaggerInterface:
 
     def _check_soundcloud_credentials_on_startup(self):
         if not tagger.SOUNDCLOUD_CLIENT_ID or not tagger.SOUNDCLOUD_CLIENT_SECRET:
+            primary_label = "Spotify" if tagger.PRIMARY_COVER_SOURCE == "spotify" else "iTunes"
             messagebox.showinfo(
                 "SoundCloud not configured",
-                "No SoundCloud Client ID / Client Secret is configured yet.\n"
-                "Cover search will only use iTunes until you add them in Settings.",
+                f"No SoundCloud Client ID / Client Secret is configured yet.\n"
+                f"Cover search will only use {primary_label} until you add them in Settings.",
+                parent=self.window,
+            )
+            self.notebook.select(2)  # Settings tab
+
+        if tagger.PRIMARY_COVER_SOURCE == "spotify" and (
+            not tagger.SPOTIFY_CLIENT_ID or not tagger.SPOTIFY_CLIENT_SECRET
+        ):
+            messagebox.showinfo(
+                "Spotify not configured",
+                "Spotify is set as the cover source in Settings, but no Client ID / "
+                "Client Secret is configured yet - add them in Settings, or switch back "
+                "to iTunes.",
                 parent=self.window,
             )
             self.notebook.select(2)  # Settings tab
@@ -828,10 +851,20 @@ class TaggerInterface:
 
         behavior_frame = ttk.LabelFrame(soundcloud_tab, text="Behavior")
         behavior_frame.pack(fill="x", padx=10, pady=(0, 10))
+
+        ttk.Label(behavior_frame, text="Cover source:").pack(anchor="w", padx=10, pady=(10, 0))
+        cover_source_row = ttk.Frame(behavior_frame)
+        cover_source_row.pack(fill="x", padx=10, pady=(0, 5))
+        for value, label in (("itunes", "iTunes"), ("spotify", "Spotify")):
+            ttk.Radiobutton(
+                cover_source_row, text=label, value=value, variable=self.cover_source_var,
+                command=self._on_cover_source_changed,
+            ).pack(side="left", padx=(0, 15))
+
         ttk.Checkbutton(
-            behavior_frame, text="Search covers on SoundCloud", variable=self.use_soundcloud_var,
+            behavior_frame, text="Search covers on SoundCloud (fallback)", variable=self.use_soundcloud_var,
             command=self._on_use_soundcloud_changed,
-        ).pack(anchor="w", padx=10, pady=(10, 5))
+        ).pack(anchor="w", padx=10, pady=(5, 5))
         ttk.Checkbutton(
             behavior_frame, text="Convert everything to MP3 (320 kbps)", variable=self.auto_convert_var,
             command=self._on_auto_convert_changed,
@@ -839,6 +872,10 @@ class TaggerInterface:
 
         ttk.Button(
             soundcloud_tab, text="SoundCloud credentials...", command=self._show_soundcloud_credentials_dialog,
+        ).pack(fill="x", padx=10, pady=(0, 5))
+
+        ttk.Button(
+            soundcloud_tab, text="Spotify credentials...", command=self._show_spotify_credentials_dialog,
         ).pack(fill="x", padx=10, pady=(0, 10))
 
         self.check_update_button = ttk.Button(
@@ -995,6 +1032,86 @@ class TaggerInterface:
         ).pack(side="left", fill="x", expand=True)
 
         self._update_soundcloud_save_state()
+
+        ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=(0, 15))
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+
+        self._center_dialog(dialog)
+
+    def _update_spotify_save_state(self, event=None):
+        id_value = self.sp_client_id_entry.get().strip()
+        secret_value = self.sp_client_secret_entry.get().strip()
+        both_filled = bool(id_value) and bool(secret_value)
+        both_empty = not id_value and not secret_value
+        self.sp_save_button.configure(state="normal" if (both_filled or both_empty) else "disabled")
+
+    def _save_spotify_credentials(self):
+        client_id = self.sp_client_id_entry.get().strip()
+        client_secret = self.sp_client_secret_entry.get().strip()
+
+        try:
+            with open(tagger.SPOTIFY_CLIENT_ID_FILE, "w", encoding="utf-8") as f:
+                f.write(client_id)
+            with open(tagger.SPOTIFY_CLIENT_SECRET_FILE, "w", encoding="utf-8") as f:
+                f.write(client_secret)
+
+            tagger.SPOTIFY_CLIENT_ID = client_id or None
+            tagger.SPOTIFY_CLIENT_SECRET = client_secret or None
+            tagger.invalidate_spotify_token()  # in case the credentials changed
+
+            messagebox.showinfo("Saved", "Spotify credentials saved.", parent=self._spotify_dialog)
+        except Exception as error:
+            messagebox.showerror("Error", f"Could not save credentials: {error}", parent=self._spotify_dialog)
+
+    def _open_spotify_registration(self):
+        webbrowser.open("https://developer.spotify.com/dashboard")
+
+    def _show_spotify_credentials_dialog(self):
+        dialog = tk.Toplevel(self.window)
+        self._style_toplevel(dialog)
+        dialog.title("Spotify credentials")
+        dialog.resizable(False, False)
+        dialog.transient(self.window)
+        dialog.grab_set()
+        self._spotify_dialog = dialog
+
+        ttk.Label(
+            dialog,
+            text="Spotify requires registering an app yourself (free, at the link below).\n"
+                 "Any Redirect URI works (it's never actually used) - paste the Client ID / "
+                 "Client Secret you get from that page below.",
+            justify="left",
+            wraplength=440,
+        ).pack(anchor="w", padx=10, pady=(15, 10))
+
+        ttk.Label(dialog, text="Client ID:").pack(anchor="w", padx=10)
+        self.sp_client_id_entry = ttk.Entry(dialog)
+        self.sp_client_id_entry.pack(fill="x", padx=10, pady=(0, 10))
+        self.sp_client_id_entry.bind("<KeyRelease>", self._update_spotify_save_state)
+        self._bind_entry_context_menu(self.sp_client_id_entry)
+        if tagger.SPOTIFY_CLIENT_ID:
+            self.sp_client_id_entry.insert(0, tagger.SPOTIFY_CLIENT_ID)
+
+        ttk.Label(dialog, text="Client Secret:").pack(anchor="w", padx=10)
+        self.sp_client_secret_entry = ttk.Entry(dialog, show="*")
+        self.sp_client_secret_entry.pack(fill="x", padx=10, pady=(0, 15))
+        self.sp_client_secret_entry.bind("<KeyRelease>", self._update_spotify_save_state)
+        self._bind_entry_context_menu(self.sp_client_secret_entry)
+        if tagger.SPOTIFY_CLIENT_SECRET:
+            self.sp_client_secret_entry.insert(0, tagger.SPOTIFY_CLIENT_SECRET)
+
+        spotify_buttons_frame = ttk.Frame(dialog)
+        spotify_buttons_frame.pack(fill="x", padx=10, pady=(0, 10))
+        self.sp_save_button = ttk.Button(
+            spotify_buttons_frame, text="Save", command=self._save_spotify_credentials
+        )
+        self.sp_save_button.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        ttk.Button(
+            spotify_buttons_frame, text="Register a Spotify app",
+            command=self._open_spotify_registration,
+        ).pack(side="left", fill="x", expand=True)
+
+        self._update_spotify_save_state()
 
         ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=(0, 15))
         dialog.bind("<Escape>", lambda _event: dialog.destroy())
@@ -1668,9 +1785,9 @@ class TaggerInterface:
         dialog.resizable(False, False)
         dialog.transient(self.window)
 
-        # Covers are typically already small (iTunes/SoundCloud artwork rarely
-        # exceeds ~600px) - cap the popup size without upscaling anything past
-        # its native resolution.
+        # Covers are typically already small (iTunes/Spotify/SoundCloud
+        # artwork rarely exceeds ~600px) - cap the popup size without
+        # upscaling anything past its native resolution.
         max_size = (500, 500)
 
         image_label = ttk.Label(dialog)
