@@ -75,6 +75,29 @@ def user_config_dir():
 CLIENT_ID_FILE = os.path.join(user_config_dir(), "clientID.txt")
 CLIENT_SECRET_FILE = os.path.join(user_config_dir(), "clientSecret.txt")
 HISTORY_FILE = os.path.join(user_config_dir(), "history.jsonl")
+SETTINGS_FILE = os.path.join(user_config_dir(), "settings.json")
+
+
+def load_settings():
+    """Returns the saved UI settings (e.g. theme choice) as a dict, or {} if none saved yet."""
+    if not os.path.exists(SETTINGS_FILE):
+        return {}
+    try:
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_setting(key, value):
+    """Persists a single UI setting, keeping whatever else was already saved."""
+    settings = load_settings()
+    settings[key] = value
+    try:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+    except Exception as error:
+        print(f"  Could not save setting '{key}': {error}")
 
 
 def log_history_entry(old_file, new_file, old_artist, old_title, new_artist, new_title,
