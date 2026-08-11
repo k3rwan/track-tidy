@@ -1,9 +1,9 @@
 """
 Organizes tags (Artist/Title/Cover) for audio files based on the filename,
-and fetches a cover online (iTunes or Spotify - whichever is picked as the
-primary source - with SoundCloud as the fallback for either). Any format
-other than MP3 (WAV, FLAC, AAC, M4A, OGG, WMA, AIFF, OPUS...) is converted
-to MP3 (320 kbps) before tagging.
+and fetches a cover online from whichever of iTunes/Spotify/SoundCloud are
+enabled (each independently, in that priority order). Any format other than
+MP3 (WAV, FLAC, AAC, M4A, OGG, WMA, AIFF, OPUS...) is converted to MP3
+(320 kbps) before tagging.
 
 Expected filename format: "Artist - Title.ext"
 
@@ -11,9 +11,10 @@ Contents (in the order they appear below):
     1. Configuration & credentials       - path helpers (app_base_dir,
                                             user_config_dir); SoundCloud and
                                             Spotify credentials;
-                                            PRIMARY_COVER_SOURCE;
-                                            APP_VERSION, the update check,
-                                            and downloading the installer;
+                                            USE_ITUNES/USE_SPOTIFY/
+                                            USE_SOUNDCLOUD; APP_VERSION,
+                                            the update check, and
+                                            downloading the installer;
                                             track reporting (Discord
                                             webhook); saved UI settings
                                             (theme...); the processing
@@ -466,18 +467,19 @@ SUPPORTED_EXTENSIONS = (
 # List of mentions to automatically strip out (add more if needed)
 MENTIONS_TO_REMOVE = []
 
-# Whether SoundCloud is used as a cover source at all (set by the UI) - lets
-# the user opt out entirely to conserve SoundCloud's request quota.
+# Which cover sources are enabled (each set independently by the UI) - all
+# three default to what always worked before Spotify existed (iTunes +
+# SoundCloud on, Spotify off). Whichever are enabled are tried in a fixed
+# priority order: iTunes, then Spotify, then SoundCloud - see
+# _search_one_source() / scan_one_file().
+USE_ITUNES = True
+USE_SPOTIFY = False
 USE_SOUNDCLOUD = True
 
 # Whether non-MP3 files get converted to MP3 (320 kbps) automatically (set by
 # the UI). When off, WAV files (the only format taggable without converting)
 # are skipped during scanning instead of being tagged in place.
 AUTO_CONVERT_MP3 = True
-
-# Which source is tried first for a cover match (set by the UI) - "itunes"
-# or "spotify". SoundCloud always remains the fallback for either choice.
-PRIMARY_COVER_SOURCE = "itunes"
 
 
 # ============================================================================
@@ -1047,29 +1049,34 @@ def detect_parenthetical_mentions(text):
 # 7. SCANNING (READ-ONLY)
 # ============================================================================
 
-def _search_primary_cover(artist, search_title, remix_qualified_title, spotify_token, log):
+def _search_one_source(source, artist, search_title, remix_qualified_title, spotify_token, soundcloud_token, log):
     """
-    Tries the currently-selected primary cover source (PRIMARY_COVER_SOURCE:
-    "itunes" or "spotify") with the plain (parens-stripped) title, then
-    retries with the remix qualifier kept in the query if that didn't find
-    anything and the two titles actually differ (e.g. a heavily-remixed
-    song where the plain query ranks a different remix first). Returns
-    (match_result, source_name) - source_name is None when nothing matched.
+    Tries a single cover source, using that provider's own established
+    query strategy:
+    - iTunes/Spotify: the plain (parens-stripped) title first, then a
+      retry with the remix qualifier kept in the query if that misses and
+      the two titles actually differ (e.g. a heavily-remixed song where
+      the plain query ranks a different remix first).
+    - SoundCloud: goes straight for the remix-qualified title, since
+      remixes/edits live there more often than a plain search would find.
+    Returns (match_result, source_label) - source_label is None when
+    nothing matched.
     """
-    if PRIMARY_COVER_SOURCE == "spotify":
-        source_name = "Spotify"
-        match_result = search_cover_spotify(artist, search_title, spotify_token, log=log)
-    else:
-        source_name = "iTunes"
+    if source == "itunes":
         match_result = search_cover_itunes(artist, search_title, log=log)
-
-    if not match_result and remix_qualified_title != search_title:
-        if PRIMARY_COVER_SOURCE == "spotify":
-            match_result = search_cover_spotify(artist, remix_qualified_title, spotify_token, log=log)
-        else:
+        if not match_result and remix_qualified_title != search_title:
             match_result = search_cover_itunes(artist, remix_qualified_title, log=log, allow_loose_remix_match=True)
+        return match_result, ("iTunes" if match_result else None)
 
-    return match_result, (source_name if match_result else None)
+    if source == "spotify":
+        match_result = search_cover_spotify(artist, search_title, spotify_token, log=log)
+        if not match_result and remix_qualified_title != search_title:
+            match_result = search_cover_spotify(artist, remix_qualified_title, spotify_token, log=log)
+        return match_result, ("Spotify" if match_result else None)
+
+    # source == "soundcloud"
+    match_result = search_cover_soundcloud(artist, remix_qualified_title, soundcloud_token, log=log)
+    return match_result, ("SoundCloud" if match_result else None)
 
 
 def scan_one_file(file_name, soundcloud_token, spotify_token=None, log=safe_print, on_new_mention=None):
@@ -1110,20 +1117,22 @@ def scan_one_file(file_name, soundcloud_token, spotify_token=None, log=safe_prin
         has_parenthetical = search_title != search_source_title
         remix_qualified_title = strip_trailing_noise_words(search_source_title) if has_parenthetical else search_title
 
-        # Primary source (iTunes or Spotify, picked in Settings) first -
-        # SoundCloud is only queried as a fallback, to conserve its request
-        # quota.
-        match_result, cover_source = _search_primary_cover(
-            search_source_artist, search_title, remix_qualified_title, spotify_token, log
-        )
-
-        if not match_result and not SOUNDCLOUD_RATE_LIMITED and not SOUNDCLOUD_UNAVAILABLE:
-            soundcloud_title = strip_trailing_noise_words(search_source_title)
-            match_result = search_cover_soundcloud(
-                search_source_artist, soundcloud_title, soundcloud_token, log=log
+        # Tries each enabled source in a fixed priority order, stopping at
+        # the first match.
+        match_result = None
+        for source, enabled in (
+            ("itunes", USE_ITUNES),
+            ("spotify", USE_SPOTIFY),
+            ("soundcloud", USE_SOUNDCLOUD and not SOUNDCLOUD_RATE_LIMITED and not SOUNDCLOUD_UNAVAILABLE),
+        ):
+            if not enabled:
+                continue
+            match_result, cover_source = _search_one_source(
+                source, search_source_artist, search_title, remix_qualified_title,
+                spotify_token, soundcloud_token, log,
             )
             if match_result:
-                cover_source = "SoundCloud"
+                break
 
         if match_result:
             found_cover_image, returned_artist, returned_title = match_result
@@ -1206,9 +1215,9 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
 
         soundcloud_token = get_soundcloud_token(log=log, on_rate_limited=_mark_rate_limited)
 
-    # Only bother authenticating with Spotify if it's actually the primary
-    # source for this run - no point for a scan that'll never call it.
-    spotify_token = get_spotify_token(log=log) if PRIMARY_COVER_SOURCE == "spotify" else None
+    # Only bother authenticating with Spotify if it's actually enabled for
+    # this run - no point for a scan that'll never call it.
+    spotify_token = get_spotify_token(log=log) if USE_SPOTIFY else None
 
     results = []
 
