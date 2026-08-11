@@ -51,13 +51,13 @@ def resource_path(filename):
         base = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base, filename)
 
-# Plain ASCII rather than a Unicode checkbox glyph (☑/☐) - Windows renders
-# those inconsistently: a thin outline in the native ttk column header vs. a
-# solid black emoji-style box in table cells (same character, different font
-# fallback per rendering path, and ttk gives no way to force the two to
-# match). ASCII has no such ambiguity, so header and cells always agree.
-CHECKED_BOX = "[x]"
-EMPTY_BOX = "[ ]"
+# A filled/outline square rather than a checkmark-in-box glyph (☑/☐) -
+# Windows renders that one inconsistently: a thin outline in the native ttk
+# column header vs. a solid black emoji-style box in table cells (same
+# character, different font fallback per rendering path). ■/□ don't have
+# an emoji-color variant, so header and cells always render identically.
+CHECKED_BOX = "■"
+EMPTY_BOX = "□"
 PROCESSED_CHECK = "✔"
 
 THUMBNAIL_SIZE = (44, 44)
