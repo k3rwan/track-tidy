@@ -425,5 +425,18 @@ class VersionParsingTests(unittest.TestCase):
         self.assertTrue(tagger.parse_version("v0.2") == tagger.parse_version("0.2"))
 
 
+class SafePrintTests(unittest.TestCase):
+    def test_safe_print_does_not_raise_on_emoji(self):
+        # A Windows console using a legacy codepage (cp1252 etc.) can't
+        # encode emoji/astral characters - a SoundCloud username or track
+        # title containing one used to crash the whole search via a bare
+        # print(). safe_print() must never raise regardless of the actual
+        # console encoding in whatever environment runs this test.
+        try:
+            tagger.safe_print("Uploader: \U0001f31e Sun Guy")
+        except UnicodeEncodeError:
+            self.fail("safe_print() should never raise UnicodeEncodeError")
+
+
 if __name__ == "__main__":
     unittest.main()
