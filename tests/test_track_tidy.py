@@ -130,6 +130,11 @@ class ArtistMatchingTests(unittest.TestCase):
     def test_artist_names_match_no_returned_artist(self):
         self.assertFalse(tagger.artist_names_match("Vegedream", ""))
 
+    def test_artist_names_match_tolerates_missing_spaces(self):
+        # e.g. a SoundCloud username/handle that drops spaces entirely
+        self.assertTrue(tagger.artist_names_match("Boltron, Spicy Market", "SpicyMarket"))
+        self.assertTrue(tagger.artist_names_match("Spicy Market", "SpicyMarket"))
+
     def test_strip_sanitized_chars_removes_forbidden_windows_chars_and_underscore(self):
         self.assertEqual(tagger.strip_sanitized_chars('blond_ish'), "blondish")
         self.assertEqual(tagger.strip_sanitized_chars('blond:ish'), "blondish")
