@@ -42,6 +42,6 @@ It also relies on `ffmpeg.exe` being present next to the script for format conve
 
 ```bash
 python -m venv venv
-venv\Scripts\pip install mutagen requests pillow
+venv\Scripts\pip install -r requirements.txt
 venv\Scripts\python interface.py
 ```
