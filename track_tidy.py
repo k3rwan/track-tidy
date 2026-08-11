@@ -10,9 +10,11 @@ Contents (in the order they appear below):
     1. Configuration & credentials       - path helpers (app_base_dir,
                                             user_config_dir); SoundCloud
                                             credentials; APP_VERSION and the
-                                            update check; saved UI settings
-                                            (theme...); the processing
-                                            history log; MUSIC_FOLDER,
+                                            update check; track reporting
+                                            (Discord webhook); saved UI
+                                            settings (theme...); the
+                                            processing history log;
+                                            MUSIC_FOLDER,
                                             SUPPORTED_EXTENSIONS,
                                             MENTIONS_TO_REMOVE
     2. Filename & title cleaning          - clean_title, parse_filename, and every
@@ -177,6 +179,51 @@ def check_for_update(log=print, timeout=5):
     except Exception as error:
         log(f"  [Update check] Failed: {error}")
         return False, None, None, None
+
+
+# --- Reporting a track (user -> developer, via Discord) ---
+
+DISCORD_REPORT_WEBHOOK_URL = "https://discord.com/api/webhooks/1536761165206782033/qPcjNi9XPi5aqWYLQ_IbrI9UoxHydX1SN5IAbTTEH975_dg6vSfrsrqR81DLUtQrE8Yj"
+
+
+def send_track_report(info, comment=None, timeout=10):
+    """
+    Posts this track's info to a Discord webhook, so the developer gets a
+    notification for tracks users flag as wrong/problematic (e.g. no cover
+    found) - a lightweight way to collect real-world matching failures to
+    fix later. Returns True on success, False on any failure (never raises -
+    a failed report shouldn't disrupt the user).
+    """
+    fields = [
+        {"name": "File", "value": info.get("file") or "(unknown)", "inline": False},
+        {
+            "name": "Current tags",
+            "value": f"{info.get('current_artist') or '?'} - {info.get('current_title') or '?'}",
+            "inline": False,
+        },
+        {
+            "name": "Suggested tags",
+            "value": f"{info.get('detected_artist') or '?'} - {info.get('detected_title') or '?'}",
+            "inline": False,
+        },
+        {
+            "name": "Cover",
+            "value": f"has existing cover: {info.get('has_cover')} | online match: {info.get('cover_source') or 'none'}",
+            "inline": False,
+        },
+        {"name": "Format", "value": info.get("format") or "?", "inline": True},
+        {"name": "App version", "value": APP_VERSION, "inline": True},
+    ]
+    if comment:
+        fields.append({"name": "Comment", "value": comment, "inline": False})
+
+    payload = {"embeds": [{"title": "Track reported", "color": 0xE74C3C, "fields": fields}]}
+
+    try:
+        response = requests.post(DISCORD_REPORT_WEBHOOK_URL, json=payload, timeout=timeout)
+        return response.status_code in (200, 204)
+    except Exception:
+        return False
 
 
 # --- Saved UI settings (theme choice...) ---
