@@ -212,7 +212,7 @@ HISTORY_FILE = os.path.join(user_config_dir(), "history.jsonl")
 
 
 def log_history_entry(old_file, new_file, old_artist, old_title, new_artist, new_title,
-                       cover_updated, converted):
+                       cover_updated, converted, folder=None, old_cover_bytes=None):
     """
     Appends one line of JSON to HISTORY_FILE for a file that was actually
     processed (tags written and/or renamed), keeping a permanent record of
@@ -220,9 +220,16 @@ def log_history_entry(old_file, new_file, old_artist, old_title, new_artist, new
     itself, which files get moved/deleted from over time.
     One file per line (JSON Lines) so appending never requires re-reading or
     re-writing the whole history.
+
+    folder (the absolute path files were processed FROM) and old_cover_bytes
+    (the cover as it was before this run, if any) are what make
+    restore_history_entry() possible later - MUSIC_FOLDER itself isn't
+    reliable for that since the user may since have scanned a different
+    folder entirely.
     """
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "folder": folder,
         "old_file": old_file,
         "new_file": new_file,
         "old_artist": old_artist,
@@ -231,12 +238,66 @@ def log_history_entry(old_file, new_file, old_artist, old_title, new_artist, new
         "new_title": new_title,
         "cover_updated": cover_updated,
         "converted": converted,
+        "old_cover_b64": base64.b64encode(old_cover_bytes).decode("ascii") if old_cover_bytes else None,
     }
     try:
         with open(HISTORY_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception as error:
         print(f"  Could not write history entry: {error}")
+
+
+def restore_history_entry(entry, log=print):
+    """
+    Restores a file's artist/title/cover to what they were before a previous
+    run changed them (a history.jsonl entry from load_history_entries()).
+
+    Locates the file via the entry's own logged folder + its current
+    (new_file) relative path - NOT the global MUSIC_FOLDER, since the user
+    may have scanned a different folder since this entry was logged.
+
+    The file itself keeps its current format/extension (a WAV->MP3
+    conversion isn't reversible - the original file is gone), but is renamed
+    to match the restored artist/title if both are known.
+
+    Returns the file's new relative path (unchanged if it wasn't renamed).
+    Raises FileNotFoundError if the file can't be located, or ValueError if
+    this entry predates the "folder" field and can't be resolved at all.
+    """
+    folder = entry.get("folder")
+    if not folder:
+        raise ValueError("This entry has no folder recorded (logged by an older version) - can't locate the file.")
+
+    current_relative = entry.get("new_file")
+    full_path = os.path.join(folder, current_relative)
+    if not os.path.exists(full_path):
+        raise FileNotFoundError(f"File not found: {full_path}")
+
+    old_artist = entry.get("old_artist") or ""
+    old_title = entry.get("old_title") or ""
+    old_cover_b64 = entry.get("old_cover_b64")
+    old_cover_bytes = base64.b64decode(old_cover_b64) if old_cover_b64 else None
+
+    write_tags(
+        full_path, old_artist, old_title, cover_image=old_cover_bytes,
+        force_remove_if_missing=True,  # no old cover logged -> remove whatever cover is there now
+        update_title=bool(old_title), update_artist=bool(old_artist), update_cover=True,
+    )
+    log(f"  Restored tags on: '{current_relative}'")
+
+    if old_artist and old_title:
+        folder_part = os.path.dirname(current_relative)
+        extension = os.path.splitext(current_relative)[1]
+        new_base_name = sanitize_filename(build_display_name(old_artist, old_title)) + extension
+        new_name = os.path.join(folder_part, new_base_name) if folder_part else new_base_name
+        new_full_path = os.path.join(folder, new_name)
+
+        if new_full_path != full_path:
+            os.rename(full_path, new_full_path)
+            log(f"  Restored and renamed to: '{new_name}'")
+            return new_name
+
+    return current_relative
 
 
 def load_history_entries():
@@ -1562,6 +1623,8 @@ def process_files(plan, log=print, on_progress=None, on_file_processed=None, sho
             new_title=title if update_title else info.get("current_title"),
             cover_updated=bool(update_cover and (cover_image or force_remove_if_missing)),
             converted=converted_this_file,
+            folder=os.path.abspath(MUSIC_FOLDER) if MUSIC_FOLDER else None,
+            old_cover_bytes=info.get("current_cover_bytes") if info.get("has_cover") else None,
         )
 
         if update_cover and cover_image:
