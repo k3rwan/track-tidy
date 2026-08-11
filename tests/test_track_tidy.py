@@ -96,6 +96,9 @@ class ExactMatchTests(unittest.TestCase):
     def test_different_text_not_equal(self):
         self.assertFalse(tagger.exact_match("Astronomia", "Astronomia (Remix)"))
 
+    def test_accent_insensitive(self):
+        self.assertTrue(tagger.exact_match("Ete", "Été"))
+
 
 class ArtistMatchingTests(unittest.TestCase):
     def test_split_artist_names_common_separators(self):
@@ -136,6 +139,19 @@ class ArtistMatchingTests(unittest.TestCase):
 
     def test_artist_names_match_tolerates_sanitized_colon(self):
         self.assertTrue(tagger.artist_names_match("BLOND_ISH", "BLOND:ISH, Francis Mercier"))
+
+    def test_strip_accents(self):
+        self.assertEqual(tagger.strip_accents("Bolémvn"), "Bolemvn")
+        self.assertEqual(tagger.strip_accents("Été"), "Ete")
+        self.assertEqual(tagger.strip_accents("Plain"), "Plain")
+
+    def test_artist_sets_match_tolerates_missing_accent(self):
+        # Our tag/filename dropped the accent ("Bolemvn"), but iTunes' real
+        # credit has it ("Bolémvn") - same artist.
+        self.assertTrue(tagger.artist_sets_match("Bolemvn, Jungeli", "Bolémvn & Jungeli"))
+
+    def test_artist_names_match_tolerates_missing_accent(self):
+        self.assertTrue(tagger.artist_names_match("Bolemvn", "Bolémvn & Jungeli"))
 
     def test_extract_feature_names_from_title_suffix(self):
         self.assertEqual(tagger.extract_feature_names("Gucci Slides (feat. Kxne)"), {"kxne"})
