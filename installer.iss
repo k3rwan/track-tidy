@@ -24,6 +24,11 @@ OutputBaseFilename=Track-Tidy-Setup-v{#MyAppVersion}
 Compression=lzma
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible
+; Safety net for the in-app updater: it closes the app itself before
+; launching Setup, but if that's ever skipped/too slow, this lets Setup
+; close (and relaunch) it instead of failing to overwrite locked files.
+CloseApplications=yes
+RestartApplications=yes
 
 [Files]
 Source: "dist\Track-Tidy\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
