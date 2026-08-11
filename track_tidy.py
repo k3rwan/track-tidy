@@ -142,6 +142,11 @@ if _id_txt_client_id and _id_txt_client_secret:
     SOUNDCLOUD_CLIENT_ID = _id_txt_client_id
     SOUNDCLOUD_CLIENT_SECRET = _id_txt_client_secret
 
+# Single source of truth for the app's version - shown in the GUI and used to
+# check for updates. Bump this (and installer.iss's MyAppVersion) on release.
+APP_VERSION = "0.2"
+GITHUB_REPO = "k3rwan/track-tidy"
+
 # Folder containing the audio files to process
 MUSIC_FOLDER = ""
 
@@ -633,6 +638,55 @@ def get_audio_duration(file_path):
     except Exception:
         pass
     return None
+
+
+def parse_version(version_string):
+    """
+    Parses a version like "v1.2.3" or "1.2" into a tuple of ints, e.g.
+    (1, 2, 3), so versions can be compared with plain tuple comparison.
+    Non-numeric/missing parts become 0 rather than raising.
+    """
+    cleaned = (version_string or "").strip().lstrip("vV")
+    parts = []
+    for part in cleaned.split("."):
+        match = re.match(r"\d+", part)
+        parts.append(int(match.group()) if match else 0)
+    return tuple(parts) or (0,)
+
+
+def check_for_update(log=print, timeout=5):
+    """
+    Checks GitHub for the latest release of GITHUB_REPO and compares it to
+    APP_VERSION. Returns (is_newer, latest_version, release_url,
+    installer_download_url) - or (False, None, None, None) on any failure
+    (offline, GitHub down, rate-limited...), since this check should never
+    block or crash the app over a network hiccup.
+    """
+    try:
+        response = requests.get(
+            f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+            timeout=timeout,
+        )
+        if response.status_code != 200:
+            log(f"  [Update check] GitHub returned HTTP {response.status_code}")
+            return False, None, None, None
+
+        data = response.json()
+        latest_tag = data.get("tag_name", "")
+        release_url = data.get("html_url") or f"https://github.com/{GITHUB_REPO}/releases/latest"
+
+        installer_url = None
+        for asset in data.get("assets", []):
+            if asset.get("name", "").lower().endswith(".exe"):
+                installer_url = asset.get("browser_download_url")
+                break
+
+        is_newer = parse_version(latest_tag) > parse_version(APP_VERSION)
+        return is_newer, latest_tag, release_url, installer_url
+
+    except Exception as error:
+        log(f"  [Update check] Failed: {error}")
+        return False, None, None, None
 
 
 def find_dot_underscore_duplicates(file_list):

@@ -19,6 +19,7 @@ import subprocess
 import threading
 import queue
 import winsound
+import webbrowser
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox
 from PIL import Image, ImageTk
@@ -128,6 +129,16 @@ class TaggerInterface:
         self._adjust_window_height()
         self._start_message_loop()
         self._check_soundcloud_credentials_on_startup()
+        self._check_for_update_on_startup()
+
+    def _check_for_update_on_startup(self):
+        def _run_check():
+            is_newer, latest_version, release_url, installer_url = tagger.check_for_update()
+            if is_newer:
+                self.message_queue.put(("update_available", (latest_version, release_url, installer_url)))
+
+        thread = threading.Thread(target=_run_check, daemon=True)
+        thread.start()
 
     def _check_soundcloud_credentials_on_startup(self):
         if not tagger.SOUNDCLOUD_CLIENT_ID or not tagger.SOUNDCLOUD_CLIENT_SECRET:
@@ -218,7 +229,7 @@ class TaggerInterface:
         self.notebook = ttk.Notebook(self.window)
         self.notebook.pack(fill="both", expand=True)
 
-        version_label = ttk.Label(self.window, text="v0.2", foreground="#999999")
+        version_label = ttk.Label(self.window, text=f"v{tagger.APP_VERSION}", foreground="#999999")
         version_label.place(relx=1.0, rely=1.0, x=-6, y=-4, anchor="se")
 
         tagger_tab = ttk.Frame(self.notebook)
@@ -1343,6 +1354,16 @@ class TaggerInterface:
                             os.startfile(folder)
                         except Exception:
                             pass
+
+                elif message_type == "update_available":
+                    latest_version, release_url, installer_url = content
+                    open_page = messagebox.askyesno(
+                        "Update available",
+                        f"A new version ({latest_version}) of Track-Tidy is available "
+                        f"(you have v{tagger.APP_VERSION}).\n\nOpen the download page?"
+                    )
+                    if open_page:
+                        webbrowser.open(installer_url or release_url)
 
                 elif message_type == "file_processed":
                     identifier = content
