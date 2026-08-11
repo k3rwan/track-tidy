@@ -653,7 +653,7 @@ class TaggerInterface:
         self._bind_entry_context_menu(self.table_filter_entry)
 
         scrollbars_frame = ttk.Frame(table_frame)
-        scrollbars_frame.pack(fill="both", expand=True, padx=(10, 0), pady=10)
+        scrollbars_frame.pack(fill="both", expand=True, padx=(10, 0), pady=(2, 10))
 
         # show="tree headings": the native "#0" column (far left) shows ONLY the cover
         self.table = ttk.Treeview(scrollbars_frame, columns=COLUMNS, show="tree headings", height=8)
