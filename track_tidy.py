@@ -1173,7 +1173,7 @@ def strip_generic_mix_suffix(text):
     return text
 
 
-FEATURE_SUFFIX_RE = re.compile(r"\s*[\(\[](?:feat\.?|ft\.?|featuring)\s+[^)\]]*[\)\]]\s*$", re.IGNORECASE)
+FEATURE_SUFFIX_RE = re.compile(r"\s*[\(\[](?:feat\.?|ft\.?|featuring)\s+([^)\]]*)[\)\]]\s*$", re.IGNORECASE)
 
 
 def strip_feature_suffix(text):
@@ -1184,6 +1184,21 @@ def strip_feature_suffix(text):
     shouldn't by itself count as a mismatch.
     """
     return FEATURE_SUFFIX_RE.sub("", text).strip()
+
+
+def extract_feature_names(text):
+    """
+    Returns the artist name(s) inside a trailing "(feat. X)" / "(ft. X)" /
+    "[featuring X]" credit (split the same way a multi-artist field would
+    be), or an empty set if there isn't one. A store often credits the
+    featured artist only in the title, not the artist field, while our own
+    tags/filename list every artist together in the artist field - folding
+    this into the returned artist set avoids treating that as a mismatch.
+    """
+    match = FEATURE_SUFFIX_RE.search(text)
+    if not match:
+        return set()
+    return split_artist_names(match.group(1))
 
 
 def exact_match(text_a, text_b):
@@ -1214,12 +1229,17 @@ def split_artist_names(text):
     return {strip_sanitized_chars(p.strip().lower()) for p in parts if p.strip()}
 
 
-def artist_sets_match(expected_artist, returned_artist):
+def artist_sets_match(expected_artist, returned_artist, returned_title=""):
     """
     Exact match for a list of artists, ignoring order and separator style
     (e.g. "A, B, C" vs "C & A x B" are considered the same set of artists).
+    If returned_title is given, a featured artist credited only there (e.g.
+    "Title (feat. X)") is folded into the returned artist set too - some
+    stores split primary vs. featured artist across the two fields, while
+    our own tags/filename usually list everyone in the artist field.
     """
-    return split_artist_names(expected_artist) == split_artist_names(returned_artist)
+    returned_names = split_artist_names(returned_artist) | extract_feature_names(returned_title)
+    return split_artist_names(expected_artist) == returned_names
 
 
 def artist_names_match(expected_artist, returned_artist):
@@ -1351,7 +1371,7 @@ def search_cover_itunes(artist, title, log=print, max_retries=2):
         title_normalized = strip_feature_suffix(strip_generic_mix_suffix(title))
         returned_title_normalized = strip_feature_suffix(strip_generic_mix_suffix(returned_title))
 
-        artist_ok = artist_sets_match(artist, returned_artist) and exact_match(title_normalized, returned_title_normalized)
+        artist_ok = artist_sets_match(artist, returned_artist, returned_title) and exact_match(title_normalized, returned_title_normalized)
         swapped_ok = exact_match(title, returned_artist) and artist_sets_match(artist, returned_title_normalized)
 
         if not (artist_ok or swapped_ok):
