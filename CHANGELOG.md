@@ -59,6 +59,13 @@ on [Keep a Changelog](https://keepachangelog.com/).
 - The progress bar's completion text is now "Done ✓" instead of "Done ✅" -
   a plain checkmark character instead of a colorful emoji that doesn't
   adapt to theme.
+- History window: split the combined "Artist - Title" column into separate
+  Artist and Title columns.
+- History window: only the old-info (parent) row of each entry can be
+  selected now - clicking (or ctrl/shift-clicking) the "Applied" child row
+  selects its parent instead, since Restore always acts on the old info.
+  `Ctrl+A` selects every entry. "Restore selected" now restores all
+  selected entries at once, with a summary if any fail.
 
 ## [0.3]
 
