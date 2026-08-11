@@ -20,9 +20,10 @@ import threading
 import queue
 import winsound
 import webbrowser
+from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageDraw
 
 # When launched via pythonw.exe (no console), sys.stdout/stderr are None.
 # Any leftover print() call would then crash with AttributeError. Redirect
@@ -149,6 +150,9 @@ class TaggerInterface:
         self.cancel_requested = threading.Event()
         self.scanned_plan = []
         self.tk_images = {}  # keeps a reference to PhotoImages (otherwise Tkinter clears them)
+        self.tk_images_hover = {}  # same thumbnails, with a magnifier badge - built lazily on first hover
+        self._thumbnail_pil_images = {}  # pre-PhotoImage PIL images, so the hover badge can be composited cheaply
+        self._hovered_cover_row = None
         self.soundcloud_rate_limit_warned = False
         self.mention_counts = {}  # raw mention text -> number of times seen
 
@@ -180,6 +184,17 @@ class TaggerInterface:
             dialog.configure(bg=self.theme_colors["bg"])
         dialog.update_idletasks()  # make sure the native HWND exists before DwmSetWindowAttribute
         self._set_titlebar_dark(dialog, bool(self.theme_colors))
+
+    def _center_dialog(self, dialog):
+        """Centers a dialog over the main window, clamped to stay fully
+        on-screen - a dialog wider/taller than the main window (e.g. the
+        history table) would otherwise end up centered partly off-screen."""
+        dialog.update_idletasks()
+        x = self.window.winfo_x() + (self.window.winfo_width() - dialog.winfo_width()) // 2
+        y = self.window.winfo_y() + (self.window.winfo_height() - dialog.winfo_height()) // 2
+        x = max(0, min(x, dialog.winfo_screenwidth() - dialog.winfo_width()))
+        y = max(0, min(y, dialog.winfo_screenheight() - dialog.winfo_height()))
+        dialog.geometry(f"+{x}+{y}")
 
     def _apply_theme(self, choice):
         dark = choice == "dark"
@@ -387,6 +402,8 @@ class TaggerInterface:
             for row in self.table.get_children():
                 self.table.delete(row)
             self.tk_images.clear()
+            self.tk_images_hover.clear()
+            self._thumbnail_pil_images.clear()
             self.scanned_plan = []
             self.last_scanned_folder = folder
 
@@ -562,6 +579,8 @@ class TaggerInterface:
         self.table.bind("<Double-1>", self._toggle_cell_double_click, add="+")
         self.table.bind("<Button-3>", self._show_context_menu)
         self.table.bind("<Delete>", self._delete_selected_rows)
+        self.table.bind("<Motion>", self._on_table_hover, add="+")
+        self.table.bind("<Leave>", self._on_table_leave, add="+")
 
         # --- Journal section (collapsible) ---
         self.journal_section_visible = False
@@ -637,7 +656,11 @@ class TaggerInterface:
         self.check_update_button = ttk.Button(
             soundcloud_tab, text="Check for updates", command=self._check_for_update_manual,
         )
-        self.check_update_button.pack(fill="x", padx=10, pady=(0, 10))
+        self.check_update_button.pack(fill="x", padx=10, pady=(0, 5))
+
+        ttk.Button(
+            soundcloud_tab, text="View processing history", command=self._show_history_window,
+        ).pack(fill="x", padx=10, pady=(0, 10))
 
         ttk.Label(
             soundcloud_tab,
@@ -921,6 +944,8 @@ class TaggerInterface:
         for row in self.table.get_children():
             self.table.delete(row)
         self.tk_images.clear()
+        self.tk_images_hover.clear()
+        self._thumbnail_pil_images.clear()
         self.scanned_plan = []
         self.last_scanned_folder = None
 
@@ -973,6 +998,8 @@ class TaggerInterface:
             for row in self.table.get_children():
                 self.table.delete(row)
             self.tk_images.clear()
+            self.tk_images_hover.clear()
+            self._thumbnail_pil_images.clear()
             self.scanned_plan = []
             self.last_scanned_folder = folder
 
@@ -1107,10 +1134,7 @@ class TaggerInterface:
         ).pack()
         ttk.Button(dialog, text="OK", command=dialog.destroy).pack(pady=(0, 15))
 
-        dialog.update_idletasks()
-        x = self.window.winfo_x() + (self.window.winfo_width() - dialog.winfo_width()) // 2
-        y = self.window.winfo_y() + (self.window.winfo_height() - dialog.winfo_height()) // 2
-        dialog.geometry(f"+{x}+{y}")
+        self._center_dialog(dialog)
 
     def _compute_processing_summary(self):
         """Counts, among the files actually processed in this session, how many
@@ -1176,10 +1200,7 @@ class TaggerInterface:
 
         ttk.Button(dialog, text="OK", command=dialog.destroy).pack(pady=(0, 15))
 
-        dialog.update_idletasks()
-        x = self.window.winfo_x() + (self.window.winfo_width() - dialog.winfo_width()) // 2
-        y = self.window.winfo_y() + (self.window.winfo_height() - dialog.winfo_height()) // 2
-        dialog.geometry(f"+{x}+{y}")
+        self._center_dialog(dialog)
 
     def _finalize_scan(self, result):
         removed_files, number_before = result
@@ -1190,6 +1211,8 @@ class TaggerInterface:
             if self.table.exists(file_name):
                 self.table.delete(file_name)
             self.tk_images.pop(file_name, None)
+            self.tk_images_hover.pop(file_name, None)
+            self._thumbnail_pil_images.pop(file_name, None)
         self.scanned_plan = [info for info in self.scanned_plan if info["file"] not in removed_files]
 
         number_new = len(self.scanned_plan) - number_before + len(removed_files)
@@ -1234,19 +1257,27 @@ class TaggerInterface:
             if self.table.exists(dot_file):
                 self.table.delete(dot_file)
             self.tk_images.pop(dot_file, None)
+            self.tk_images_hover.pop(dot_file, None)
+            self._thumbnail_pil_images.pop(dot_file, None)
             self.scanned_plan = [info for info in self.scanned_plan if info["file"] != dot_file]
 
     def _create_thumbnail(self, info):
         """Builds the cover thumbnail (image only, no checkbox)."""
         image_bytes = info["found_cover_image"] if info["apply_changes"] else info["current_cover_bytes"]
+        # Stale either way - regenerated lazily next time this row is hovered.
+        self.tk_images_hover.pop(info["file"], None)
+
         if not image_bytes:
+            self._thumbnail_pil_images.pop(info["file"], None)
             return None
 
         try:
             image = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
             image.thumbnail(THUMBNAIL_SIZE)
+            self._thumbnail_pil_images[info["file"]] = image
             return ImageTk.PhotoImage(image)
         except Exception:
+            self._thumbnail_pil_images.pop(info["file"], None)
             return None
 
     def _refresh_row(self, info):
@@ -1416,11 +1447,144 @@ class TaggerInterface:
         label.bind("<Button-1>", lambda _event: dialog.destroy())
         dialog.bind("<Escape>", lambda _event: dialog.destroy())
 
-        dialog.update_idletasks()
-        x = self.window.winfo_x() + (self.window.winfo_width() - dialog.winfo_width()) // 2
-        y = self.window.winfo_y() + (self.window.winfo_height() - dialog.winfo_height()) // 2
-        dialog.geometry(f"+{x}+{y}")
+        self._center_dialog(dialog)
         dialog.focus_set()
+
+    def _show_history_window(self):
+        """Settings -> 'View processing history': every file ever actually
+        processed (tagger.HISTORY_FILE), most recent first."""
+        entries = list(reversed(tagger.load_history_entries()))
+
+        dialog = tk.Toplevel(self.window)
+        self._style_toplevel(dialog)
+        dialog.title("Processing history")
+        dialog.geometry("900x420")
+        dialog.transient(self.window)
+
+        if not entries:
+            ttk.Label(dialog, text="No files have been processed yet.", padding=20).pack()
+            self._center_dialog(dialog)
+            return
+
+        columns = ("date", "old_file", "new_file", "old_tags", "new_tags", "cover", "converted")
+        headings = {
+            "date": "Date", "old_file": "Old file", "new_file": "New file",
+            "old_tags": "Old tags", "new_tags": "New tags", "cover": "Cover", "converted": "Converted",
+        }
+        widths = {
+            "date": 150, "old_file": 150, "new_file": 150,
+            "old_tags": 150, "new_tags": 150, "cover": 55, "converted": 65,
+        }
+
+        table_frame = ttk.Frame(dialog)
+        table_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=15)
+        for col in columns:
+            tree.heading(col, text=headings[col])
+            tree.column(col, width=widths[col], anchor="w")
+
+        for entry in entries:
+            timestamp = entry.get("timestamp", "")
+            try:
+                date_display = datetime.fromisoformat(timestamp).astimezone().strftime("%Y-%m-%d %H:%M")
+            except ValueError:
+                date_display = timestamp
+
+            old_tags = tagger.build_display_name(entry.get("old_artist") or "", entry.get("old_title") or "")
+            new_tags = tagger.build_display_name(entry.get("new_artist") or "", entry.get("new_title") or "")
+
+            tree.insert("", "end", values=(
+                date_display,
+                entry.get("old_file", ""),
+                entry.get("new_file", ""),
+                old_tags or "-",
+                new_tags or "-",
+                "Yes" if entry.get("cover_updated") else "No",
+                "Yes" if entry.get("converted") else "No",
+            ))
+
+        scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        tree.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="left", fill="y")
+
+        self._center_dialog(dialog)
+
+    def _get_hover_thumbnail(self, file_name):
+        """Lazily builds (and caches) the cover thumbnail with a small magnifier
+        badge, hinting that clicking it opens the full-size zoom popup."""
+        if file_name in self.tk_images_hover:
+            return self.tk_images_hover[file_name]
+
+        base_image = self._thumbnail_pil_images.get(file_name)
+        if base_image is None:
+            return None
+
+        badged = base_image.copy()
+        draw = ImageDraw.Draw(badged, "RGBA")
+        w, h = badged.size
+        badge_d = max(14, min(w, h) // 2)  # badge diameter
+        cx, cy = w - badge_d // 2 - 1, h - badge_d // 2 - 1
+
+        # Dark circle behind the glass, for contrast against any cover color.
+        draw.ellipse(
+            [cx - badge_d / 2, cy - badge_d / 2, cx + badge_d / 2, cy + badge_d / 2],
+            fill=(0, 0, 0, 170),
+        )
+        # Magnifying glass: lens (circle outline) + handle (short diagonal line).
+        lens_r = badge_d * 0.26
+        lens_cx, lens_cy = cx - badge_d * 0.10, cy - badge_d * 0.10
+        draw.ellipse(
+            [lens_cx - lens_r, lens_cy - lens_r, lens_cx + lens_r, lens_cy + lens_r],
+            outline=(255, 255, 255, 235), width=2,
+        )
+        handle_dx, handle_dy = lens_r * 0.75, lens_r * 0.75
+        draw.line(
+            [
+                (lens_cx + handle_dx, lens_cy + handle_dy),
+                (cx + badge_d * 0.32, cy + badge_d * 0.32),
+            ],
+            fill=(255, 255, 255, 235), width=2,
+        )
+
+        image_tk = ImageTk.PhotoImage(badged)
+        self.tk_images_hover[file_name] = image_tk
+        return image_tk
+
+    def _on_table_hover(self, event):
+        """Shows a magnifier badge on the cover thumbnail under the cursor
+        (only when it actually has a cover to zoom into), and restores the
+        previous row's plain thumbnail once the cursor moves off it."""
+        row_id = self.table.identify_row(event.y)
+        column_id = self.table.identify_column(event.x)
+
+        hovering_cover = bool(
+            row_id and column_id == "#0" and self._thumbnail_pil_images.get(row_id) is not None
+        )
+        target = row_id if hovering_cover else None
+
+        if target == self._hovered_cover_row:
+            return
+
+        if self._hovered_cover_row and self.table.exists(self._hovered_cover_row):
+            self.table.item(self._hovered_cover_row, image=self.tk_images.get(self._hovered_cover_row) or "")
+
+        self._hovered_cover_row = target
+
+        if target:
+            badged_image = self._get_hover_thumbnail(target)
+            if badged_image:
+                self.table.item(target, image=badged_image)
+            self.table.configure(cursor="hand2")
+        else:
+            self.table.configure(cursor="")
+
+    def _on_table_leave(self, event):
+        if self._hovered_cover_row and self.table.exists(self._hovered_cover_row):
+            self.table.item(self._hovered_cover_row, image=self.tk_images.get(self._hovered_cover_row) or "")
+        self._hovered_cover_row = None
+        self.table.configure(cursor="")
 
     def _toggle_cell_double_click(self, event):
         """Double-click on Title/Artist: opens editing (still editable even after processing)."""
@@ -1449,6 +1613,8 @@ class TaggerInterface:
             if self.table.exists(item_id):
                 self.table.delete(item_id)
             self.tk_images.pop(item_id, None)
+            self.tk_images_hover.pop(item_id, None)
+            self._thumbnail_pil_images.pop(item_id, None)
 
         selected_set = set(selected_items)
         self.scanned_plan = [info for info in self.scanned_plan if info["file"] not in selected_set]
