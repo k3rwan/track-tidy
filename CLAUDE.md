@@ -24,11 +24,30 @@ Still flag before doing, even for the PR workflow:
 - One small, focused PR per change (branch -> commit -> push -> PR -> merge).
 - Test before committing: `python -m unittest discover -s tests` (run from
   the project root with the venv's Python).
-- For GUI changes, actually launch the app and screenshot it (via a
-  background PowerShell capture, see prior session transcripts) rather than
+- For GUI changes, actually launch the app and screenshot it rather than
   just trusting the code - this caught several real rendering bugs that
   unit tests alone missed (ttk `pack(in_=...)` not reparenting widgets,
-  clam-theme focus-ring artifacts, off-screen dialog centering).
+  clam-theme focus-ring artifacts, off-screen dialog centering, dark-mode
+  row text falling back to an unreadable dim grey). The reliable way to do
+  this:
+  - Write a throwaway script (scratchpad, never committed) that builds a
+    `tk.Tk()` root + `TaggerInterface`, calls `root.update()` once so the
+    window is actually mapped, populates rows via `_add_scan_row()` with
+    hand-built info dicts (no real network scan needed), and screenshots
+    with `PIL.ImageGrab.grab(bbox=...)` computed from
+    `winfo_rootx()/rooty()/width()/height()` - all in the SAME Python
+    process. This is self-contained and immune to the cross-process
+    timing races that a separate PowerShell screenshot step runs into.
+  - Launching the app via the Bash tool's background execution does NOT
+    render a real window in this environment (it maps at ~0x0 size,
+    `winfo_ismapped()` false) - if a cross-process launch is ever needed,
+    use PowerShell `Start-Process` instead, which works correctly.
+  - Never drive the real app with simulated keyboard input (`SendKeys` or
+    similar) - focus isn't reliably on the target window in this
+    environment, and keystrokes have leaked into the chat session itself
+    more than once. Mouse clicks at absolute screen coordinates are fine
+    (they target whatever's physically there); prefer calling the
+    relevant method directly over simulating clicks at all when possible.
 - Never run real scans/processing against the user's actual `Desktop\music`
   library when testing - use isolated temp copies of `fart.wav` instead.
   (A prior session accidentally tagged 9 real library files this way.)
