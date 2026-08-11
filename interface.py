@@ -833,7 +833,7 @@ class TaggerInterface:
         launch_frame = ttk.Frame(tagger_tab)
         launch_frame.pack(fill="x", padx=10, pady=(0, 10))
 
-        self.apply_button = ttk.Button(launch_frame, text="Apply", command=self._start_processing)
+        self.apply_button = ttk.Button(launch_frame, text="Apply changes - 0/0", command=self._start_processing)
         self.apply_button.configure(state="disabled")
         self.apply_button.pack(fill="x", pady=(0, 5))
 
@@ -1316,6 +1316,8 @@ class TaggerInterface:
         self._thumbnail_pil_images.clear()
         self.scanned_plan = []
         self.last_scanned_folder = None
+        self.scan_button.configure(text="Scan")
+        self._update_apply_button_label()
 
         self.sort_state = {"column": None, "state": 0}
         self.table.heading("title", text="Title")
@@ -1330,6 +1332,12 @@ class TaggerInterface:
 
         self._adjust_window_height()
 
+    def _update_apply_button_label(self):
+        """Shows how many of the scanned tracks are currently checked to be applied."""
+        total = len(self.scanned_plan)
+        checked = sum(1 for info in self.scanned_plan if info.get("apply_changes"))
+        self.apply_button.configure(text=f"Apply changes - {checked}/{total}")
+
     def _set_buttons_enabled(self, enabled):
         """Enables/disables every action button, to avoid interference during a run."""
         state = "normal" if enabled else "disabled"
@@ -1337,7 +1345,9 @@ class TaggerInterface:
         self.scan_button.configure(state=state)
         self.reset_button.configure(state=state)
         if enabled:
-            self.apply_button.configure(text="Apply", command=self._start_processing, state="normal")
+            self.scan_button.configure(text="Scan")
+            self._update_apply_button_label()
+            self.apply_button.configure(command=self._start_processing, state="normal")
         else:
             self.cancel_requested.clear()
             self.apply_button.configure(text="Cancel", command=self._request_cancel, state="normal")
@@ -1735,6 +1745,7 @@ class TaggerInterface:
                 self._refresh_row(info)
 
         self.table.heading("apply", text=CHECKED_BOX if self.all_checked_state else EMPTY_BOX)
+        self._update_apply_button_label()
 
     def _sort_by(self, field):
         """
@@ -1804,6 +1815,7 @@ class TaggerInterface:
         elif column_id == f"#{COLUMNS.index('apply') + 1}":
             info["apply_changes"] = not info["apply_changes"]
             self._refresh_row(info)  # the image also changes based on current/suggested
+            self._update_apply_button_label()
         elif column_id == f"#{COLUMNS.index('format') + 1}":
             if info["format"] != "WAV":
                 return  # nothing to toggle for mp3s
@@ -2280,6 +2292,7 @@ class TaggerInterface:
         self.scanned_plan = [info for info in self.scanned_plan if info["file"] not in selected_set]
 
         self._restripe_rows()
+        self._update_apply_button_label()
 
     def _move_row(self, info, direction):
         """Moves a row up (direction=-1) or down (direction=+1) in scanned_plan,
@@ -2542,7 +2555,6 @@ class TaggerInterface:
                     cancelled = content
                     self.processing_in_progress = False
                     self._set_buttons_enabled(True)
-                    self.apply_button.configure(text="Apply", command=self._start_processing)
                     self._update_progress_bar(1.0 if not cancelled else 0, "Cancelled" if cancelled else "Done ✓")
                     if not cancelled:
                         self._show_success_dialog()
