@@ -1054,6 +1054,20 @@ def scan_one_file(file_name, soundcloud_token, log=print, on_new_mention=None):
                 match_result = search_cover_itunes(search_source_artist, search_title, log=log)
                 if match_result:
                     cover_source = "iTunes"
+
+            if not match_result:
+                # The remix-agnostic query above can rank a DIFFERENT remix of
+                # a heavily-remixed song ahead of the one we actually want,
+                # pushing it out of the checked candidates entirely (e.g.
+                # "World Hold On" has a dozen+ official remixes) - retry
+                # keeping the remix qualifier in the query to narrow it down.
+                remix_qualified_title = strip_trailing_noise_words(search_source_title)
+                if remix_qualified_title != search_title:
+                    match_result = search_cover_itunes(
+                        search_source_artist, remix_qualified_title, log=log, allow_loose_remix_match=True
+                    )
+                    if match_result:
+                        cover_source = "iTunes"
         else:
             match_result = search_cover_itunes(search_source_artist, search_title, log=log)
             if match_result:
@@ -1208,6 +1222,64 @@ def exact_match(text_a, text_b):
     return normalize(text_a) == normalize(text_b)
 
 
+def strip_all_trailing_groups(text):
+    """
+    Repeatedly strips trailing "(...)"/"[...]" groups - e.g. a title with
+    several stacked qualifiers like "Title (Subtitle) [feat. X] [Y Remix]" -
+    returning (core_title, [group_1, group_2, ...]) with groups in the order
+    they were stripped (rightmost/outermost first).
+    """
+    groups = []
+    while True:
+        match = re.search(r"\s*[\(\[]([^()\[\]]*)[\)\]]\s*$", text)
+        if not match:
+            break
+        groups.append(match.group(1).strip())
+        text = text[:match.start()]
+    return text.strip(), groups
+
+
+def loose_remix_match(expected_title, returned_title):
+    """
+    Fallback for a specific remix rejected by the strict exact-match check
+    because the store's listing has extra bracket groups ours doesn't know
+    about (e.g. a subtitle, or "feat. X" positioned before the remix
+    bracket instead of at the very end, so strip_feature_suffix() can't
+    reach it). Accepts it anyway if the core title matches and our specific
+    remix qualifier is one of the store's bracket groups verbatim
+    (case/whitespace-insensitive) - deliberately stricter than a generic
+    fuzzy match, since this is only meant to recognize the SAME named
+    remix, not just "some remix of the same song".
+    """
+    expected_core, expected_groups = strip_all_trailing_groups(expected_title)
+    returned_core, returned_groups = strip_all_trailing_groups(returned_title)
+
+    if not expected_groups or not exact_match(expected_core, returned_core):
+        return False
+
+    def normalize_group(text):
+        return re.sub(r"\s+", " ", text.strip().lower())
+
+    expected_set = {normalize_group(g) for g in expected_groups}
+    returned_set = {normalize_group(g) for g in returned_groups}
+    return bool(expected_set & returned_set)
+
+
+def extract_feature_names_from_groups(groups):
+    """
+    Like extract_feature_names(), but scans a list of already-isolated
+    bracket/paren group contents (e.g. from strip_all_trailing_groups())
+    instead of requiring the "feat. X" credit to be at the very end of a
+    string - a store can position it before other bracket groups.
+    """
+    names = set()
+    for group in groups:
+        match = re.match(r"(?:feat\.?|ft\.?|featuring)\s+(.*)", group.strip(), re.IGNORECASE)
+        if match:
+            names |= split_artist_names(match.group(1))
+    return names
+
+
 FORBIDDEN_FILENAME_CHARS_RE = re.compile(r'[\\/:*?"<>|_]')
 
 
@@ -1322,12 +1394,38 @@ def fix_swapped_artist_title(detected_artist, detected_title, returned_artist, r
 # 9. COVER SEARCH - ITUNES
 # ============================================================================
 
-def search_cover_itunes(artist, title, log=print, max_retries=2):
+def build_itunes_query(artist, title):
+    """
+    Builds the iTunes search term from artist+title, replacing punctuation
+    (commas, parentheses/brackets) with spaces instead of leaving it in the
+    query as literal characters. iTunes' relevance ranking seems to penalize
+    that punctuation - a comma-separated multi-artist string or a
+    parenthesized remix name can bury the exact version we want under a
+    heap of same-song alternates, even when it's genuinely in the results.
+    """
+    combined = f"{artist} {title}"
+    cleaned = re.sub(r"[,()\[\]]", " ", combined)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def search_cover_itunes(artist, title, log=print, max_retries=2, allow_loose_remix_match=False):
     """
     Retries on HTTP 429 (rate limited) with a short backoff before giving up.
     Unlike SoundCloud, iTunes needs no token to reuse - a plain retry is
     enough to ride out a short burst instead of silently returning no cover
     for a track that would otherwise have matched.
+
+    Checks up to 10 candidates, not just the top one - iTunes' relevance
+    ranking doesn't always put the exact version we want first (e.g. a song
+    with a dozen different official remixes can return a different remix as
+    the #1 result, even though the one we're looking for is also there).
+
+    allow_loose_remix_match: when the strict checks above reject every
+    candidate, also accepts one whose title matches via loose_remix_match()
+    (same core title + our exact remix qualifier present, tolerating extra
+    bracket groups like a subtitle) - meant to be turned on only for a
+    remix-qualified retry, not the default search, since it's a narrower
+    but still real risk of a false positive.
     """
     try:
         for attempt in range(max_retries + 1):
@@ -1337,7 +1435,7 @@ def search_cover_itunes(artist, title, log=print, max_retries=2):
                 # where a lot of French content (esp. explicit-tagged rap) simply
                 # isn't licensed and returns zero results even though it's on the
                 # French store.
-                params={"term": f"{artist} {title}", "entity": "song", "limit": 1, "country": "FR"},
+                params={"term": build_itunes_query(artist, title), "entity": "song", "limit": 10, "country": "FR"},
                 timeout=10,
             )
 
@@ -1358,41 +1456,50 @@ def search_cover_itunes(artist, title, log=print, max_retries=2):
             log(f"  [iTunes] No result at all for '{artist} - {title}'")
             return None
 
-        result = results[0]
-        # iTunes sometimes returns accented text in NFD form (e.g. "a" + a
-        # combining accent, instead of the precomposed "à"), which looks
-        # identical when printed but breaks both string comparison AND
-        # printing on a Windows console (cp1252 can't encode combining
-        # accents on their own). Normalize to NFC to match how tags/filenames
-        # are represented.
-        returned_artist = unicodedata.normalize("NFC", result.get("artistName", ""))
-        returned_title = unicodedata.normalize("NFC", result.get("trackName", ""))
-
         title_normalized = strip_feature_suffix(strip_generic_mix_suffix(title))
-        returned_title_normalized = strip_feature_suffix(strip_generic_mix_suffix(returned_title))
 
-        artist_ok = artist_sets_match(artist, returned_artist, returned_title) and exact_match(title_normalized, returned_title_normalized)
-        swapped_ok = exact_match(title, returned_artist) and artist_sets_match(artist, returned_title_normalized)
+        for result in results:
+            # iTunes sometimes returns accented text in NFD form (e.g. "a" + a
+            # combining accent, instead of the precomposed "à"), which looks
+            # identical when printed but breaks both string comparison AND
+            # printing on a Windows console (cp1252 can't encode combining
+            # accents on their own). Normalize to NFC to match how tags/filenames
+            # are represented.
+            returned_artist = unicodedata.normalize("NFC", result.get("artistName", ""))
+            returned_title = unicodedata.normalize("NFC", result.get("trackName", ""))
+            returned_title_normalized = strip_feature_suffix(strip_generic_mix_suffix(returned_title))
 
-        if not (artist_ok or swapped_ok):
-            log(
-                f"  [iTunes] Match rejected (not an exact match): expected '{artist} - {title}', "
-                f"got '{returned_artist} - {returned_title}'"
-            )
-            return None
+            artist_ok = artist_sets_match(artist, returned_artist, returned_title) and exact_match(title_normalized, returned_title_normalized)
+            swapped_ok = exact_match(title, returned_artist) and artist_sets_match(artist, returned_title_normalized)
 
-        cover_url = result.get("artworkUrl100")
-        if not cover_url:
-            log(f"  [iTunes] Match found for '{artist} - {title}' but it has no artwork URL.")
-            return None
+            loose_ok = False
+            if not (artist_ok or swapped_ok) and allow_loose_remix_match and loose_remix_match(title, returned_title):
+                _, returned_groups = strip_all_trailing_groups(returned_title)
+                returned_artist_set = split_artist_names(returned_artist) | extract_feature_names_from_groups(returned_groups)
+                loose_ok = split_artist_names(artist) <= returned_artist_set
 
-        cover_url_hd = cover_url.replace("100x100", "600x600")
-        image_response = requests.get(cover_url_hd, timeout=10)
+            if not (artist_ok or swapped_ok or loose_ok):
+                continue
 
-        if image_response.status_code == 200:
-            return image_response.content, returned_artist, returned_title
+            cover_url = result.get("artworkUrl100")
+            if not cover_url:
+                log(f"  [iTunes] Match found for '{artist} - {title}' but it has no artwork URL.")
+                continue
 
-        log(f"  [iTunes] Image download failed (HTTP {image_response.status_code}) for '{artist} - {title}'")
+            cover_url_hd = cover_url.replace("100x100", "600x600")
+            image_response = requests.get(cover_url_hd, timeout=10)
+
+            if image_response.status_code == 200:
+                return image_response.content, returned_artist, returned_title
+
+            log(f"  [iTunes] Image download failed (HTTP {image_response.status_code}) for '{artist} - {title}'")
+
+        top_result = results[0]
+        log(
+            f"  [iTunes] Match rejected (not an exact match among {len(results)} candidate(s)): "
+            f"expected '{artist} - {title}', got '{unicodedata.normalize('NFC', top_result.get('artistName', ''))} - "
+            f"{unicodedata.normalize('NFC', top_result.get('trackName', ''))}'"
+        )
         return None
 
     except Exception as error:
