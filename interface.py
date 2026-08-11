@@ -85,21 +85,6 @@ DARK_COLORS = {
 }
 
 
-def get_system_theme():
-    """
-    Reads Windows' current app theme (light/dark) from the registry.
-    Defaults to "light" on any failure (older Windows, missing key, etc).
-    """
-    try:
-        import winreg
-        key_path = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
-            value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
-            return "light" if value else "dark"
-    except OSError:
-        return "light"
-
-
 def setup_placeholder(entry, placeholder, on_change=None):
     """
     Shows greyed-out placeholder text in an Entry when it's empty and unfocused,
@@ -169,7 +154,10 @@ class TaggerInterface:
 
         self._native_theme = ttk.Style().theme_use()  # so "light" can restore it later
         self.theme_colors = None  # None while light/native; DARK_COLORS once dark is applied
-        self.theme_var = tk.StringVar(value=tagger.load_settings().get("theme", "system"))
+        saved_theme = tagger.load_settings().get("theme", "light")
+        if saved_theme not in ("light", "dark"):
+            saved_theme = "light"  # e.g. an old "system" preference from before that option existed
+        self.theme_var = tk.StringVar(value=saved_theme)
 
         self._build_interface()
         self._setup_drag_and_drop()
@@ -178,9 +166,6 @@ class TaggerInterface:
         self._start_message_loop()
         self._check_soundcloud_credentials_on_startup()
         self._check_for_update_on_startup()
-
-    def _resolve_theme(self, choice):
-        return get_system_theme() if choice == "system" else choice
 
     def _on_theme_changed(self):
         choice = self.theme_var.get()
@@ -197,7 +182,7 @@ class TaggerInterface:
         self._set_titlebar_dark(dialog, bool(self.theme_colors))
 
     def _apply_theme(self, choice):
-        dark = self._resolve_theme(choice) == "dark"
+        dark = choice == "dark"
         colors = DARK_COLORS if dark else None
         style = ttk.Style()
         style.theme_use("clam" if dark else self._native_theme)
@@ -288,6 +273,10 @@ class TaggerInterface:
 
         self.theme_colors = colors
         self._set_titlebar_dark(self.window, dark)
+        # clam vs. the native theme use different widget padding, so the
+        # window's ideal height isn't quite the same in light vs. dark -
+        # relock it now instead of leaving a stale/mismatched geometry.
+        self._adjust_window_height()
 
     def _set_titlebar_dark(self, window, dark):
         """
@@ -617,13 +606,11 @@ class TaggerInterface:
 
         appearance_frame = ttk.LabelFrame(soundcloud_tab, text="Appearance")
         appearance_frame.pack(fill="x", padx=10, pady=(15, 10))
-        for value, label in (
-            ("system", "Default (follow Windows)"), ("light", "Light"), ("dark", "Dark"),
-        ):
+        for value, label in (("light", "Light"), ("dark", "Dark")):
             ttk.Radiobutton(
                 appearance_frame, text=label, value=value, variable=self.theme_var,
                 command=self._on_theme_changed,
-            ).pack(anchor="w", padx=10, pady=(5, 0) if value == "system" else (0, 5 if value == "dark" else 0))
+            ).pack(anchor="w", padx=10, pady=(5, 0) if value == "light" else (0, 5))
 
         ttk.Label(
             soundcloud_tab,

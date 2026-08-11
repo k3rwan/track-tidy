@@ -3,6 +3,18 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Removed
+- The "Default (follow Windows)" appearance option - only Light/Dark remain.
+  An old saved "system" preference from before falls back to Light.
+
+### Fixed
+- Switching between Light and Dark briefly left the window a few pixels off
+  from its ideal size (the two ttk themes behind them use different widget
+  padding) - the window now re-sizes itself immediately and correctly every
+  time the theme changes, instead of keeping a stale/mismatched size.
+
 ## [0.3]
 
 ### Fixed
