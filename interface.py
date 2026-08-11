@@ -278,10 +278,11 @@ class TaggerInterface:
 
         self.theme_colors = colors
         self._set_titlebar_dark(self.window, dark)
-        # clam vs. the native theme use different widget padding, so the
-        # window's ideal height isn't quite the same in light vs. dark -
-        # relock it now instead of leaving a stale/mismatched geometry.
-        self._adjust_window_height()
+        # Deliberately NOT re-locking the window height here: even the ~2px
+        # difference left between light/dark after the padding tuning above
+        # caused a visible jump when the window resized on every toggle.
+        # Keeping the geometry frozen (set once at startup) trades a couple
+        # of harmless pixels of slack for a switch with zero movement.
 
     def _set_titlebar_dark(self, window, dark):
         """

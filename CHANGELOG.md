@@ -8,6 +8,15 @@ on [Keep a Changelog](https://keepachangelog.com/).
 ### Added
 - "Check for updates" button in Settings - reports back either way (up to
   date / update available / check failed), unlike the silent startup check.
+- The installer now detects an existing installation (via a fixed AppId) and
+  asks to update instead of silently reinstalling with no explanation. Lets
+  the user cancel instead of proceeding.
+
+### Fixed
+- Switching to Dark still showed a small downward shift even after the
+  earlier padding fix (2px difference, but any window resize at all was
+  visible). The window no longer resizes when the theme changes - the 2px
+  of slack is absorbed silently instead.
 
 ### Removed
 - The "Default (follow Windows)" appearance option - only Light/Dark remain.
