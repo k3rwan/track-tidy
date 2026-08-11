@@ -12,11 +12,19 @@ on [Keep a Changelog](https://keepachangelog.com/).
   asks to update instead of silently reinstalling with no explanation. Lets
   the user cancel instead of proceeding.
 
+### Added
+- Click a cover thumbnail in the table to see it full-size in a popup
+  (click the popup, or press Escape, to close it).
+
 ### Fixed
 - Switching to Dark still showed a small downward shift even after the
   earlier padding fix (2px difference, but any window resize at all was
   visible). The window no longer resizes when the theme changes - the 2px
   of slack is absorbed silently instead.
+- The dark title bar's forced repaint used `SetWindowPos(..., SWP_FRAMECHANGED)`
+  - a real resize/reposition call even as a no-op, which Windows' window
+  animations could turn into a visible jump on its own. Switched to
+  `RedrawWindow`, a pure repaint call with no size/position semantics.
 
 ### Removed
 - The "Default (follow Windows)" appearance option - only Light/Dark remain.
