@@ -72,6 +72,13 @@ class StripHelpersTests(unittest.TestCase):
     def test_strip_generic_mix_suffix_keeps_named_remix(self):
         self.assertEqual(tagger.strip_generic_mix_suffix("Astronomia (DJ Snake Remix)"), "Astronomia (DJ Snake Remix)")
 
+    def test_strip_generic_mix_suffix_removes_dash_form(self):
+        self.assertEqual(tagger.strip_generic_mix_suffix("Dialogo - Radio Edit"), "Dialogo")
+        self.assertEqual(tagger.strip_generic_mix_suffix("Astronomia - Extended Mix"), "Astronomia")
+
+    def test_strip_generic_mix_suffix_keeps_named_dash_remix(self):
+        self.assertEqual(tagger.strip_generic_mix_suffix("Astronomia - DJ Snake Remix"), "Astronomia - DJ Snake Remix")
+
     def test_strip_feature_suffix_removes_feat_credit(self):
         self.assertEqual(
             tagger.strip_feature_suffix("C'est quoi le boulot (feat. Heuss L'enfoiré)"),
