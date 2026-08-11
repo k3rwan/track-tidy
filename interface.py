@@ -2001,9 +2001,9 @@ class TaggerInterface:
                 bg=self.theme_colors["menu_bg"], fg=self.theme_colors["menu_fg"],
                 activebackground=self.theme_colors["select_bg"], activeforeground=self.theme_colors["select_fg"],
             )
+        menu.add_command(label="Info", command=lambda: self._show_track_info(info))
         menu.add_command(label="Rescan this file", command=lambda: self._rescan_row(info))
         menu.add_command(label="Open file location", command=lambda: self._open_file_location(info))
-        menu.add_command(label="Info", command=lambda: self._show_track_info(info))
         menu.add_separator()
         menu.add_command(label="Move up", command=lambda: self._move_row(info, -1))
         menu.add_command(label="Move down", command=lambda: self._move_row(info, 1))
