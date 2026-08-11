@@ -457,6 +457,15 @@ MENTIONS_TO_REMOVE = []
 # Whether the album tag should be stripped when writing tags (set by the UI)
 DELETE_ALBUM_TAG = True
 
+# Whether SoundCloud is used as a cover source at all (set by the UI) - lets
+# the user opt out entirely to conserve SoundCloud's request quota.
+USE_SOUNDCLOUD = True
+
+# Whether non-MP3 files get converted to MP3 (320 kbps) automatically (set by
+# the UI). When off, WAV files (the only format taggable without converting)
+# are skipped during scanning instead of being tagged in place.
+AUTO_CONVERT_MP3 = True
+
 
 # ============================================================================
 # 2. FILENAME & TITLE CLEANING
@@ -892,14 +901,22 @@ def list_audio_files():
     Recursively walks MUSIC_FOLDER and its subfolders, and returns the sorted list
     of relative paths of the audio files found (without reading any tags).
     Fast: useful for detecting new files without rescanning everything.
+
+    Skips .wav files entirely when AUTO_CONVERT_MP3 is off - WAV is the only
+    format that can be tagged without converting, so with auto-convert
+    disabled there's nothing usable left to do with them.
     """
     if not os.path.isdir(MUSIC_FOLDER):
         return []
 
+    extensions = SUPPORTED_EXTENSIONS if AUTO_CONVERT_MP3 else tuple(
+        ext for ext in SUPPORTED_EXTENSIONS if ext != ".wav"
+    )
+
     audio_files = []
     for current_folder, _, file_names in os.walk(MUSIC_FOLDER):
         for name in file_names:
-            if name.lower().endswith(SUPPORTED_EXTENSIONS):
+            if name.lower().endswith(extensions):
                 absolute_path = os.path.join(current_folder, name)
                 relative_path = os.path.relpath(absolute_path, MUSIC_FOLDER)
                 audio_files.append(relative_path)
@@ -1144,7 +1161,12 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
     if not file_list:
         return []
 
-    if not SOUNDCLOUD_CLIENT_ID or not SOUNDCLOUD_CLIENT_SECRET:
+    if not USE_SOUNDCLOUD:
+        # Disabled in Settings - don't even try to authenticate.
+        log("  [SoundCloud] Disabled in Settings - skipping SoundCloud for this scan.")
+        SOUNDCLOUD_UNAVAILABLE = True
+        soundcloud_token = None
+    elif not SOUNDCLOUD_CLIENT_ID or not SOUNDCLOUD_CLIENT_SECRET:
         # No point even trying to authenticate - skip SoundCloud entirely for
         # this run (iTunes is still tried normally for every file).
         log("  [SoundCloud] No credentials configured - skipping SoundCloud for this scan.")
