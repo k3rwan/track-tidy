@@ -6,7 +6,7 @@
 
 [Setup]
 AppName=Track Tidy
-AppVersion=1.0
+AppVersion=0.2
 AppPublisher=KEVZ
 DefaultDirName={autopf}\Track Tidy
 DefaultGroupName=Track Tidy
