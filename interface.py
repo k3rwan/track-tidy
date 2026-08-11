@@ -23,7 +23,7 @@ import winsound
 import webbrowser
 from datetime import datetime
 import tkinter as tk
-from tkinter import ttk, filedialog, scrolledtext, messagebox
+from tkinter import ttk, filedialog, scrolledtext, messagebox, simpledialog
 from PIL import Image, ImageTk, ImageDraw
 
 # When launched via pythonw.exe (no console), sys.stdout/stderr are None.
@@ -1837,6 +1837,7 @@ class TaggerInterface:
                 activebackground=self.theme_colors["select_bg"], activeforeground=self.theme_colors["select_fg"],
             )
         menu.add_command(label="Open file location", command=lambda: self._open_file_location(info))
+        menu.add_command(label="Report track...", command=lambda: self._report_track(info))
         menu.tk_popup(event.x_root, event.y_root)
 
     def _open_file_location(self, info):
@@ -1856,6 +1857,25 @@ class TaggerInterface:
             subprocess.run(f'explorer /select,"{full_path}"')
         except Exception as error:
             self._append_to_journal(f"Error opening file location: {error}")
+
+    def _report_track(self, info):
+        """Sends this row's info (file name, current/suggested tags, cover
+        status...) to the developer via Discord, so problem tracks (e.g. no
+        cover found) can be collected and fixed later."""
+        comment = simpledialog.askstring(
+            "Report track",
+            f"Report '{info['file']}' to the developer.\n\n"
+            "Optional: describe the issue (leave blank to just send the track info):",
+            parent=self.window,
+        )
+        if comment is None:  # Cancelled
+            return
+
+        def _send():
+            success = tagger.send_track_report(info, comment=comment or None)
+            self.message_queue.put(("report_sent", success))
+
+        self._run_in_background(_send)
 
     def _edit_cell(self, item_id, info, field, column_id):
         """Opens an input field directly on the cell to edit title/artist."""
@@ -1993,6 +2013,15 @@ class TaggerInterface:
                         messagebox.showerror(
                             "Update check failed",
                             "Could not check for updates - check your internet connection and try again."
+                        )
+
+                elif message_type == "report_sent":
+                    success = content
+                    if success:
+                        self._append_to_journal("Track reported, thanks!")
+                    else:
+                        messagebox.showerror(
+                            "Report failed", "Could not send the report - check your internet connection and try again."
                         )
 
                 elif message_type == "file_processed":
