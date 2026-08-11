@@ -5,7 +5,24 @@ on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- Auto-update check on startup: compares the running version against the
+  latest GitHub release and, if a newer one exists, asks to open the
+  download page.
+- Installer filename now includes the version (`Track-Tidy-Setup-v{version}.exe`).
+
+### Changed
+- `APP_VERSION` in `track_tidy.py` is now the single source of truth for the
+  version shown in the GUI (previously a separately hardcoded string).
+  `installer.iss` still needs its own `MyAppVersion` bumped to match on
+  release, but at least isn't duplicated within that file anymore.
+
+## [0.2]
+
 ### Fixed
+- Tolerate a `(feat. X)` suffix when validating iTunes cover matches (iTunes
+  often includes the featured artist in the title even when the file's own
+  tags/filename don't).
 - Retry on iTunes `HTTP 429` (rate limit) instead of silently giving up on a
   track that would otherwise have matched.
 - Normalize iTunes/SoundCloud response text to NFC Unicode form - fixed both
@@ -23,13 +40,7 @@ on [Keep a Changelog](https://keepachangelog.com/).
   and/or renamed) gets one line appended to `%APPDATA%\Track-Tidy\history.jsonl`
   recording its old filename/tags, new filename/tags, whether the cover was
   updated, and whether it was converted to MP3.
-
-## [0.2]
-
-### Fixed
-- Tolerate a `(feat. X)` suffix when validating iTunes cover matches (iTunes
-  often includes the featured artist in the title even when the file's own
-  tags/filename don't).
+- First public GitHub release (`v0.2`), with the installer attached.
 
 ### Changed
 - Bumped the version shown in the GUI to `v0.2`.
