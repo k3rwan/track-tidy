@@ -56,8 +56,9 @@ on [Keep a Changelog](https://keepachangelog.com/).
   their container frame instead.
 
 ### Changed
-- The progress bar's completion text is now "Done," instead of "Done ✅" -
-  a plain character instead of a colorful emoji that doesn't adapt to theme.
+- The progress bar's completion text is now "Done ✓" instead of "Done ✅" -
+  a plain checkmark character instead of a colorful emoji that doesn't
+  adapt to theme.
 
 ## [0.3]
 
