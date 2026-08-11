@@ -5,6 +5,10 @@ on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- "Check for updates" button in Settings - reports back either way (up to
+  date / update available / check failed), unlike the silent startup check.
+
 ### Removed
 - The "Default (follow Windows)" appearance option - only Light/Dark remain.
   An old saved "system" preference from before falls back to Light.
@@ -14,6 +18,10 @@ on [Keep a Changelog](https://keepachangelog.com/).
   from its ideal size (the two ttk themes behind them use different widget
   padding) - the window now re-sizes itself immediately and correctly every
   time the theme changes, instead of keeping a stale/mismatched size.
+- Dark mode's button/entry padding was much taller than the native theme's
+  (26px difference in the window's total height), causing a visible jump
+  when switching themes even after the resize above was made clean. Trimmed
+  down to within 2px of the native size - no more noticeable jump.
 
 ## [0.3]
 
