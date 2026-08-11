@@ -35,6 +35,7 @@ import sys
 import time
 import base64
 import subprocess
+import unicodedata
 import requests
 from mutagen import File as MutagenFile
 from mutagen.mp3 import MP3
@@ -1022,8 +1023,14 @@ def search_cover_itunes(artist, title, log=print, max_retries=2):
             return None
 
         result = results[0]
-        returned_artist = result.get("artistName", "")
-        returned_title = result.get("trackName", "")
+        # iTunes sometimes returns accented text in NFD form (e.g. "a" + a
+        # combining accent, instead of the precomposed "à"), which looks
+        # identical when printed but breaks both string comparison AND
+        # printing on a Windows console (cp1252 can't encode combining
+        # accents on their own). Normalize to NFC to match how tags/filenames
+        # are represented.
+        returned_artist = unicodedata.normalize("NFC", result.get("artistName", ""))
+        returned_title = unicodedata.normalize("NFC", result.get("trackName", ""))
 
         title_normalized = strip_feature_suffix(strip_generic_mix_suffix(title))
         returned_title_normalized = strip_feature_suffix(strip_generic_mix_suffix(returned_title))
@@ -1135,8 +1142,10 @@ def search_cover_soundcloud(artist, title, token, log=print):
             return None
 
         result = results[0]
-        track_title = result.get("title", "")
-        uploader_name = result.get("user", {}).get("username", "")
+        # Same NFD/NFC issue as on the iTunes side - normalize before any
+        # comparison or logging.
+        track_title = unicodedata.normalize("NFC", result.get("title", ""))
+        uploader_name = unicodedata.normalize("NFC", result.get("user", {}).get("username", ""))
 
         artist_ok = (
             artist_names_match(artist, track_title) or artist_names_match(artist, uploader_name)
