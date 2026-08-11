@@ -61,6 +61,11 @@ THUMBNAIL_SIZE = (36, 36)
 # "format" combines the format AND the conversion (e.g. "MP3", "WAV ☑")
 COLUMNS = ("apply", "title", "artist", "format")
 
+# Synthetic row id for the "N track(s) with cover hidden" summary shown at
+# the bottom of the table when the no-cover filter hides some rows - never
+# backed by a real scanned_plan entry.
+NO_COVER_SUMMARY_ROW_ID = "__no_cover_summary_row__"
+
 # Dark palette. There's no equivalent LIGHT_COLORS dict - "light" instead
 # means "leave the native theme's own colors alone", captured at startup
 # (see App._native_bg etc.) so it matches today's look exactly.
@@ -665,11 +670,6 @@ class TaggerInterface:
         self.new_mention_entry.bind("<Return>", self._add_mention)
         self._bind_entry_context_menu(self.new_mention_entry)
         setup_placeholder(self.new_mention_entry, "Add a word or phrase to remove...")
-
-        self.delete_album_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(
-            self.advanced_frame, text="Delete album tag", variable=self.delete_album_var
-        ).pack(anchor="w", padx=10, pady=(0, 5))
 
         self.no_cover_filter_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
@@ -1296,10 +1296,14 @@ class TaggerInterface:
 
         no_cover_only = self.no_cover_filter_var.get()
 
+        if self.table.exists(NO_COVER_SUMMARY_ROW_ID):
+            self.table.delete(NO_COVER_SUMMARY_ROW_ID)
+
         for info in self.scanned_plan:
             if self.table.exists(info["file"]):
                 self.table.detach(info["file"])
 
+        hidden_with_cover = 0
         for info in self.scanned_plan:
             title = info.get("title_override") or info.get("detected_title") or info.get("current_title") or ""
             artist = info.get("artist_override") or info.get("detected_artist") or info.get("current_artist") or ""
@@ -1308,10 +1312,17 @@ class TaggerInterface:
             if query and query not in searchable:
                 continue
             if no_cover_only and info.get("cover_source"):
+                hidden_with_cover += 1
                 continue
 
             if self.table.exists(info["file"]):
                 self.table.move(info["file"], "", "end")
+
+        if hidden_with_cover:
+            self.table.insert(
+                "", "end", iid=NO_COVER_SUMMARY_ROW_ID,
+                values=("", f"- - - {hidden_with_cover} track(s) with cover - - -", "", ""),
+            )
 
         self._restripe_rows()
 
@@ -2394,7 +2405,6 @@ class TaggerInterface:
         if folder:
             tagger.MUSIC_FOLDER = folder
         tagger.MENTIONS_TO_REMOVE = list(self.mentions_listbox.get(0, "end"))
-        tagger.DELETE_ALBUM_TAG = self.delete_album_var.get()
 
         if not self.progress_canvas.winfo_ismapped():
             self.progress_canvas.pack(fill="x")
