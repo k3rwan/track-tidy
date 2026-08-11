@@ -8,6 +8,7 @@ Given a folder of tracks named `Artist - Title.ext`, Track-Tidy:
 - Fetches a matching **cover** online (iTunes / SoundCloud APIs)
 - Converts any non-MP3 format (WAV, FLAC, AAC, M4A, OGG, WMA, AIFF, OPUS...) to **MP3 (320 kbps)** before tagging
 - Flattens folders, removes empty subfolders, and detects duplicate files
+- Keeps a permanent history of every file it processes (old/new filename and tags) in `%APPDATA%\Track-Tidy\history.jsonl`
 
 ## How it works
 
