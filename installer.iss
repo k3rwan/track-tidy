@@ -3,16 +3,20 @@
 ; 2. Run build_exe.bat first, so dist\Track-Tidy.exe exists.
 ; 3. Open this file with Inno Setup Compiler and click "Compile".
 ;    The final installer will be created in the "installer_output" folder.
+;
+; Bump MyAppVersion below to match track_tidy.py's APP_VERSION on release -
+; it's the only place the version needs to change in this file.
+#define MyAppVersion "0.2"
 
 [Setup]
 AppName=Track Tidy
-AppVersion=0.2
+AppVersion={#MyAppVersion}
 AppPublisher=KEVZ
 DefaultDirName={autopf}\Track Tidy
 DefaultGroupName=Track Tidy
 UninstallDisplayIcon={app}\Track-Tidy.exe
 OutputDir=installer_output
-OutputBaseFilename=Track-Tidy-Setup
+OutputBaseFilename=Track-Tidy-Setup-v{#MyAppVersion}
 Compression=lzma
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible
