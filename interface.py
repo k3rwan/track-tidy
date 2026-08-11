@@ -852,12 +852,10 @@ class TaggerInterface:
                 command=self._on_theme_changed,
             ).pack(anchor="w", padx=10, pady=(5, 0) if value == "light" else (0, 5))
 
-        behavior_frame = ttk.LabelFrame(soundcloud_tab, text="Behavior")
-        behavior_frame.pack(fill="x", padx=10, pady=(0, 10))
-
-        ttk.Label(behavior_frame, text="Sources:").pack(anchor="w", padx=10, pady=(10, 0))
-        sources_row = ttk.Frame(behavior_frame)
-        sources_row.pack(fill="x", padx=10, pady=(2, 5))
+        sources_frame = ttk.LabelFrame(soundcloud_tab, text="Sources")
+        sources_frame.pack(fill="x", padx=10, pady=(0, 10))
+        sources_row = ttk.Frame(sources_frame)
+        sources_row.pack(fill="x", padx=10, pady=(10, 10))
         ttk.Checkbutton(
             sources_row, text="iTunes", variable=self.use_itunes_var,
             command=self._on_use_itunes_changed,
@@ -870,10 +868,13 @@ class TaggerInterface:
             sources_row, text="SoundCloud", variable=self.use_soundcloud_var,
             command=self._on_use_soundcloud_changed,
         ).pack(side="left")
+
+        behavior_frame = ttk.LabelFrame(soundcloud_tab, text="Behavior")
+        behavior_frame.pack(fill="x", padx=10, pady=(0, 10))
         ttk.Checkbutton(
             behavior_frame, text="Convert everything to MP3 (320 kbps)", variable=self.auto_convert_var,
             command=self._on_auto_convert_changed,
-        ).pack(anchor="w", padx=10, pady=(0, 10))
+        ).pack(anchor="w", padx=10, pady=(10, 10))
 
         ttk.Button(
             soundcloud_tab, text="SoundCloud credentials...", command=self._show_soundcloud_credentials_dialog,
@@ -883,14 +884,15 @@ class TaggerInterface:
             soundcloud_tab, text="Spotify credentials...", command=self._show_spotify_credentials_dialog,
         ).pack(fill="x", padx=10, pady=(0, 10))
 
+        update_history_row = ttk.Frame(soundcloud_tab)
+        update_history_row.pack(fill="x", padx=10, pady=(0, 10))
         self.check_update_button = ttk.Button(
-            soundcloud_tab, text="Check for updates", command=self._check_for_update_manual,
+            update_history_row, text="Check for updates", command=self._check_for_update_manual,
         )
-        self.check_update_button.pack(fill="x", padx=10, pady=(0, 5))
-
+        self.check_update_button.pack(side="left", fill="x", expand=True, padx=(0, 5))
         ttk.Button(
-            soundcloud_tab, text="View processing history", command=self._show_history_window,
-        ).pack(fill="x", padx=10, pady=(0, 10))
+            update_history_row, text="View processing history", command=self._show_history_window,
+        ).pack(side="left", fill="x", expand=True)
 
         legal_text_label = ttk.Label(
             soundcloud_tab,
