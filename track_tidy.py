@@ -36,6 +36,7 @@ import time
 import base64
 import subprocess
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from mutagen import File as MutagenFile
 from mutagen.mp3 import MP3
 from mutagen.wave import WAVE
@@ -812,15 +813,22 @@ SOUNDCLOUD_RATE_LIMITED = False  # set for the current run once a 429 is hit
 SOUNDCLOUD_UNAVAILABLE = False  # set for the current run when no credentials are configured at all
 
 
+SCAN_MAX_WORKERS = 6  # concurrent cover-search lookups; these are network I/O (iTunes/SoundCloud), not CPU-bound
+
+
 def scan_files(file_list, on_file_scanned=None, log=print, on_new_mention=None, on_rate_limited=None,
                should_cancel=None):
     """
-    Scans ONLY the files in the given list (relative paths).
+    Scans ONLY the files in the given list (relative paths), in parallel
+    (up to SCAN_MAX_WORKERS at once) since each scan is mostly spent waiting
+    on the iTunes/SoundCloud cover search over the network.
     Useful for an incremental scan (only reprocess new files).
-    on_file_scanned(info) is called right after each file is analyzed,
-    to allow a progressive display instead of waiting for the whole thing to finish.
-    should_cancel() is checked before each file - if it returns True, the scan
-    stops early and returns whatever was scanned so far.
+    on_file_scanned(info) is called as soon as each file is analyzed (in
+    completion order, not necessarily file_list order), to allow a
+    progressive display instead of waiting for the whole thing to finish.
+    should_cancel() is checked while dispatching and between completions -
+    if it returns True, the scan stops early, cancels not-yet-started files,
+    and returns whatever was scanned so far.
     """
     global SOUNDCLOUD_RATE_LIMITED, SOUNDCLOUD_UNAVAILABLE
     SOUNDCLOUD_RATE_LIMITED = False
@@ -842,19 +850,32 @@ def scan_files(file_list, on_file_scanned=None, log=print, on_new_mention=None, 
             if on_rate_limited:
                 on_rate_limited()
 
+        # Fetched once here (and cached), so every worker thread below shares
+        # the same token instead of racing to authenticate independently.
         soundcloud_token = get_soundcloud_token(log=log, on_rate_limited=_mark_rate_limited)
 
     results = []
 
-    for file_name in file_list:
-        if should_cancel and should_cancel():
-            log("  Scan cancelled.")
-            break
+    with ThreadPoolExecutor(max_workers=SCAN_MAX_WORKERS) as executor:
+        pending = {}
+        for file_name in file_list:
+            if should_cancel and should_cancel():
+                log("  Scan cancelled.")
+                break
+            future = executor.submit(scan_one_file, file_name, soundcloud_token, log, on_new_mention)
+            pending[future] = file_name
 
-        info = scan_one_file(file_name, soundcloud_token, log=log, on_new_mention=on_new_mention)
-        results.append(info)
-        if on_file_scanned:
-            on_file_scanned(info)
+        for future in as_completed(pending):
+            if should_cancel and should_cancel():
+                for other_future in pending:
+                    other_future.cancel()
+                log("  Scan cancelled.")
+                break
+
+            info = future.result()
+            results.append(info)
+            if on_file_scanned:
+                on_file_scanned(info)
 
     return results
 
