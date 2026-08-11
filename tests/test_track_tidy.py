@@ -303,6 +303,30 @@ class EffectiveCoverBytesTests(unittest.TestCase):
         self.assertEqual(tagger.effective_cover_bytes(info), b"original-cover-bytes")
 
 
+class ListAudioFilesTests(unittest.TestCase):
+    def setUp(self):
+        self._original_music_folder = tagger.MUSIC_FOLDER
+        self._original_auto_convert = tagger.AUTO_CONVERT_MP3
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        tagger.MUSIC_FOLDER = self._tmp_dir.name
+        for name in ("Song.mp3", "Track.wav", "Other.flac"):
+            with open(os.path.join(self._tmp_dir.name, name), "w") as f:
+                f.write("x")
+
+    def tearDown(self):
+        tagger.MUSIC_FOLDER = self._original_music_folder
+        tagger.AUTO_CONVERT_MP3 = self._original_auto_convert
+        self._tmp_dir.cleanup()
+
+    def test_includes_wav_when_auto_convert_enabled(self):
+        tagger.AUTO_CONVERT_MP3 = True
+        self.assertEqual(set(tagger.list_audio_files()), {"Song.mp3", "Track.wav", "Other.flac"})
+
+    def test_excludes_wav_when_auto_convert_disabled(self):
+        tagger.AUTO_CONVERT_MP3 = False
+        self.assertEqual(set(tagger.list_audio_files()), {"Song.mp3", "Other.flac"})
+
+
 class HistoryLogTests(unittest.TestCase):
     def setUp(self):
         self._original_history_file = tagger.HISTORY_FILE
