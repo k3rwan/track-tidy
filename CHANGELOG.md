@@ -3,6 +3,56 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+- "Search covers on SoundCloud" and "Convert everything to MP3 (320 kbps)"
+  toggles in Settings, both on by default. Turning off SoundCloud skips it
+  entirely (no auth attempt either). Turning off auto-convert makes `.wav`
+  files - the only format taggable without converting - get skipped during
+  scanning instead of being tagged in place; a warning explains this before
+  the change takes effect.
+- "Only show tracks with no cover match" checkbox in Advanced: filters the
+  table down to rows with no online match, combinable with the search box.
+  Hidden tracks with a cover are summarized as a
+  "- - - N track(s) with cover - - -" row at the bottom instead of just
+  disappearing.
+- Right-click menu: multi-select support for rescanning - selecting several
+  rows first turns "Rescan this file" into "Rescan selected (N)", running
+  one shared search instead of one per file.
+- "Apply" now warns first if the search box and/or the no-cover checkbox is
+  currently hiding some scanned files, since it always processes everything
+  regardless of what's visible.
+
+### Changed
+- iTunes is now always queried before SoundCloud (previously reversed for
+  remixes) - conserves SoundCloud's request quota, since iTunes turned out
+  to find the correct cover for nearly every remix in practice.
+- SoundCloud Client ID/Secret moved out of the Settings tab into their own
+  popup dialog, opened via a "SoundCloud credentials..." button.
+- Settings tab reordered: Appearance, Behavior, SoundCloud account, Check
+  for updates, View processing history.
+
+### Removed
+- "Delete album tag" - no longer wanted.
+
+### Fixed
+- iTunes cover matching rejected several kinds of otherwise-correct
+  matches: filename-sanitized characters (e.g. "BLOND_ISH" vs the real
+  "BLOND:ISH"), a featured artist credited only in the returned title
+  instead of the artist field, missing accents (e.g. "Bolemvn" vs
+  "Bolémvn"), and - for heavily-remixed songs - the specific remix getting
+  buried outside the top search result. iTunes search now also checks up
+  to 10 candidates (not just the first), strips punctuation from the query
+  (which was hurting relevance ranking), and retries with the remix
+  qualifier kept in the query when the plain search doesn't find a match.
+- A SoundCloud result containing an emoji could crash the whole search
+  with a console encoding error (`log=print`, i.e. CLI usage only - the
+  packaged app logs through its own Journal widget, unaffected) - added
+  `safe_print()` as the module's default logger instead.
+- Dark mode: every other table row's text rendered as a barely-readable
+  dim grey instead of the theme's real (light) text color.
+
 ## [0.6]
 
 ### Added

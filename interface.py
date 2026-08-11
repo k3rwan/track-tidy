@@ -226,6 +226,13 @@ class TaggerInterface:
         thread.start()
         return thread
 
+    def _sync_mentions_to_remove(self):
+        """Pushes the current "To remove" listbox contents to the tagger
+        module - a Tk widget read, so it must happen on the main thread,
+        before handing off to any background scan/rescan thread that reads
+        tagger.MENTIONS_TO_REMOVE."""
+        tagger.MENTIONS_TO_REMOVE = list(self.mentions_listbox.get(0, "end"))
+
     def _center_dialog(self, dialog):
         """Centers a dialog over the main window, clamped to stay fully
         on-screen - a dialog wider/taller than the main window (e.g. the
@@ -545,7 +552,7 @@ class TaggerInterface:
             return
 
         tagger.MUSIC_FOLDER = folder
-        tagger.MENTIONS_TO_REMOVE = list(self.mentions_listbox.get(0, "end"))
+        self._sync_mentions_to_remove()
         self.soundcloud_rate_limit_warned = False
 
         if folder != getattr(self, "last_scanned_folder", None):
@@ -1094,7 +1101,7 @@ class TaggerInterface:
           pending fix (applied on the next click on 'Apply').
         A failure on one file must never stop the others from updating.
         """
-        tagger.MENTIONS_TO_REMOVE = list(self.mentions_listbox.get(0, "end"))
+        self._sync_mentions_to_remove()
 
         for info in self.scanned_plan:
             try:
@@ -1190,7 +1197,7 @@ class TaggerInterface:
             return
 
         tagger.MUSIC_FOLDER = folder
-        tagger.MENTIONS_TO_REMOVE = list(self.mentions_listbox.get(0, "end"))
+        self._sync_mentions_to_remove()
         self.soundcloud_rate_limit_warned = False
 
         if folder != getattr(self, "last_scanned_folder", None):
@@ -1254,7 +1261,7 @@ class TaggerInterface:
         # before displaying - the background scan thread may have computed this
         # row's title with a slightly stale mentions list (e.g. "By FuviClan"
         # just got auto-activated by an earlier file in the very same scan).
-        tagger.MENTIONS_TO_REMOVE = list(self.mentions_listbox.get(0, "end"))
+        self._sync_mentions_to_remove()
         if not info.get("processed"):
             new_artist, new_title, _tags_already_present = tagger.resolve_artist_title(
                 info["file"], info.get("current_artist"), info.get("current_title")
@@ -2055,7 +2062,7 @@ class TaggerInterface:
 
         # Tk widget calls must happen on the main thread - resolve this now,
         # before handing off to the background thread below.
-        tagger.MENTIONS_TO_REMOVE = list(self.mentions_listbox.get(0, "end"))
+        self._sync_mentions_to_remove()
         file_names = [info["file"] for info in targets]
 
         def _run():
@@ -2446,7 +2453,7 @@ class TaggerInterface:
         folder = self.folder_variable.get().strip()
         if folder:
             tagger.MUSIC_FOLDER = folder
-        tagger.MENTIONS_TO_REMOVE = list(self.mentions_listbox.get(0, "end"))
+        self._sync_mentions_to_remove()
 
         if not self.progress_canvas.winfo_ismapped():
             self.progress_canvas.pack(fill="x")
