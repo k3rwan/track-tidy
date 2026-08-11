@@ -1,21 +1,23 @@
 """
 Organizes tags (Artist/Title/Cover) for audio files based on the filename,
-and fetches a cover online (iTunes / SoundCloud API). Any format other than
-MP3 (WAV, FLAC, AAC, M4A, OGG, WMA, AIFF, OPUS...) is converted to MP3
-(320 kbps) before tagging.
+and fetches a cover online (iTunes or Spotify - whichever is picked as the
+primary source - with SoundCloud as the fallback for either). Any format
+other than MP3 (WAV, FLAC, AAC, M4A, OGG, WMA, AIFF, OPUS...) is converted
+to MP3 (320 kbps) before tagging.
 
 Expected filename format: "Artist - Title.ext"
 
 Contents (in the order they appear below):
     1. Configuration & credentials       - path helpers (app_base_dir,
-                                            user_config_dir); SoundCloud
-                                            credentials; APP_VERSION, the
-                                            update check, and downloading the
-                                            installer; track reporting
-                                            (Discord webhook); saved UI
-                                            settings (theme...); the
-                                            processing history log;
-                                            MUSIC_FOLDER,
+                                            user_config_dir); SoundCloud and
+                                            Spotify credentials;
+                                            PRIMARY_COVER_SOURCE;
+                                            APP_VERSION, the update check,
+                                            and downloading the installer;
+                                            track reporting (Discord
+                                            webhook); saved UI settings
+                                            (theme...); the processing
+                                            history log; MUSIC_FOLDER,
                                             SUPPORTED_EXTENSIONS,
                                             MENTIONS_TO_REMOVE
     2. Filename & title cleaning          - clean_title, parse_filename, and every
@@ -30,9 +32,10 @@ Contents (in the order they appear below):
                                             fix_swapped_artist_title
     9. Cover search - iTunes              - search_cover_itunes
     10. Cover search - SoundCloud         - get_soundcloud_token, search_cover_soundcloud
-    11. Format conversion                 - find_ffmpeg, convert_to_mp3
-    12. Tag writing                       - open_audio_file, write_tags, fix_title_artist
-    13. Processing (Apply)                - process_files, process_folder, main
+    11. Cover search - Spotify            - get_spotify_token, search_cover_spotify
+    12. Format conversion                 - find_ffmpeg, convert_to_mp3
+    13. Tag writing                       - open_audio_file, write_tags, fix_title_artist
+    14. Processing (Apply)                - process_files, process_folder, main
 """
 
 import os
@@ -115,6 +118,15 @@ def read_credential(file_path):
 
 SOUNDCLOUD_CLIENT_ID = read_credential(CLIENT_ID_FILE)
 SOUNDCLOUD_CLIENT_SECRET = read_credential(CLIENT_SECRET_FILE)
+
+
+# --- Spotify credentials (read from separate files, next to the app) ---
+
+SPOTIFY_CLIENT_ID_FILE = os.path.join(user_config_dir(), "spotifyClientID.txt")
+SPOTIFY_CLIENT_SECRET_FILE = os.path.join(user_config_dir(), "spotifyClientSecret.txt")
+
+SPOTIFY_CLIENT_ID = read_credential(SPOTIFY_CLIENT_ID_FILE)
+SPOTIFY_CLIENT_SECRET = read_credential(SPOTIFY_CLIENT_SECRET_FILE)
 
 
 def load_id_txt_credentials():
@@ -462,6 +474,10 @@ USE_SOUNDCLOUD = True
 # the UI). When off, WAV files (the only format taggable without converting)
 # are skipped during scanning instead of being tagged in place.
 AUTO_CONVERT_MP3 = True
+
+# Which source is tried first for a cover match (set by the UI) - "itunes"
+# or "spotify". SoundCloud always remains the fallback for either choice.
+PRIMARY_COVER_SOURCE = "itunes"
 
 
 # ============================================================================
@@ -1031,7 +1047,32 @@ def detect_parenthetical_mentions(text):
 # 7. SCANNING (READ-ONLY)
 # ============================================================================
 
-def scan_one_file(file_name, soundcloud_token, log=safe_print, on_new_mention=None):
+def _search_primary_cover(artist, search_title, remix_qualified_title, spotify_token, log):
+    """
+    Tries the currently-selected primary cover source (PRIMARY_COVER_SOURCE:
+    "itunes" or "spotify") with the plain (parens-stripped) title, then
+    retries with the remix qualifier kept in the query if that didn't find
+    anything and the two titles actually differ (e.g. a heavily-remixed
+    song where the plain query ranks a different remix first). Returns
+    (match_result, source_name) - source_name is None when nothing matched.
+    """
+    if PRIMARY_COVER_SOURCE == "spotify":
+        source_name = "Spotify"
+        match_result = search_cover_spotify(artist, search_title, spotify_token, log=log)
+    else:
+        source_name = "iTunes"
+        match_result = search_cover_itunes(artist, search_title, log=log)
+
+    if not match_result and remix_qualified_title != search_title:
+        if PRIMARY_COVER_SOURCE == "spotify":
+            match_result = search_cover_spotify(artist, remix_qualified_title, spotify_token, log=log)
+        else:
+            match_result = search_cover_itunes(artist, remix_qualified_title, log=log, allow_loose_remix_match=True)
+
+    return match_result, (source_name if match_result else None)
+
+
+def scan_one_file(file_name, soundcloud_token, spotify_token=None, log=safe_print, on_new_mention=None):
     """
     Analyzes a single file (path relative to MUSIC_FOLDER): current tags,
     info detected from the name, and online cover search.
@@ -1067,27 +1108,14 @@ def scan_one_file(file_name, soundcloud_token, log=safe_print, on_new_mention=No
     if search_source_artist and search_source_title:
         search_title = strip_parentheses(search_source_title)
         has_parenthetical = search_title != search_source_title
+        remix_qualified_title = strip_trailing_noise_words(search_source_title) if has_parenthetical else search_title
 
-        # iTunes first (no token needed, and in practice finds most tracks -
-        # including most remixes) - SoundCloud is only queried as a fallback,
-        # to conserve its request quota.
-        match_result = search_cover_itunes(search_source_artist, search_title, log=log)
-        if match_result:
-            cover_source = "iTunes"
-
-        if not match_result and has_parenthetical:
-            # The remix-agnostic query above can rank a DIFFERENT remix of a
-            # heavily-remixed song ahead of the one we actually want, pushing
-            # it out of the checked candidates entirely (e.g. "World Hold On"
-            # has a dozen+ official remixes) - retry keeping the remix
-            # qualifier in the query to narrow it down.
-            remix_qualified_title = strip_trailing_noise_words(search_source_title)
-            if remix_qualified_title != search_title:
-                match_result = search_cover_itunes(
-                    search_source_artist, remix_qualified_title, log=log, allow_loose_remix_match=True
-                )
-                if match_result:
-                    cover_source = "iTunes"
+        # Primary source (iTunes or Spotify, picked in Settings) first -
+        # SoundCloud is only queried as a fallback, to conserve its request
+        # quota.
+        match_result, cover_source = _search_primary_cover(
+            search_source_artist, search_title, remix_qualified_title, spotify_token, log
+        )
 
         if not match_result and not SOUNDCLOUD_RATE_LIMITED and not SOUNDCLOUD_UNAVAILABLE:
             soundcloud_title = strip_trailing_noise_words(search_source_title)
@@ -1178,6 +1206,10 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
 
         soundcloud_token = get_soundcloud_token(log=log, on_rate_limited=_mark_rate_limited)
 
+    # Only bother authenticating with Spotify if it's actually the primary
+    # source for this run - no point for a scan that'll never call it.
+    spotify_token = get_spotify_token(log=log) if PRIMARY_COVER_SOURCE == "spotify" else None
+
     results = []
 
     for file_name in file_list:
@@ -1185,7 +1217,9 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
             log("  Scan cancelled.")
             break
 
-        info = scan_one_file(file_name, soundcloud_token, log=log, on_new_mention=on_new_mention)
+        info = scan_one_file(
+            file_name, soundcloud_token, spotify_token=spotify_token, log=log, on_new_mention=on_new_mention
+        )
         results.append(info)
         if on_file_scanned:
             on_file_scanned(info)
@@ -1428,14 +1462,15 @@ def fix_swapped_artist_title(detected_artist, detected_title, returned_artist, r
 # 9. COVER SEARCH - ITUNES
 # ============================================================================
 
-def build_itunes_query(artist, title):
+def build_search_query(artist, title):
     """
-    Builds the iTunes search term from artist+title, replacing punctuation
-    (commas, parentheses/brackets) with spaces instead of leaving it in the
-    query as literal characters. iTunes' relevance ranking seems to penalize
-    that punctuation - a comma-separated multi-artist string or a
-    parenthesized remix name can bury the exact version we want under a
+    Builds a search term from artist+title, replacing punctuation (commas,
+    parentheses/brackets) with spaces instead of leaving it in the query as
+    literal characters - both iTunes' and Spotify's relevance ranking seem
+    to penalize that punctuation. A comma-separated multi-artist string or
+    a parenthesized remix name can bury the exact version we want under a
     heap of same-song alternates, even when it's genuinely in the results.
+    Shared by search_cover_itunes() and search_cover_spotify().
     """
     combined = f"{artist} {title}"
     cleaned = re.sub(r"[,()\[\]]", " ", combined)
@@ -1469,7 +1504,7 @@ def search_cover_itunes(artist, title, log=safe_print, max_retries=2, allow_loos
                 # where a lot of French content (esp. explicit-tagged rap) simply
                 # isn't licensed and returns zero results even though it's on the
                 # French store.
-                params={"term": build_itunes_query(artist, title), "entity": "song", "limit": 10, "country": "FR"},
+                params={"term": build_search_query(artist, title), "entity": "song", "limit": 10, "country": "FR"},
                 timeout=10,
             )
 
@@ -1666,7 +1701,135 @@ def search_cover_soundcloud(artist, title, token, log=safe_print):
 
 
 # ============================================================================
-# 11. FORMAT CONVERSION
+# 11. COVER SEARCH - SPOTIFY
+# ============================================================================
+
+_cached_spotify_token = None
+_cached_spotify_token_expiry = 0  # Unix timestamp
+
+
+def invalidate_spotify_token():
+    """Forces the next get_spotify_token() call to authenticate again
+    instead of reusing the cached token - e.g. after the credentials change."""
+    global _cached_spotify_token, _cached_spotify_token_expiry
+    _cached_spotify_token = None
+    _cached_spotify_token_expiry = 0
+
+
+def get_spotify_token(log=safe_print):
+    global _cached_spotify_token, _cached_spotify_token_expiry
+
+    # Reuse the cached token if it's still valid (with a 60s safety margin)
+    if _cached_spotify_token and time.time() < _cached_spotify_token_expiry - 60:
+        return _cached_spotify_token
+
+    if not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET:
+        log("  [Spotify] No credentials found (spotifyClientID.txt / spotifyClientSecret.txt missing or empty).")
+        return None
+
+    try:
+        credentials = f"{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}"
+        encoded_credentials = base64.b64encode(credentials.encode()).decode()
+
+        response = requests.post(
+            "https://accounts.spotify.com/api/token",
+            headers={
+                "Authorization": f"Basic {encoded_credentials}",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            data={"grant_type": "client_credentials"},
+            timeout=10,
+        )
+
+        if response.status_code == 200:
+            payload = response.json()
+            _cached_spotify_token = payload.get("access_token")
+            _cached_spotify_token_expiry = time.time() + payload.get("expires_in", 3600)
+            return _cached_spotify_token
+
+        log(f"  [Spotify] Authentication error: HTTP {response.status_code} - {response.text[:300]}")
+        return None
+
+    except Exception as error:
+        log(f"  [Spotify] Error during authentication: {error}")
+        return None
+
+
+def search_cover_spotify(artist, title, token, log=safe_print):
+    """
+    Checks up to 10 candidates (not just the top one), mirroring
+    search_cover_itunes() - Spotify's search ranking can also bury the
+    exact version we want under alternates for a heavily-remixed song.
+    """
+    if not token:
+        return None
+
+    try:
+        response = requests.get(
+            "https://api.spotify.com/v1/search",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"q": build_search_query(artist, title), "type": "track", "limit": 10},
+            timeout=10,
+        )
+
+        if response.status_code != 200:
+            log(f"  [Spotify] Search failed: HTTP {response.status_code} - {response.text[:300]}")
+            return None
+
+        results = response.json().get("tracks", {}).get("items", [])
+        if not results:
+            log(f"  [Spotify] No result at all for '{artist} - {title}'")
+            return None
+
+        title_normalized = strip_feature_suffix(strip_generic_mix_suffix(title))
+
+        for result in results:
+            returned_artist = unicodedata.normalize(
+                "NFC", ", ".join(a.get("name", "") for a in result.get("artists", []))
+            )
+            returned_title = unicodedata.normalize("NFC", result.get("name", ""))
+            returned_title_normalized = strip_feature_suffix(strip_generic_mix_suffix(returned_title))
+
+            artist_ok = (
+                artist_sets_match(artist, returned_artist, returned_title)
+                and exact_match(title_normalized, returned_title_normalized)
+            )
+            swapped_ok = exact_match(title, returned_artist) and artist_sets_match(artist, returned_title_normalized)
+
+            if not (artist_ok or swapped_ok):
+                continue
+
+            images = result.get("album", {}).get("images", [])
+            if not images:
+                log(f"  [Spotify] Match found for '{artist} - {title}' but it has no artwork.")
+                continue
+
+            # Spotify lists images largest-first already; the first one is
+            # typically 640x640, more than enough for an embedded cover.
+            cover_url = images[0].get("url")
+            image_response = requests.get(cover_url, timeout=10)
+
+            if image_response.status_code == 200:
+                return image_response.content, returned_artist, returned_title
+
+            log(f"  [Spotify] Image download failed (HTTP {image_response.status_code}) for '{artist} - {title}'")
+
+        top_result = results[0]
+        top_artist = unicodedata.normalize("NFC", ", ".join(a.get("name", "") for a in top_result.get("artists", [])))
+        top_title = unicodedata.normalize("NFC", top_result.get("name", ""))
+        log(
+            f"  [Spotify] Match rejected (not an exact match among {len(results)} candidate(s)): "
+            f"expected '{artist} - {title}', got '{top_artist} - {top_title}'"
+        )
+        return None
+
+    except Exception as error:
+        log(f"  [Spotify] Error while searching for cover: {error}")
+        return None
+
+
+# ============================================================================
+# 12. FORMAT CONVERSION
 # ============================================================================
 
 def find_ffmpeg():
@@ -1710,7 +1873,7 @@ def convert_to_mp3(source_path):
 
 
 # ============================================================================
-# 12. TAG WRITING
+# 13. TAG WRITING
 # ============================================================================
 
 def open_audio_file(file_path):
@@ -1806,7 +1969,7 @@ def fix_title_artist(info, artist, title):
 
 
 # ============================================================================
-# 13. PROCESSING (APPLY)
+# 14. PROCESSING (APPLY)
 # ============================================================================
 
 def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None, should_cancel=None):
