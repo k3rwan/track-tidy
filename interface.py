@@ -1871,6 +1871,45 @@ class TaggerInterface:
 
         self._restripe_rows()
 
+    def _rescan_row(self, info):
+        """Re-runs the online cover search for just this one row (e.g. after
+        fixing SoundCloud credentials, or to retry a match without
+        rescanning the whole folder)."""
+        if info.get("processed"):
+            self._append_to_journal(f"Can't rescan '{info['file']}' - already processed.")
+            return
+
+        # Tk widget calls must happen on the main thread - resolve this now,
+        # before handing off to the background thread below.
+        tagger.MENTIONS_TO_REMOVE = list(self.mentions_listbox.get(0, "end"))
+
+        def _run():
+            results = tagger.scan_files(
+                [info["file"]],
+                log=self._append_to_journal,
+                on_new_mention=lambda mention: self.message_queue.put(("mention_added", mention)),
+                on_rate_limited=lambda: self.message_queue.put(("soundcloud_rate_limited", None)),
+            )
+            if results:
+                self.message_queue.put(("row_rescanned", results[0]))
+
+        self._run_in_background(_run)
+
+    def _apply_rescan_result(self, new_info):
+        """Replaces a row's info in place (same position) after _rescan_row()."""
+        try:
+            index = next(i for i, info in enumerate(self.scanned_plan) if info["file"] == new_info["file"])
+        except StopIteration:
+            return  # row was removed from the list while the rescan was running
+
+        new_info["original_order"] = self.scanned_plan[index].get("original_order")
+        self.scanned_plan[index] = new_info
+
+        if self.table.exists(new_info["file"]):
+            self._refresh_row(new_info)
+
+        self._append_to_journal(f"Rescanned '{new_info['file']}'.")
+
     def _show_context_menu(self, event):
         """Right-click on a row: shows a small context menu (e.g. open file location)."""
         item_id = self.table.identify_row(event.y)
@@ -1889,11 +1928,13 @@ class TaggerInterface:
                 bg=self.theme_colors["menu_bg"], fg=self.theme_colors["menu_fg"],
                 activebackground=self.theme_colors["select_bg"], activeforeground=self.theme_colors["select_fg"],
             )
+        menu.add_command(label="Rescan this file", command=lambda: self._rescan_row(info))
         menu.add_command(label="Open file location", command=lambda: self._open_file_location(info))
-        menu.add_command(label="Report track...", command=lambda: self._report_track(info))
         menu.add_separator()
         menu.add_command(label="Move up", command=lambda: self._move_row(info, -1))
         menu.add_command(label="Move down", command=lambda: self._move_row(info, 1))
+        menu.add_separator()
+        menu.add_command(label="Report track...", command=lambda: self._report_track(info))
         menu.add_separator()
         menu.add_command(label="Remove from list", command=self._delete_selected_rows)
         menu.tk_popup(event.x_root, event.y_root)
@@ -2069,6 +2110,9 @@ class TaggerInterface:
                             "Update check failed",
                             "Could not check for updates - check your internet connection and try again."
                         )
+
+                elif message_type == "row_rescanned":
+                    self._apply_rescan_result(content)
 
                 elif message_type == "report_sent":
                     success = content
