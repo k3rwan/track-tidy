@@ -824,42 +824,9 @@ class TaggerInterface:
             command=self._on_auto_convert_changed,
         ).pack(anchor="w", padx=10, pady=(0, 10))
 
-        ttk.Label(
-            soundcloud_tab,
-            text="SoundCloud requires registering an app yourself (Artist Pro account).\n"
-                 "Paste the Client ID / Client Secret you get from that page below.",
-            justify="left",
-            wraplength=440,
-        ).pack(anchor="w", padx=10, pady=(15, 10))
-
-        ttk.Label(soundcloud_tab, text="Client ID:").pack(anchor="w", padx=10)
-        self.sc_client_id_entry = ttk.Entry(soundcloud_tab)
-        self.sc_client_id_entry.pack(fill="x", padx=10, pady=(0, 10))
-        self.sc_client_id_entry.bind("<KeyRelease>", self._update_soundcloud_save_state)
-        self._bind_entry_context_menu(self.sc_client_id_entry)
-        if tagger.SOUNDCLOUD_CLIENT_ID:
-            self.sc_client_id_entry.insert(0, tagger.SOUNDCLOUD_CLIENT_ID)
-
-        ttk.Label(soundcloud_tab, text="Client Secret:").pack(anchor="w", padx=10)
-        self.sc_client_secret_entry = ttk.Entry(soundcloud_tab, show="*")
-        self.sc_client_secret_entry.pack(fill="x", padx=10, pady=(0, 15))
-        self.sc_client_secret_entry.bind("<KeyRelease>", self._update_soundcloud_save_state)
-        self._bind_entry_context_menu(self.sc_client_secret_entry)
-        if tagger.SOUNDCLOUD_CLIENT_SECRET:
-            self.sc_client_secret_entry.insert(0, tagger.SOUNDCLOUD_CLIENT_SECRET)
-
-        soundcloud_buttons_frame = ttk.Frame(soundcloud_tab)
-        soundcloud_buttons_frame.pack(fill="x", padx=10, pady=(0, 10))
-        self.sc_save_button = ttk.Button(
-            soundcloud_buttons_frame, text="Save", command=self._save_soundcloud_credentials
-        )
-        self.sc_save_button.pack(side="left", fill="x", expand=True, padx=(0, 5))
         ttk.Button(
-            soundcloud_buttons_frame, text="Register a SoundCloud app",
-            command=self._open_soundcloud_registration,
-        ).pack(side="left", fill="x", expand=True)
-
-        self._update_soundcloud_save_state()
+            soundcloud_tab, text="SoundCloud credentials...", command=self._show_soundcloud_credentials_dialog,
+        ).pack(fill="x", padx=10, pady=(0, 10))
 
         self.check_update_button = ttk.Button(
             soundcloud_tab, text="Check for updates", command=self._check_for_update_manual,
@@ -963,12 +930,63 @@ class TaggerInterface:
             tagger.SOUNDCLOUD_CLIENT_SECRET = client_secret or None
             tagger.invalidate_soundcloud_token()  # in case the credentials changed
 
-            messagebox.showinfo("Saved", "SoundCloud credentials saved.", parent=self.window)
+            messagebox.showinfo("Saved", "SoundCloud credentials saved.", parent=self._soundcloud_dialog)
         except Exception as error:
-            messagebox.showerror("Error", f"Could not save credentials: {error}", parent=self.window)
+            messagebox.showerror("Error", f"Could not save credentials: {error}", parent=self._soundcloud_dialog)
 
     def _open_soundcloud_registration(self):
         webbrowser.open("https://soundcloud.com/you/apps")
+
+    def _show_soundcloud_credentials_dialog(self):
+        dialog = tk.Toplevel(self.window)
+        self._style_toplevel(dialog)
+        dialog.title("SoundCloud credentials")
+        dialog.resizable(False, False)
+        dialog.transient(self.window)
+        dialog.grab_set()
+        self._soundcloud_dialog = dialog
+
+        ttk.Label(
+            dialog,
+            text="SoundCloud requires registering an app yourself (Artist Pro account).\n"
+                 "Paste the Client ID / Client Secret you get from that page below.",
+            justify="left",
+            wraplength=440,
+        ).pack(anchor="w", padx=10, pady=(15, 10))
+
+        ttk.Label(dialog, text="Client ID:").pack(anchor="w", padx=10)
+        self.sc_client_id_entry = ttk.Entry(dialog)
+        self.sc_client_id_entry.pack(fill="x", padx=10, pady=(0, 10))
+        self.sc_client_id_entry.bind("<KeyRelease>", self._update_soundcloud_save_state)
+        self._bind_entry_context_menu(self.sc_client_id_entry)
+        if tagger.SOUNDCLOUD_CLIENT_ID:
+            self.sc_client_id_entry.insert(0, tagger.SOUNDCLOUD_CLIENT_ID)
+
+        ttk.Label(dialog, text="Client Secret:").pack(anchor="w", padx=10)
+        self.sc_client_secret_entry = ttk.Entry(dialog, show="*")
+        self.sc_client_secret_entry.pack(fill="x", padx=10, pady=(0, 15))
+        self.sc_client_secret_entry.bind("<KeyRelease>", self._update_soundcloud_save_state)
+        self._bind_entry_context_menu(self.sc_client_secret_entry)
+        if tagger.SOUNDCLOUD_CLIENT_SECRET:
+            self.sc_client_secret_entry.insert(0, tagger.SOUNDCLOUD_CLIENT_SECRET)
+
+        soundcloud_buttons_frame = ttk.Frame(dialog)
+        soundcloud_buttons_frame.pack(fill="x", padx=10, pady=(0, 10))
+        self.sc_save_button = ttk.Button(
+            soundcloud_buttons_frame, text="Save", command=self._save_soundcloud_credentials
+        )
+        self.sc_save_button.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        ttk.Button(
+            soundcloud_buttons_frame, text="Register a SoundCloud app",
+            command=self._open_soundcloud_registration,
+        ).pack(side="left", fill="x", expand=True)
+
+        self._update_soundcloud_save_state()
+
+        ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=(0, 15))
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+
+        self._center_dialog(dialog)
 
     # --- Extracter tab actions ---
 
