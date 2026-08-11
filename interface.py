@@ -885,6 +885,16 @@ class TaggerInterface:
             command=self._on_auto_convert_changed,
         ).pack(anchor="w", padx=10, pady=(10, 10))
 
+        update_history_row = ttk.Frame(soundcloud_tab)
+        update_history_row.pack(fill="x", padx=10, pady=(0, 10))
+        self.check_update_button = ttk.Button(
+            update_history_row, text="Check for updates", command=self._check_for_update_manual,
+        )
+        self.check_update_button.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        ttk.Button(
+            update_history_row, text="View processing history", command=self._show_history_window,
+        ).pack(side="left", fill="x", expand=True)
+
         legal_text_label = ttk.Label(
             soundcloud_tab,
             text=(
@@ -908,16 +918,6 @@ class TaggerInterface:
         ).pack(anchor="w", padx=10, pady=(0, 2), side="bottom")
 
         ttk.Separator(soundcloud_tab, orient="horizontal").pack(fill="x", padx=10, pady=(20, 10), side="bottom")
-
-        update_history_row = ttk.Frame(soundcloud_tab)
-        update_history_row.pack(fill="x", padx=10, pady=(0, 10), side="bottom")
-        self.check_update_button = ttk.Button(
-            update_history_row, text="Check for updates", command=self._check_for_update_manual,
-        )
-        self.check_update_button.pack(side="left", fill="x", expand=True, padx=(0, 5))
-        ttk.Button(
-            update_history_row, text="View processing history", command=self._show_history_window,
-        ).pack(side="left", fill="x", expand=True)
 
         # Captured now (native theme, before any dark styling is ever applied)
         # so "light" mode can restore these exact values later.
