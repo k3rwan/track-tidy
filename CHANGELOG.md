@@ -3,7 +3,7 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.7]
 
 ### Added
 - "Search covers on SoundCloud" and "Convert everything to MP3 (320 kbps)"
