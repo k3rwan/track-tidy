@@ -709,7 +709,7 @@ class TaggerInterface:
         # --- Advanced section (collapsible): mentions to remove ---
         self.advanced_section_visible = False
 
-        self.advanced_toggle = ttk.Label(tagger_tab, text="▸ Advanced", cursor="hand2", foreground="#1a73e8")
+        self.advanced_toggle = ttk.Label(tagger_tab, text="▸ ⚙️", cursor="hand2", foreground="#1a73e8")
         self.advanced_toggle.pack(anchor="w", padx=10, pady=(0, 2))
         self.advanced_toggle.bind("<Button-1>", lambda event: self._toggle_advanced_section())
 
@@ -986,10 +986,10 @@ class TaggerInterface:
         self.advanced_section_visible = not self.advanced_section_visible
         if self.advanced_section_visible:
             self.advanced_frame.pack(fill="x", padx=10, pady=(0, 10), after=self.advanced_toggle)
-            self.advanced_toggle.configure(text="▾ Advanced")
+            self.advanced_toggle.configure(text="▾ ⚙️")
         else:
             self.advanced_frame.pack_forget()
-            self.advanced_toggle.configure(text="▸ Advanced")
+            self.advanced_toggle.configure(text="▸ ⚙️")
         self._adjust_window_height()
 
     def _toggle_journal_section(self):
