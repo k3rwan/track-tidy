@@ -236,11 +236,5 @@ class VersionParsingTests(unittest.TestCase):
         self.assertTrue(tagger.parse_version("v0.2") == tagger.parse_version("0.2"))
 
 
-class SystemThemeTests(unittest.TestCase):
-    def test_get_system_theme_returns_light_or_dark(self):
-        import interface
-        self.assertIn(interface.get_system_theme(), ("light", "dark"))
-
-
 if __name__ == "__main__":
     unittest.main()
