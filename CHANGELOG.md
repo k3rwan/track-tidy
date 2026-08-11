@@ -3,6 +3,33 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5]
+
+### Added
+- "Report track..." in the row right-click menu: sends the file name,
+  current/suggested tags, cover-match status, and the existing/suggested
+  cover images to a Discord webhook - a quick way to flag a problem track
+  (e.g. no cover found) for the developer to investigate.
+- "Rescan this file" in the row right-click menu: re-runs the online cover
+  search for just that one row (e.g. after fixing SoundCloud credentials, or
+  to retry a match) without rescanning the whole folder.
+- "Move up" / "Move down" / "Remove from list" in the row right-click menu
+  (the last one mirrors the existing Delete key).
+
+### Fixed
+- iTunes cover search never specified a store, so it defaulted to the US
+  store - where a lot of French content (especially explicit-tagged rap)
+  isn't licensed and returned zero results even though it's on the French
+  store. Now searches the FR store.
+- The table thumbnail/cover zoom popup showed no cover at all for a row
+  where the file already had a good existing cover but no online match was
+  found - even though the file's own cover is actually kept untouched in
+  that case. The preview now matches what Apply really does.
+
+### Changed
+- Row right-click menu reorganized: Rescan this file / Open file location,
+  then Move up / Move down, then Report track..., then Remove from list.
+
 ## [0.4]
 
 ### Added
