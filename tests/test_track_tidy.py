@@ -173,9 +173,9 @@ class ArtistMatchingTests(unittest.TestCase):
 
 
 class ITunesQueryTests(unittest.TestCase):
-    def test_build_itunes_query_strips_punctuation(self):
+    def test_build_search_query_strips_punctuation(self):
         self.assertEqual(
-            tagger.build_itunes_query("Bob Sinclar, Steve Edwards", "World Hold On (THEMBA Extended Remix)"),
+            tagger.build_search_query("Bob Sinclar, Steve Edwards", "World Hold On (THEMBA Extended Remix)"),
             "Bob Sinclar Steve Edwards World Hold On THEMBA Extended Remix",
         )
 
@@ -213,6 +213,79 @@ class ITunesQueryTests(unittest.TestCase):
             {"steve edwards", "themba"},
         )
         self.assertEqual(tagger.extract_feature_names_from_groups(["Extended Mix"]), set())
+
+
+class PrimaryCoverSourceTests(unittest.TestCase):
+    """_search_primary_cover() just routes to whichever provider is
+    selected and retries with the remix-qualified title - no network
+    involved, so the providers are swapped out with fakes."""
+
+    def setUp(self):
+        self._original_primary = tagger.PRIMARY_COVER_SOURCE
+        self._original_itunes = tagger.search_cover_itunes
+        self._original_spotify = tagger.search_cover_spotify
+
+    def tearDown(self):
+        tagger.PRIMARY_COVER_SOURCE = self._original_primary
+        tagger.search_cover_itunes = self._original_itunes
+        tagger.search_cover_spotify = self._original_spotify
+
+    def test_routes_to_itunes_by_default(self):
+        tagger.PRIMARY_COVER_SOURCE = "itunes"
+        calls = []
+
+        def fake_itunes(artist, title, log=None, **kwargs):
+            calls.append(title)
+            return (b"cover", artist, title)
+
+        tagger.search_cover_itunes = fake_itunes
+        tagger.search_cover_spotify = lambda *a, **k: self.fail("Spotify should not be called")
+
+        match_result, source = tagger._search_primary_cover("Artist", "Title", "Title", None, print)
+        self.assertEqual(source, "iTunes")
+        self.assertEqual(calls, ["Title"])
+        self.assertIsNotNone(match_result)
+
+    def test_routes_to_spotify_when_selected(self):
+        tagger.PRIMARY_COVER_SOURCE = "spotify"
+        calls = []
+
+        def fake_spotify(artist, title, token, log=None):
+            calls.append(title)
+            return (b"cover", artist, title)
+
+        tagger.search_cover_spotify = fake_spotify
+        tagger.search_cover_itunes = lambda *a, **k: self.fail("iTunes should not be called")
+
+        match_result, source = tagger._search_primary_cover("Artist", "Title", "Title", "token", print)
+        self.assertEqual(source, "Spotify")
+        self.assertEqual(calls, ["Title"])
+        self.assertIsNotNone(match_result)
+
+    def test_retries_with_remix_qualified_title_on_miss(self):
+        tagger.PRIMARY_COVER_SOURCE = "itunes"
+        calls = []
+
+        def fake_itunes(artist, title, log=None, **kwargs):
+            calls.append(title)
+            return (b"cover", artist, title) if title == "Title (Remix)" else None
+
+        tagger.search_cover_itunes = fake_itunes
+
+        match_result, source = tagger._search_primary_cover("Artist", "Title", "Title (Remix)", None, print)
+        self.assertEqual(calls, ["Title", "Title (Remix)"])
+        self.assertEqual(source, "iTunes")
+        self.assertIsNotNone(match_result)
+
+    def test_no_retry_when_remix_qualified_title_matches_plain(self):
+        tagger.PRIMARY_COVER_SOURCE = "itunes"
+        calls = []
+        tagger.search_cover_itunes = lambda artist, title, log=None, **k: calls.append(title) or None
+
+        match_result, source = tagger._search_primary_cover("Artist", "Title", "Title", None, print)
+        self.assertEqual(calls, ["Title"])
+        self.assertIsNone(match_result)
+        self.assertIsNone(source)
 
 
 class TitleWordsOverlapTests(unittest.TestCase):
