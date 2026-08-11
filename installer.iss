@@ -9,6 +9,10 @@
 #define MyAppVersion "0.3"
 
 [Setup]
+; Fixed forever, regardless of AppName/version changes - this is how Setup
+; recognizes "this is the same product" to detect an existing installation.
+; Never change this once it's shipped.
+AppId={{59AAEA02-0524-4647-BCEB-B225BD129AD2}
 AppName=Track Tidy
 AppVersion={#MyAppVersion}
 AppPublisher=KEVZ
@@ -37,3 +41,48 @@ Filename: "{app}\Track-Tidy.exe"; Description: "Launch Track Tidy now"; Flags: n
 
 [Messages]
 WelcomeLabel2=This will install Track Tidy on your computer.
+
+[Code]
+// NOTE: intentionally NOT using {#SetupSetting("AppId")} here - that
+// preprocessor macro returns the [Setup] section's RAW text, i.e. the
+// double-brace escape sequence ('{{GUID}') as literally written, not the
+// resolved single-brace GUID - which silently never matches the real
+// registry key. A plain Pascal string doesn't need that escaping, so the
+// GUID is just hardcoded here (must be kept in sync with AppId above).
+const
+  AppUninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{59AAEA02-0524-4647-BCEB-B225BD129AD2}_is1';
+
+function GetInstalledVersion(): String;
+var
+  Version: String;
+begin
+  if not RegQueryStringValue(HKLM64, AppUninstallKey, 'DisplayVersion', Version) then
+    if not RegQueryStringValue(HKLM32, AppUninstallKey, 'DisplayVersion', Version) then
+      RegQueryStringValue(HKCU, AppUninstallKey, 'DisplayVersion', Version);
+  Result := Version;
+end;
+
+// Detects a previous installation (via AppId, so it survives AppName/version
+// changes) and asks to update instead of silently reinstalling everything
+// with no explanation. Answering "No" cancels Setup entirely.
+function InitializeSetup(): Boolean;
+var
+  InstalledVersion: String;
+begin
+  Result := True;
+  InstalledVersion := GetInstalledVersion();
+  if InstalledVersion <> '' then
+  begin
+    if InstalledVersion <> '{#MyAppVersion}' then
+      Result := (MsgBox(
+        'Track Tidy ' + InstalledVersion + ' is already installed.' + #13#10 +
+        'This will update it to version {#MyAppVersion}.' + #13#10#13#10 +
+        'Continue?',
+        mbConfirmation, MB_YESNO) = IDYES)
+    else
+      Result := (MsgBox(
+        'Track Tidy {#MyAppVersion} is already installed.' + #13#10#13#10 +
+        'Reinstall it anyway?',
+        mbConfirmation, MB_YESNO) = IDYES);
+  end;
+end;
