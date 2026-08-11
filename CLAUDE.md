@@ -3,14 +3,18 @@
 ## Autonomy
 
 Kevin has given standing permission to work autonomously on this project's
-routine workflow, without asking for confirmation each time:
+PR workflow, without asking for confirmation each time:
+- Opening PRs
 - Merging PRs after opening them
 - Pushing branches
-- Building the app/installer and publishing GitHub releases (both the
-  private `track-tidy` source repo and the public `track-tidy-releases`
-  distribution repo)
 
-Still flag before doing, even here:
+**Exception - always ask first:** building/publishing a release (bumping
+the version, building the installer, `gh release create` on either
+`track-tidy` or `track-tidy-releases`). This is the one step in the
+workflow Kevin wants to explicitly approve each time, even though the PR
+steps before it don't need approval.
+
+Still flag before doing, even for the PR workflow:
 - Anything hard to reverse or unusual for this workflow: force-push,
   deleting a branch/repo, rewriting git history, changing repo visibility
 - Anything outside this project's normal dev loop
