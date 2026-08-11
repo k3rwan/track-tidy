@@ -3,7 +3,12 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.3]
+
+### Fixed
+- The update check pointed at `k3rwan/track-tidy` (the private source repo,
+  always 404 for anyone without access) instead of `k3rwan/track-tidy-releases`
+  (the public, installer-only repo colleagues actually download from).
 
 ### Added
 - Auto-update check on startup: compares the running version against the
