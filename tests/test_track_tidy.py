@@ -156,6 +156,49 @@ class ArtistMatchingTests(unittest.TestCase):
         ))
 
 
+class ITunesQueryTests(unittest.TestCase):
+    def test_build_itunes_query_strips_punctuation(self):
+        self.assertEqual(
+            tagger.build_itunes_query("Bob Sinclar, Steve Edwards", "World Hold On (THEMBA Extended Remix)"),
+            "Bob Sinclar Steve Edwards World Hold On THEMBA Extended Remix",
+        )
+
+    def test_strip_all_trailing_groups(self):
+        core, groups = tagger.strip_all_trailing_groups(
+            "World Hold On (Children Of The Sky) [feat. Steve Edwards & THEMBA] [THEMBA Extended Remix]"
+        )
+        self.assertEqual(core, "World Hold On")
+        self.assertEqual(groups, ["THEMBA Extended Remix", "feat. Steve Edwards & THEMBA", "Children Of The Sky"])
+
+    def test_strip_all_trailing_groups_no_groups(self):
+        self.assertEqual(tagger.strip_all_trailing_groups("World Hold On"), ("World Hold On", []))
+
+    def test_loose_remix_match_tolerates_extra_subtitle_and_feat_position(self):
+        self.assertTrue(tagger.loose_remix_match(
+            "World Hold On (THEMBA Extended Remix)",
+            "World Hold On (Children Of The Sky) [feat. Steve Edwards & THEMBA] [THEMBA Extended Remix]",
+        ))
+
+    def test_loose_remix_match_rejects_different_remix(self):
+        self.assertFalse(tagger.loose_remix_match(
+            "World Hold On (THEMBA Extended Remix)",
+            "World Hold On (Children Of The Sky) [feat. Steve Edwards] [FISHER Rework]",
+        ))
+
+    def test_loose_remix_match_rejects_different_core_title(self):
+        self.assertFalse(tagger.loose_remix_match(
+            "Some Other Song (THEMBA Extended Remix)",
+            "World Hold On (Children Of The Sky) [THEMBA Extended Remix]",
+        ))
+
+    def test_extract_feature_names_from_groups(self):
+        self.assertEqual(
+            tagger.extract_feature_names_from_groups(["THEMBA Extended Remix", "feat. Steve Edwards & THEMBA"]),
+            {"steve edwards", "themba"},
+        )
+        self.assertEqual(tagger.extract_feature_names_from_groups(["Extended Mix"]), set())
+
+
 class TitleWordsOverlapTests(unittest.TestCase):
     def test_shared_meaningful_word_overlaps(self):
         self.assertTrue(tagger.title_words_overlap("Je La Connais", "Je La Connais (Remix)"))
