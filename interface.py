@@ -25,6 +25,7 @@ import webbrowser
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox
+from tkinter import font as tkfont
 from PIL import Image, ImageTk, ImageDraw
 
 # When launched via pythonw.exe (no console), sys.stdout/stderr are None.
@@ -54,7 +55,11 @@ CHECKED_BOX = "☑"
 EMPTY_BOX = "☐"
 PROCESSED_CHECK = "✔"
 
-THUMBNAIL_SIZE = (36, 36)
+THUMBNAIL_SIZE = (44, 44)
+TABLE_ROW_HEIGHT = 48
+# Widened from the original 500px so the bigger thumbnails and wider
+# Title/Artist columns actually have room to breathe.
+WINDOW_WIDTH = 620
 
 # Data columns. The cover is shown via the native "#0" column (dedicated, on the left),
 # the "apply" checkbox is a separate column right after it.
@@ -65,6 +70,12 @@ COLUMNS = ("apply", "title", "artist", "format")
 # the bottom of the table when the no-cover filter hides some rows - never
 # backed by a real scanned_plan entry.
 NO_COVER_SUMMARY_ROW_ID = "__no_cover_summary_row__"
+
+# Soft selection highlight for the main table in light mode, in place of the
+# native theme's stock (harsher) Windows blue - the rest of light mode still
+# intentionally leaves the native theme's own colors alone (see below).
+LIGHT_TABLE_SELECT_BG = "#cfe3f5"
+LIGHT_TABLE_SELECT_FG = "#1a1a1a"
 
 # Dark palette. There's no equivalent LIGHT_COLORS dict - "light" instead
 # means "leave the native theme's own colors alone", captured at startup
@@ -149,7 +160,7 @@ class TaggerInterface:
             self._icon_image_ref = ImageTk.PhotoImage(file=icon_png_path)  # keep a reference
             self.window.iconphoto(True, self._icon_image_ref)
 
-        self.window.geometry("500x650")
+        self.window.geometry(f"{WINDOW_WIDTH}x650")
         self.window.resizable(False, False)  # prevents fullscreen / resizing
 
         self.message_queue = queue.Queue()
@@ -160,6 +171,9 @@ class TaggerInterface:
         self.tk_images_hover = {}  # same thumbnails, with a magnifier badge - built lazily on first hover
         self._thumbnail_pil_images = {}  # pre-PhotoImage PIL images, so the hover badge can be composited cheaply
         self._hovered_cover_row = None
+        self._tooltip_window = None
+        self._tooltip_key = None
+        self._table_font = tkfont.nametofont("TkDefaultFont")
         self.soundcloud_rate_limit_warned = False
         self.mention_counts = {}  # raw mention text -> number of times seen
 
@@ -307,7 +321,7 @@ class TaggerInterface:
         # Custom style names are scoped to the CURRENTLY active ttk theme, so
         # switching theme_use() above resets them - both of these have to be
         # re-applied every time, for every theme, not just for dark mode.
-        style.configure("Table.Treeview", rowheight=40)
+        style.configure("Table.Treeview", rowheight=TABLE_ROW_HEIGHT)
 
         if dark:
             style.configure(".", background=colors["bg"], foreground=colors["fg"])
@@ -374,6 +388,11 @@ class TaggerInterface:
                 "ReadonlyWhite.TEntry",
                 fieldbackground=[("readonly", "white")],
                 foreground=[("readonly", "black")],
+            )
+            style.map(
+                "Table.Treeview",
+                background=[("selected", LIGHT_TABLE_SELECT_BG)],
+                foreground=[("selected", LIGHT_TABLE_SELECT_FG)],
             )
             self.window.configure(bg=self._native_bg)
             self.journal_text.configure(
@@ -746,7 +765,7 @@ class TaggerInterface:
         # show="tree headings": the native "#0" column (far left) shows ONLY the cover
         self.table = ttk.Treeview(scrollbars_frame, columns=COLUMNS, show="tree headings", height=8)
         self.table.heading("#0", text="Cover")
-        self.table.column("#0", width=64, minwidth=64, anchor="center", stretch=False)
+        self.table.column("#0", width=72, minwidth=72, anchor="center", stretch=False)
 
         self.all_checked_state = True
         self.all_convert_state = True
@@ -759,11 +778,11 @@ class TaggerInterface:
             "format": CHECKED_BOX,
         }
         widths = {
-            "apply": 30, "title": 140, "artist": 100, "format": 70,
+            "apply": 34, "title": 210, "artist": 160, "format": 55,
         }
 
         style = ttk.Style()
-        style.configure("Table.Treeview", rowheight=40)  # tall enough for the thumbnail
+        style.configure("Table.Treeview", rowheight=TABLE_ROW_HEIGHT)  # tall enough for the bigger thumbnail
         self.table.configure(style="Table.Treeview")
 
         for col in COLUMNS:
@@ -951,12 +970,12 @@ class TaggerInterface:
         """Recomputes the needed window height based on the currently visible sections."""
         self.window.update_idletasks()
         height = self.window.winfo_reqheight()
-        self.window.geometry(f"500x{height}")
+        self.window.geometry(f"{WINDOW_WIDTH}x{height}")
 
     def _update_progress_bar(self, fraction, text):
         """Redraws the progress bar (rectangle + text) on the canvas."""
         self.progress_canvas.update_idletasks()
-        width = self.progress_canvas.winfo_width() or 480
+        width = self.progress_canvas.winfo_width() or (WINDOW_WIDTH - 40)
         height = 24
 
         self.progress_canvas.coords(self.progress_rect, 0, 0, width * fraction, height)
@@ -2143,7 +2162,9 @@ class TaggerInterface:
     def _on_table_hover(self, event):
         """Shows a magnifier badge on the cover thumbnail under the cursor
         (only when it actually has a cover to zoom into), and restores the
-        previous row's plain thumbnail once the cursor moves off it."""
+        previous row's plain thumbnail once the cursor moves off it. Also
+        shows a tooltip with the full Title/Artist text when it's too long
+        to fit in its column."""
         row_id = self.table.identify_row(event.y)
         column_id = self.table.identify_column(event.x)
 
@@ -2152,27 +2173,76 @@ class TaggerInterface:
         )
         target = row_id if hovering_cover else None
 
-        if target == self._hovered_cover_row:
-            return
+        if target != self._hovered_cover_row:
+            if self._hovered_cover_row and self.table.exists(self._hovered_cover_row):
+                self.table.item(self._hovered_cover_row, image=self.tk_images.get(self._hovered_cover_row) or "")
 
-        if self._hovered_cover_row and self.table.exists(self._hovered_cover_row):
-            self.table.item(self._hovered_cover_row, image=self.tk_images.get(self._hovered_cover_row) or "")
+            self._hovered_cover_row = target
 
-        self._hovered_cover_row = target
+            if target:
+                badged_image = self._get_hover_thumbnail(target)
+                if badged_image:
+                    self.table.item(target, image=badged_image)
+                self.table.configure(cursor="hand2")
+            else:
+                self.table.configure(cursor="")
 
-        if target:
-            badged_image = self._get_hover_thumbnail(target)
-            if badged_image:
-                self.table.item(target, image=badged_image)
-            self.table.configure(cursor="hand2")
-        else:
-            self.table.configure(cursor="")
+        self._update_cell_tooltip(row_id, column_id, event)
 
     def _on_table_leave(self, event):
         if self._hovered_cover_row and self.table.exists(self._hovered_cover_row):
             self.table.item(self._hovered_cover_row, image=self.tk_images.get(self._hovered_cover_row) or "")
         self._hovered_cover_row = None
         self.table.configure(cursor="")
+        self._hide_tooltip()
+
+    # --- Truncated-text tooltip ---
+
+    def _update_cell_tooltip(self, row_id, column_id, event):
+        """Shows a tooltip with the full text of a Title/Artist cell, but
+        only when the displayed text doesn't actually fit in the column
+        (so it never fires on rows that don't need it)."""
+        col_name = {"#2": "title", "#3": "artist"}.get(column_id) if row_id else None
+        text = ""
+
+        if col_name and self.table.exists(row_id):
+            values = self.table.item(row_id, "values")
+            col_index = COLUMNS.index(col_name)
+            text = values[col_index] if col_index < len(values) else ""
+            column_width = self.table.column(col_name, "width")
+            # A few px of slack for the cell's own internal padding.
+            if not text or self._table_font.measure(text) <= column_width - 10:
+                text = ""
+
+        key = (row_id, col_name) if text else None
+        if key == self._tooltip_key:
+            self._position_tooltip(event)
+            return
+
+        self._hide_tooltip()
+        self._tooltip_key = key
+        if key:
+            self._show_tooltip(text, event)
+
+    def _show_tooltip(self, text, event):
+        self._tooltip_window = tk.Toplevel(self.window)
+        self._tooltip_window.overrideredirect(True)
+        self._tooltip_window.attributes("-topmost", True)
+        ttk.Label(
+            self._tooltip_window, text=text, background="#ffffe0", foreground="#1a1a1a",
+            relief="solid", borderwidth=1, padding=(6, 3),
+        ).pack()
+        self._position_tooltip(event)
+
+    def _position_tooltip(self, event):
+        if self._tooltip_window is not None:
+            self._tooltip_window.geometry(f"+{event.x_root + 12}+{event.y_root + 18}")
+
+    def _hide_tooltip(self):
+        if self._tooltip_window is not None:
+            self._tooltip_window.destroy()
+            self._tooltip_window = None
+        self._tooltip_key = None
 
     # --- Table editing & context menu ---
 
