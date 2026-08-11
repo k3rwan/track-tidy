@@ -203,5 +203,44 @@ class HistoryLogTests(unittest.TestCase):
         self.assertIn("timestamp", entries[0])
 
 
+class SettingsPersistenceTests(unittest.TestCase):
+    def setUp(self):
+        self._original_settings_file = tagger.SETTINGS_FILE
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        tagger.SETTINGS_FILE = os.path.join(self._tmp_dir.name, "settings.json")
+
+    def tearDown(self):
+        tagger.SETTINGS_FILE = self._original_settings_file
+        self._tmp_dir.cleanup()
+
+    def test_load_settings_missing_file_returns_empty_dict(self):
+        self.assertEqual(tagger.load_settings(), {})
+
+    def test_save_and_load_roundtrip(self):
+        tagger.save_setting("theme", "dark")
+        self.assertEqual(tagger.load_settings(), {"theme": "dark"})
+
+    def test_save_setting_preserves_other_keys(self):
+        tagger.save_setting("theme", "dark")
+        tagger.save_setting("other_key", "value")
+        self.assertEqual(tagger.load_settings(), {"theme": "dark", "other_key": "value"})
+
+
+class VersionParsingTests(unittest.TestCase):
+    def test_parse_version_simple(self):
+        self.assertEqual(tagger.parse_version("v0.2"), (0, 2))
+        self.assertEqual(tagger.parse_version("1.2.3"), (1, 2, 3))
+
+    def test_parse_version_ordering(self):
+        self.assertTrue(tagger.parse_version("0.10") > tagger.parse_version("0.2"))
+        self.assertTrue(tagger.parse_version("v0.2") == tagger.parse_version("0.2"))
+
+
+class SystemThemeTests(unittest.TestCase):
+    def test_get_system_theme_returns_light_or_dark(self):
+        import interface
+        self.assertIn(interface.get_system_theme(), ("light", "dark"))
+
+
 if __name__ == "__main__":
     unittest.main()

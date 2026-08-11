@@ -58,6 +58,47 @@ THUMBNAIL_SIZE = (36, 36)
 # "format" combines the format AND the conversion (e.g. "MP3", "WAV ☑")
 COLUMNS = ("apply", "title", "artist", "format")
 
+# Dark palette. There's no equivalent LIGHT_COLORS dict - "light" instead
+# means "leave the native theme's own colors alone", captured at startup
+# (see App._native_bg etc.) so it matches today's look exactly.
+DARK_COLORS = {
+    "bg": "#2b2b2b",
+    "fg": "#e0e0e0",
+    "entry_bg": "#3c3c3c",
+    "entry_fg": "#f0f0f0",
+    "select_bg": "#3f6fb0",
+    "select_fg": "#ffffff",
+    "tree_bg": "#333333",
+    "tree_fg": "#e0e0e0",
+    "tree_odd_row": "#3a3a3a",
+    "tree_heading_bg": "#3c3c3c",
+    "listbox_bg": "#333333",
+    "listbox_fg": "#e0e0e0",
+    "journal_bg": "#1e1e1e",
+    "journal_fg": "#d4d4d4",
+    "progress_track": "#3c3c3c",
+    "progress_fill": "#4a90d9",
+    "progress_text": "#f0f0f0",
+    "menu_bg": "#333333",
+    "menu_fg": "#e0e0e0",
+    "border": "#4a4a4a",
+}
+
+
+def get_system_theme():
+    """
+    Reads Windows' current app theme (light/dark) from the registry.
+    Defaults to "light" on any failure (older Windows, missing key, etc).
+    """
+    try:
+        import winreg
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+            value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+            return "light" if value else "dark"
+    except OSError:
+        return "light"
+
 
 def setup_placeholder(entry, placeholder, on_change=None):
     """
@@ -65,8 +106,10 @@ def setup_placeholder(entry, placeholder, on_change=None):
     like a native HTML placeholder. on_change (if given) is called whenever the
     placeholder is shown/hidden, so callers relying on the entry's content (e.g.
     a search filter) can react. entry.placeholder_active tracks the state.
+    entry.normal_color is kept mutable (not a closure constant) so a theme
+    change can update what "not a placeholder" text color means.
     """
-    normal_color = "black"
+    entry.normal_color = "black"
     placeholder_color = "#999999"
 
     def show_placeholder():
@@ -77,7 +120,7 @@ def setup_placeholder(entry, placeholder, on_change=None):
     def clear_placeholder():
         if getattr(entry, "placeholder_active", False):
             entry.delete(0, "end")
-            entry.configure(foreground=normal_color)
+            entry.configure(foreground=entry.normal_color)
             entry.placeholder_active = False
 
     def on_focus_in(_event):
@@ -124,12 +167,151 @@ class TaggerInterface:
         self.soundcloud_rate_limit_warned = False
         self.mention_counts = {}  # raw mention text -> number of times seen
 
+        self._native_theme = ttk.Style().theme_use()  # so "light" can restore it later
+        self.theme_colors = None  # None while light/native; DARK_COLORS once dark is applied
+        self.theme_var = tk.StringVar(value=tagger.load_settings().get("theme", "system"))
+
         self._build_interface()
         self._setup_drag_and_drop()
         self._adjust_window_height()
+        self._apply_theme(self.theme_var.get())
         self._start_message_loop()
         self._check_soundcloud_credentials_on_startup()
         self._check_for_update_on_startup()
+
+    def _resolve_theme(self, choice):
+        return get_system_theme() if choice == "system" else choice
+
+    def _on_theme_changed(self):
+        choice = self.theme_var.get()
+        self._apply_theme(choice)
+        tagger.save_setting("theme", choice)
+
+    def _style_toplevel(self, dialog):
+        """Applies the current theme's background (and title bar) to a dialog
+        window (its ttk children already follow the active ttk style
+        automatically)."""
+        if self.theme_colors:
+            dialog.configure(bg=self.theme_colors["bg"])
+        dialog.update_idletasks()  # make sure the native HWND exists before DwmSetWindowAttribute
+        self._set_titlebar_dark(dialog, bool(self.theme_colors))
+
+    def _apply_theme(self, choice):
+        dark = self._resolve_theme(choice) == "dark"
+        colors = DARK_COLORS if dark else None
+        style = ttk.Style()
+        style.theme_use("clam" if dark else self._native_theme)
+
+        # Custom style names are scoped to the CURRENTLY active ttk theme, so
+        # switching theme_use() above resets them - both of these have to be
+        # re-applied every time, for every theme, not just for dark mode.
+        style.configure("Table.Treeview", rowheight=40)
+
+        if dark:
+            style.configure(".", background=colors["bg"], foreground=colors["fg"])
+            style.configure("TFrame", background=colors["bg"])
+            style.configure("TLabel", background=colors["bg"], foreground=colors["fg"])
+            style.configure("TLabelframe", background=colors["bg"], foreground=colors["fg"])
+            style.configure("TLabelframe.Label", background=colors["bg"], foreground=colors["fg"])
+            # clam's default dotted focus ring renders as a solid block unless
+            # focuscolor is pinned to the background - blend it in instead.
+            style.configure(
+                "TCheckbutton", background=colors["bg"], foreground=colors["fg"], focuscolor=colors["bg"],
+            )
+            style.configure(
+                "TRadiobutton", background=colors["bg"], foreground=colors["fg"], focuscolor=colors["bg"],
+            )
+            style.configure("TNotebook", background=colors["bg"], borderwidth=0)
+            style.configure("TNotebook.Tab", background=colors["entry_bg"], foreground=colors["fg"])
+            style.map("TNotebook.Tab", background=[("selected", colors["bg"])])
+            style.configure(
+                "TButton", background=colors["entry_bg"], foreground=colors["fg"], focuscolor=colors["bg"],
+            )
+            style.map("TButton", background=[("active", colors["select_bg"])])
+            style.configure(
+                "TEntry", fieldbackground=colors["entry_bg"], foreground=colors["entry_fg"],
+                insertcolor=colors["fg"],
+            )
+            style.configure("TSeparator", background=colors["border"])
+            style.configure(
+                "Table.Treeview", background=colors["tree_bg"], fieldbackground=colors["tree_bg"],
+                foreground=colors["tree_fg"],
+            )
+            style.map(
+                "Table.Treeview",
+                background=[("selected", colors["select_bg"])], foreground=[("selected", colors["select_fg"])],
+            )
+            style.configure("Treeview.Heading", background=colors["tree_heading_bg"], foreground=colors["fg"])
+            style.map(
+                "ReadonlyWhite.TEntry",
+                fieldbackground=[("readonly", colors["entry_bg"])],
+                foreground=[("readonly", colors["entry_fg"])],
+            )
+
+            self.window.configure(bg=colors["bg"])
+            self.journal_text.configure(
+                bg=colors["journal_bg"], fg=colors["journal_fg"], insertbackground=colors["journal_fg"],
+            )
+            for listbox in (self.suggested_listbox, self.mentions_listbox):
+                listbox.configure(
+                    bg=colors["listbox_bg"], fg=colors["listbox_fg"],
+                    selectbackground=colors["select_bg"], selectforeground=colors["select_fg"],
+                )
+            self.progress_canvas.configure(bg=colors["progress_track"])
+            self.progress_canvas.itemconfig(self.progress_rect, fill=colors["progress_fill"])
+            self.progress_canvas.itemconfig(self.progress_text, fill=colors["progress_text"])
+            self.table.tag_configure("odd_row", background=colors["tree_odd_row"])
+        else:
+            style.map(
+                "ReadonlyWhite.TEntry",
+                fieldbackground=[("readonly", "white")],
+                foreground=[("readonly", "black")],
+            )
+            self.window.configure(bg=self._native_bg)
+            self.journal_text.configure(
+                bg=self._native_journal_bg, fg=self._native_journal_fg, insertbackground=self._native_journal_fg,
+            )
+            for listbox in (self.suggested_listbox, self.mentions_listbox):
+                listbox.configure(
+                    bg=self._native_listbox_bg, fg=self._native_listbox_fg,
+                    selectbackground="SystemHighlight", selectforeground="SystemHighlightText",
+                )
+            self.progress_canvas.configure(bg="#e2e2e2")
+            self.progress_canvas.itemconfig(self.progress_rect, fill="#4a90d9")
+            self.progress_canvas.itemconfig(self.progress_text, fill="#1a1a1a")
+            self.table.tag_configure("odd_row", background="#e9e9e9")
+
+        for entry in (self.new_mention_entry, self.table_filter_entry):
+            entry.normal_color = colors["entry_fg"] if dark else "black"
+            if not getattr(entry, "placeholder_active", False):
+                entry.configure(foreground=entry.normal_color)
+
+        self.theme_colors = colors
+        self._set_titlebar_dark(self.window, dark)
+
+    def _set_titlebar_dark(self, window, dark):
+        """
+        Best-effort: darkens a window's native title bar to match the theme
+        (Windows 10 1809+ / 11 only). Silently does nothing if unsupported -
+        the app is still fully usable, just with a light title bar.
+        """
+        try:
+            import ctypes
+            hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+            value = ctypes.c_int(1 if dark else 0)
+            for attribute in (20, 19):  # 20 = current attribute id, 19 = pre-20H1 builds
+                if ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, attribute, ctypes.byref(value), ctypes.sizeof(value)
+                ) == 0:
+                    break
+            # DWM doesn't always repaint the title bar immediately after the
+            # attribute changes - nudge it with a no-op frame-changed resize.
+            SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_FRAMECHANGED = 0x2, 0x1, 0x4, 0x20
+            ctypes.windll.user32.SetWindowPos(
+                hwnd, 0, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED
+            )
+        except Exception:
+            pass
 
     def _check_for_update_on_startup(self):
         def _run_check():
@@ -247,12 +429,8 @@ class TaggerInterface:
         folder_frame.pack(fill="x", padx=10, pady=(10, 2))
 
         self.folder_variable = tk.StringVar(value=os.path.abspath(tagger.MUSIC_FOLDER) if tagger.MUSIC_FOLDER else "")
-        style = ttk.Style()
-        style.map(
-            "ReadonlyWhite.TEntry",
-            fieldbackground=[("readonly", "white")],
-            foreground=[("readonly", "black")],
-        )
+        # "ReadonlyWhite.TEntry"'s actual colors are (re)configured by _apply_theme,
+        # since they depend on the light/dark choice and ttk styles are per-theme.
         ttk.Entry(
             folder_frame, textvariable=self.folder_variable, state="readonly", style="ReadonlyWhite.TEntry"
         ).pack(fill="x", padx=10, pady=(10, 5))
@@ -435,7 +613,17 @@ class TaggerInterface:
         self.extract_button.configure(state="disabled")
         self.extract_button.pack(side="left", fill="x", expand=True)
 
-        # ============================== SoundCloud tab ==============================
+        # ============================== Settings tab ==============================
+
+        appearance_frame = ttk.LabelFrame(soundcloud_tab, text="Appearance")
+        appearance_frame.pack(fill="x", padx=10, pady=(15, 10))
+        for value, label in (
+            ("system", "Default (follow Windows)"), ("light", "Light"), ("dark", "Dark"),
+        ):
+            ttk.Radiobutton(
+                appearance_frame, text=label, value=value, variable=self.theme_var,
+                command=self._on_theme_changed,
+            ).pack(anchor="w", padx=10, pady=(5, 0) if value == "system" else (0, 5 if value == "dark" else 0))
 
         ttk.Label(
             soundcloud_tab,
@@ -495,6 +683,14 @@ class TaggerInterface:
         ).pack(anchor="w", padx=10, pady=(0, 2), side="bottom")
 
         ttk.Separator(soundcloud_tab, orient="horizontal").pack(fill="x", padx=10, pady=(20, 10), side="bottom")
+
+        # Captured now (native theme, before any dark styling is ever applied)
+        # so "light" mode can restore these exact values later.
+        self._native_bg = self.window.cget("bg")
+        self._native_journal_bg = self.journal_text.cget("bg")
+        self._native_journal_fg = self.journal_text.cget("fg")
+        self._native_listbox_bg = self.suggested_listbox.cget("bg")
+        self._native_listbox_fg = self.suggested_listbox.cget("fg")
 
     def _adjust_window_height(self):
         """Recomputes the needed window height based on the currently visible sections."""
@@ -883,6 +1079,7 @@ class TaggerInterface:
             pass  # if the sound file is missing, just show the dialog silently
 
         dialog = tk.Toplevel(self.window)
+        self._style_toplevel(dialog)
         dialog.title("No file found")
         dialog.resizable(False, False)
         dialog.transient(self.window)
@@ -941,6 +1138,7 @@ class TaggerInterface:
         )
 
         dialog = tk.Toplevel(self.window)
+        self._style_toplevel(dialog)
         dialog.title("Processing complete")
         dialog.resizable(False, False)
         dialog.transient(self.window)
@@ -1216,6 +1414,11 @@ class TaggerInterface:
         self.table.selection_set(item_id)
 
         menu = tk.Menu(self.window, tearoff=0)
+        if self.theme_colors:
+            menu.configure(
+                bg=self.theme_colors["menu_bg"], fg=self.theme_colors["menu_fg"],
+                activebackground=self.theme_colors["select_bg"], activeforeground=self.theme_colors["select_fg"],
+            )
         menu.add_command(label="Open file location", command=lambda: self._open_file_location(info))
         menu.tk_popup(event.x_root, event.y_root)
 
