@@ -191,34 +191,45 @@ def send_track_report(info, timeout=10):
     Posts this track's info to a Discord webhook, so the developer gets a
     notification for tracks users flag as wrong/problematic (e.g. no cover
     found) - a lightweight way to collect real-world matching failures to
-    fix later. Returns True on success, False on any failure (never raises -
-    a failed report shouldn't disrupt the user).
+    fix later. Attaches the existing cover (as a thumbnail) and/or the
+    online-suggested cover (as the main image) when available, so a missing/
+    wrong cover is visible at a glance instead of just implied by text.
+    Returns True on success, False on any failure (never raises - a failed
+    report shouldn't disrupt the user).
     """
     fields = [
         {"name": "File", "value": info.get("file") or "(unknown)", "inline": False},
-        {
-            "name": "Current tags",
-            "value": f"{info.get('current_artist') or '?'} - {info.get('current_title') or '?'}",
-            "inline": False,
-        },
-        {
-            "name": "Suggested tags",
-            "value": f"{info.get('detected_artist') or '?'} - {info.get('detected_title') or '?'}",
-            "inline": False,
-        },
-        {
-            "name": "Cover",
-            "value": f"has existing cover: {info.get('has_cover')} | online match: {info.get('cover_source') or 'none'}",
-            "inline": False,
-        },
+        {"name": "Current title", "value": info.get("current_title") or "(none)", "inline": True},
+        {"name": "Current artist", "value": info.get("current_artist") or "(none)", "inline": True},
+        {"name": "Suggested title", "value": info.get("detected_title") or "(none)", "inline": True},
+        {"name": "Suggested artist", "value": info.get("detected_artist") or "(none)", "inline": True},
+        {"name": "Online cover match", "value": info.get("cover_source") or "none", "inline": True},
         {"name": "Format", "value": info.get("format") or "?", "inline": True},
         {"name": "App version", "value": APP_VERSION, "inline": True},
     ]
 
-    payload = {"embeds": [{"title": "Track reported", "color": 0xE74C3C, "fields": fields}]}
+    embed = {"title": "Track reported", "color": 0xE74C3C, "fields": fields}
+
+    files = {}
+    current_cover_bytes = info.get("current_cover_bytes") if info.get("has_cover") else None
+    if current_cover_bytes:
+        files["files[0]"] = ("current_cover.jpg", current_cover_bytes, "image/jpeg")
+        embed["thumbnail"] = {"url": "attachment://current_cover.jpg"}
+
+    found_cover_image = info.get("found_cover_image")
+    if found_cover_image:
+        files["files[1]"] = ("suggested_cover.jpg", found_cover_image, "image/jpeg")
+        embed["image"] = {"url": "attachment://suggested_cover.jpg"}
+
+    payload = {"embeds": [embed]}
 
     try:
-        response = requests.post(DISCORD_REPORT_WEBHOOK_URL, json=payload, timeout=timeout)
+        if files:
+            response = requests.post(
+                DISCORD_REPORT_WEBHOOK_URL, data={"payload_json": json.dumps(payload)}, files=files, timeout=timeout
+            )
+        else:
+            response = requests.post(DISCORD_REPORT_WEBHOOK_URL, json=payload, timeout=timeout)
         return response.status_code in (200, 204)
     except Exception:
         return False
