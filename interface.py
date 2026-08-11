@@ -300,7 +300,8 @@ class TaggerInterface:
             self.progress_canvas.configure(bg=colors["progress_track"])
             self.progress_canvas.itemconfig(self.progress_rect, fill=colors["progress_fill"])
             self.progress_canvas.itemconfig(self.progress_text, fill=colors["progress_text"])
-            self.table.tag_configure("odd_row", background=colors["tree_odd_row"])
+            self.table.tag_configure("odd_row", background=colors["tree_odd_row"], foreground=colors["tree_fg"])
+            self.table.tag_configure("even_row", background=colors["tree_bg"], foreground=colors["tree_fg"])
         else:
             style.map(
                 "ReadonlyWhite.TEntry",
@@ -319,7 +320,8 @@ class TaggerInterface:
             self.progress_canvas.configure(bg="#e2e2e2")
             self.progress_canvas.itemconfig(self.progress_rect, fill="#4a90d9")
             self.progress_canvas.itemconfig(self.progress_text, fill="#1a1a1a")
-            self.table.tag_configure("odd_row", background="#e9e9e9")
+            self.table.tag_configure("odd_row", background="#e9e9e9", foreground="black")
+            self.table.tag_configure("even_row", background="white", foreground="black")
 
         for entry in (self.new_mention_entry, self.table_filter_entry):
             entry.normal_color = colors["entry_fg"] if dark else "black"
@@ -689,9 +691,12 @@ class TaggerInterface:
         self.table.heading("artist", command=lambda: self._sort_by("artist"))
         self.table.heading("format", command=self._toggle_all_convert)
 
-        # Alternating rows (every other one greyed out) for readability
-        self.table.tag_configure("odd_row", background="#e9e9e9")
-        self.table.tag_configure("even_row", background="white")
+        # Alternating rows (every other one greyed out) for readability.
+        # Foreground is set explicitly here too (not just background) -
+        # otherwise ttk/clam can fall back to a default (dim/grey) text
+        # color instead of inheriting the theme's real foreground.
+        self.table.tag_configure("odd_row", background="#e9e9e9", foreground="black")
+        self.table.tag_configure("even_row", background="white", foreground="black")
 
         vertical_scrollbar = ttk.Scrollbar(scrollbars_frame, orient="vertical", command=self.table.yview)
         self.table.configure(yscrollcommand=vertical_scrollbar.set)
