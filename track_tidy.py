@@ -1460,6 +1460,21 @@ def save_audio(audio):
         audio.save()
 
 
+def effective_cover_bytes(info):
+    """
+    Mirrors write_tags()'s cover logic to predict what the cover WILL be after
+    Apply, for UI previews (thumbnail, zoom dialog) - so they never show "no
+    cover" for a row that will actually keep its existing one untouched.
+    """
+    if not info.get("apply_changes", True):
+        return info.get("current_cover_bytes")
+    if info.get("found_cover_image"):
+        return info["found_cover_image"]
+    if detect_fuviclan_mention(info.get("file", "")):
+        return None
+    return info.get("current_cover_bytes")
+
+
 def write_tags(file_path, artist, title, cover_image, force_remove_if_missing,
                 update_title=True, update_artist=True, update_cover=True):
     """
