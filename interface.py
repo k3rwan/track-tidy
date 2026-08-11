@@ -2037,32 +2037,43 @@ class TaggerInterface:
 
         self._restripe_rows()
 
-    def _rescan_row(self, info):
-        """Re-runs the online cover search for just this one row (e.g. after
+    def _rescan_selected(self, infos):
+        """Re-runs the online cover search for one or more rows (e.g. after
         fixing SoundCloud credentials, or to retry a match without
-        rescanning the whole folder)."""
-        if info.get("processed"):
-            self._append_to_journal(f"Can't rescan '{info['file']}' - already processed.")
+        rescanning the whole folder). Multiple rows share a single
+        scan_files() call - one SoundCloud token fetch/rate-limit cycle
+        instead of one per file - and each result is applied in place as
+        soon as it's ready."""
+        targets = [info for info in infos if not info.get("processed")]
+        skipped = len(infos) - len(targets)
+        if not targets:
+            if skipped:
+                self._append_to_journal("Can't rescan - already processed.")
             return
+        if skipped:
+            self._append_to_journal(f"Skipping {skipped} already-processed file(s).")
 
         # Tk widget calls must happen on the main thread - resolve this now,
         # before handing off to the background thread below.
         tagger.MENTIONS_TO_REMOVE = list(self.mentions_listbox.get(0, "end"))
+        file_names = [info["file"] for info in targets]
 
         def _run():
-            results = tagger.scan_files(
-                [info["file"]],
+            def _on_file_scanned(scanned_info):
+                self.message_queue.put(("row_rescanned", scanned_info))
+
+            tagger.scan_files(
+                file_names,
+                on_file_scanned=_on_file_scanned,
                 log=self._append_to_journal,
                 on_new_mention=lambda mention: self.message_queue.put(("mention_added", mention)),
                 on_rate_limited=lambda: self.message_queue.put(("soundcloud_rate_limited", None)),
             )
-            if results:
-                self.message_queue.put(("row_rescanned", results[0]))
 
         self._run_in_background(_run)
 
     def _apply_rescan_result(self, new_info):
-        """Replaces a row's info in place (same position) after _rescan_row()."""
+        """Replaces a row's info in place (same position) after _rescan_selected()."""
         try:
             index = next(i for i, info in enumerate(self.scanned_plan) if info["file"] == new_info["file"])
         except StopIteration:
@@ -2086,7 +2097,14 @@ class TaggerInterface:
         if not info:
             return
 
-        self.table.selection_set(item_id)
+        # Right-clicking a row that's already part of the current multi-
+        # selection keeps that whole selection (so bulk actions apply to
+        # all of it); right-clicking outside it collapses to just this row.
+        if item_id not in self.table.selection():
+            self.table.selection_set(item_id)
+
+        selected_ids = self.table.selection()
+        selected_infos = [i for i in self.scanned_plan if i["file"] in selected_ids] or [info]
 
         menu = tk.Menu(self.window, tearoff=0)
         if self.theme_colors:
@@ -2094,8 +2112,9 @@ class TaggerInterface:
                 bg=self.theme_colors["menu_bg"], fg=self.theme_colors["menu_fg"],
                 activebackground=self.theme_colors["select_bg"], activeforeground=self.theme_colors["select_fg"],
             )
+        rescan_label = "Rescan this file" if len(selected_infos) <= 1 else f"Rescan selected ({len(selected_infos)})"
         menu.add_command(label="Info", command=lambda: self._show_track_info(info))
-        menu.add_command(label="Rescan this file", command=lambda: self._rescan_row(info))
+        menu.add_command(label=rescan_label, command=lambda: self._rescan_selected(selected_infos))
         menu.add_command(label="Open file location", command=lambda: self._open_file_location(info))
         menu.add_separator()
         menu.add_command(label="Move up", command=lambda: self._move_row(info, -1))
@@ -2372,6 +2391,16 @@ class TaggerInterface:
 
     # --- Running the processing ---
 
+    def _is_filter_active(self):
+        """Whether the table is currently narrowed down by the search box
+        and/or the no-cover checkbox - used to warn before Apply, since it
+        always processes every scanned file regardless of what's hidden."""
+        if self.no_cover_filter_var.get():
+            return True
+        if not getattr(self.table_filter_entry, "placeholder_active", False) and self.table_filter_entry.get().strip():
+            return True
+        return False
+
     def _start_processing(self):
         if self.processing_in_progress:
             return
@@ -2386,6 +2415,19 @@ class TaggerInterface:
         if not to_process and not fixes:
             messagebox.showinfo("Nothing to do", "No new file and no pending change.", parent=self.window)
             return
+
+        if self._is_filter_active():
+            visible_ids = set(self.table.get_children())
+            hidden_count = sum(1 for i in to_process + fixes if i["file"] not in visible_ids)
+            if hidden_count:
+                confirmed = messagebox.askyesno(
+                    "Filter active",
+                    f"{hidden_count} track(s) are hidden by the current filter and will also be processed.\n\n"
+                    "Continue?",
+                    parent=self.window,
+                )
+                if not confirmed:
+                    return
 
         conversions_count = sum(
             1 for i in to_process if i["format"] != "MP3" and i.get("convert")
