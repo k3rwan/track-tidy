@@ -23,7 +23,7 @@ import winsound
 import webbrowser
 from datetime import datetime
 import tkinter as tk
-from tkinter import ttk, filedialog, scrolledtext, messagebox, simpledialog
+from tkinter import ttk, filedialog, scrolledtext, messagebox
 from PIL import Image, ImageTk, ImageDraw
 
 # When launched via pythonw.exe (no console), sys.stdout/stderr are None.
@@ -207,6 +207,28 @@ class TaggerInterface:
         x = max(0, min(x, dialog.winfo_screenwidth() - dialog.winfo_width()))
         y = max(0, min(y, dialog.winfo_screenheight() - dialog.winfo_height()))
         dialog.geometry(f"+{x}+{y}")
+
+    def _bind_entry_context_menu(self, entry, readonly=False):
+        """Adds a right-click Cut/Copy/Paste/Select All menu to an Entry -
+        unlike native Windows edit controls, Tk Entry widgets don't get one
+        for free."""
+        def show_menu(event):
+            menu = tk.Menu(entry, tearoff=0)
+            if self.theme_colors:
+                menu.configure(
+                    bg=self.theme_colors["menu_bg"], fg=self.theme_colors["menu_fg"],
+                    activebackground=self.theme_colors["select_bg"], activeforeground=self.theme_colors["select_fg"],
+                )
+            if not readonly:
+                menu.add_command(label="Cut", command=lambda: entry.event_generate("<<Cut>>"))
+            menu.add_command(label="Copy", command=lambda: entry.event_generate("<<Copy>>"))
+            if not readonly:
+                menu.add_command(label="Paste", command=lambda: entry.event_generate("<<Paste>>"))
+            menu.add_separator()
+            menu.add_command(label="Select All", command=lambda: entry.select_range(0, "end"))
+            menu.tk_popup(event.x_root, event.y_root)
+
+        entry.bind("<Button-3>", show_menu)
 
     def _apply_theme(self, choice):
         dark = choice == "dark"
@@ -486,9 +508,11 @@ class TaggerInterface:
         self.folder_variable = tk.StringVar(value=os.path.abspath(tagger.MUSIC_FOLDER) if tagger.MUSIC_FOLDER else "")
         # "ReadonlyWhite.TEntry"'s actual colors are (re)configured by _apply_theme,
         # since they depend on the light/dark choice and ttk styles are per-theme.
-        ttk.Entry(
+        folder_entry = ttk.Entry(
             folder_frame, textvariable=self.folder_variable, state="readonly", style="ReadonlyWhite.TEntry"
-        ).pack(fill="x", padx=10, pady=(10, 5))
+        )
+        folder_entry.pack(fill="x", padx=10, pady=(10, 5))
+        self._bind_entry_context_menu(folder_entry, readonly=True)
 
         folder_buttons_frame = ttk.Frame(folder_frame)
         folder_buttons_frame.pack(fill="x", padx=10, pady=(0, 5))
@@ -537,6 +561,7 @@ class TaggerInterface:
         self.new_mention_entry = ttk.Entry(self.advanced_frame)
         self.new_mention_entry.pack(fill="x", padx=10, pady=(5, 10))
         self.new_mention_entry.bind("<Return>", self._add_mention)
+        self._bind_entry_context_menu(self.new_mention_entry)
         setup_placeholder(self.new_mention_entry, "Add a word or phrase to remove...")
 
         self.delete_album_var = tk.BooleanVar(value=True)
@@ -554,6 +579,7 @@ class TaggerInterface:
         self.table_filter_entry.pack(fill="x", expand=True)
         self.table_filter_entry.bind("<KeyRelease>", self._schedule_table_filter)
         setup_placeholder(self.table_filter_entry, "Search tracks...", on_change=self._apply_table_filter)
+        self._bind_entry_context_menu(self.table_filter_entry)
 
         scrollbars_frame = ttk.Frame(table_frame)
         scrollbars_frame.pack(fill="both", expand=True, padx=(10, 0), pady=10)
@@ -654,9 +680,11 @@ class TaggerInterface:
 
         ttk.Label(extractor_tab, text="Folder to flatten:").pack(anchor="w", padx=10)
         self.extract_folder_var = tk.StringVar(value="")
-        ttk.Entry(
+        extract_folder_entry = ttk.Entry(
             extractor_tab, textvariable=self.extract_folder_var, state="readonly", style="ReadonlyWhite.TEntry"
-        ).pack(fill="x", padx=10, pady=(0, 5))
+        )
+        extract_folder_entry.pack(fill="x", padx=10, pady=(0, 5))
+        self._bind_entry_context_menu(extract_folder_entry, readonly=True)
 
         extract_buttons_frame = ttk.Frame(extractor_tab)
         extract_buttons_frame.pack(fill="x", padx=10, pady=(0, 10))
@@ -701,6 +729,7 @@ class TaggerInterface:
         self.sc_client_id_entry = ttk.Entry(soundcloud_tab)
         self.sc_client_id_entry.pack(fill="x", padx=10, pady=(0, 10))
         self.sc_client_id_entry.bind("<KeyRelease>", self._update_soundcloud_save_state)
+        self._bind_entry_context_menu(self.sc_client_id_entry)
         if tagger.SOUNDCLOUD_CLIENT_ID:
             self.sc_client_id_entry.insert(0, tagger.SOUNDCLOUD_CLIENT_ID)
 
@@ -708,6 +737,7 @@ class TaggerInterface:
         self.sc_client_secret_entry = ttk.Entry(soundcloud_tab, show="*")
         self.sc_client_secret_entry.pack(fill="x", padx=10, pady=(0, 15))
         self.sc_client_secret_entry.bind("<KeyRelease>", self._update_soundcloud_save_state)
+        self._bind_entry_context_menu(self.sc_client_secret_entry)
         if tagger.SOUNDCLOUD_CLIENT_SECRET:
             self.sc_client_secret_entry.insert(0, tagger.SOUNDCLOUD_CLIENT_SECRET)
 
@@ -1818,6 +1848,29 @@ class TaggerInterface:
 
         self._restripe_rows()
 
+    def _move_row(self, info, direction):
+        """Moves a row up (direction=-1) or down (direction=+1) in scanned_plan,
+        then re-syncs the table's display order to match - only reordering
+        rows currently visible, so an active search filter isn't disturbed."""
+        if info not in self.scanned_plan:
+            return
+
+        current_index = self.scanned_plan.index(info)
+        new_index = current_index + direction
+        if new_index < 0 or new_index >= len(self.scanned_plan):
+            return
+
+        visible_files = set(self.table.get_children())
+        self.scanned_plan[current_index], self.scanned_plan[new_index] = (
+            self.scanned_plan[new_index], self.scanned_plan[current_index],
+        )
+
+        for other_info in self.scanned_plan:
+            if other_info["file"] in visible_files:
+                self.table.move(other_info["file"], "", "end")
+
+        self._restripe_rows()
+
     def _show_context_menu(self, event):
         """Right-click on a row: shows a small context menu (e.g. open file location)."""
         item_id = self.table.identify_row(event.y)
@@ -1838,6 +1891,11 @@ class TaggerInterface:
             )
         menu.add_command(label="Open file location", command=lambda: self._open_file_location(info))
         menu.add_command(label="Report track...", command=lambda: self._report_track(info))
+        menu.add_separator()
+        menu.add_command(label="Move up", command=lambda: self._move_row(info, -1))
+        menu.add_command(label="Move down", command=lambda: self._move_row(info, 1))
+        menu.add_separator()
+        menu.add_command(label="Remove from list", command=self._delete_selected_rows)
         menu.tk_popup(event.x_root, event.y_root)
 
     def _open_file_location(self, info):
@@ -1862,17 +1920,8 @@ class TaggerInterface:
         """Sends this row's info (file name, current/suggested tags, cover
         status...) to the developer via Discord, so problem tracks (e.g. no
         cover found) can be collected and fixed later."""
-        comment = simpledialog.askstring(
-            "Report track",
-            f"Report '{info['file']}' to the developer.\n\n"
-            "Optional: describe the issue (leave blank to just send the track info):",
-            parent=self.window,
-        )
-        if comment is None:  # Cancelled
-            return
-
         def _send():
-            success = tagger.send_track_report(info, comment=comment or None)
+            success = tagger.send_track_report(info)
             self.message_queue.put(("report_sent", success))
 
         self._run_in_background(_send)
@@ -1893,6 +1942,11 @@ class TaggerInterface:
         edit_entry.focus()
 
         def confirm(_event=None):
+            # Right-clicking to open the Cut/Copy/Paste menu below also fires
+            # FocusOut (the popup steals focus) - guard against confirming twice.
+            if not edit_entry.winfo_exists():
+                return
+
             new_value = edit_entry.get().strip()
             info[f"{field}_override"] = new_value if new_value else None
             info[f"{field}_override_is_manual"] = bool(new_value)
@@ -1909,6 +1963,7 @@ class TaggerInterface:
         edit_entry.bind("<Return>", confirm)
         edit_entry.bind("<FocusOut>", confirm)
         edit_entry.bind("<Escape>", lambda e: edit_entry.destroy())
+        self._bind_entry_context_menu(edit_entry)
 
     # --- Log / progress (thread-safe) ---
 

@@ -186,7 +186,7 @@ def check_for_update(log=print, timeout=5):
 DISCORD_REPORT_WEBHOOK_URL = "https://discord.com/api/webhooks/1536761165206782033/qPcjNi9XPi5aqWYLQ_IbrI9UoxHydX1SN5IAbTTEH975_dg6vSfrsrqR81DLUtQrE8Yj"
 
 
-def send_track_report(info, comment=None, timeout=10):
+def send_track_report(info, timeout=10):
     """
     Posts this track's info to a Discord webhook, so the developer gets a
     notification for tracks users flag as wrong/problematic (e.g. no cover
@@ -214,8 +214,6 @@ def send_track_report(info, comment=None, timeout=10):
         {"name": "Format", "value": info.get("format") or "?", "inline": True},
         {"name": "App version", "value": APP_VERSION, "inline": True},
     ]
-    if comment:
-        fields.append({"name": "Comment", "value": comment, "inline": False})
 
     payload = {"embeds": [{"title": "Track reported", "color": 0xE74C3C, "fields": fields}]}
 
