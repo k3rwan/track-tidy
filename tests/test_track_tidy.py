@@ -137,6 +137,24 @@ class ArtistMatchingTests(unittest.TestCase):
     def test_artist_names_match_tolerates_sanitized_colon(self):
         self.assertTrue(tagger.artist_names_match("BLOND_ISH", "BLOND:ISH, Francis Mercier"))
 
+    def test_extract_feature_names_from_title_suffix(self):
+        self.assertEqual(tagger.extract_feature_names("Gucci Slides (feat. Kxne)"), {"kxne"})
+        self.assertEqual(tagger.extract_feature_names("Gucci Slides [ft. A & B]"), {"a", "b"})
+        self.assertEqual(tagger.extract_feature_names("Gucci Slides"), set())
+
+    def test_artist_sets_match_folds_in_featured_artist_from_title(self):
+        # A store often credits only the primary artist in the artist field,
+        # crediting the featured one in the title instead - while our own
+        # tags/filename list every artist together in the artist field.
+        self.assertTrue(tagger.artist_sets_match(
+            "Brandon, Kxne", "BRANDON", "Gucci Slides (feat. Kxne)",
+        ))
+
+    def test_artist_sets_match_still_rejects_unrelated_feature(self):
+        self.assertFalse(tagger.artist_sets_match(
+            "Brandon, Kxne", "BRANDON", "Gucci Slides (feat. Someone Else)",
+        ))
+
 
 class TitleWordsOverlapTests(unittest.TestCase):
     def test_shared_meaningful_word_overlaps(self):
