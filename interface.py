@@ -2003,6 +2003,7 @@ class TaggerInterface:
             )
         menu.add_command(label="Rescan this file", command=lambda: self._rescan_row(info))
         menu.add_command(label="Open file location", command=lambda: self._open_file_location(info))
+        menu.add_command(label="Info", command=lambda: self._show_track_info(info))
         menu.add_separator()
         menu.add_command(label="Move up", command=lambda: self._move_row(info, -1))
         menu.add_command(label="Move down", command=lambda: self._move_row(info, 1))
@@ -2029,6 +2030,58 @@ class TaggerInterface:
             subprocess.run(f'explorer /select,"{full_path}"')
         except Exception as error:
             self._append_to_journal(f"Error opening file location: {error}")
+
+    def _show_track_info(self, info):
+        """Shows a read-only summary of everything known about this row -
+        current vs. suggested tags, cover status, and which platform (if
+        any) the cover match came from."""
+        dialog = tk.Toplevel(self.window)
+        self._style_toplevel(dialog)
+        dialog.title("Track info")
+        dialog.resizable(False, False)
+        dialog.transient(self.window)
+        dialog.grab_set()
+
+        if info.get("processed"):
+            cover_summary = "File already processed"
+        elif info.get("found_cover_image"):
+            size_kb = len(info["found_cover_image"]) // 1024
+            cover_summary = f"Found via {info.get('cover_source') or '?'} ({size_kb} KB)"
+        elif info.get("has_cover"):
+            cover_summary = "No online match - existing cover kept"
+        else:
+            cover_summary = "No cover found"
+
+        suggested_artist = info["artist_override"] if info.get("artist_override") is not None else info.get("detected_artist")
+        suggested_title = info["title_override"] if info.get("title_override") is not None else info.get("detected_title")
+
+        rows = [
+            ("File", info.get("file") or "?"),
+            ("Format", info.get("format") or "?"),
+            ("Current artist", info.get("current_artist") or "(none)"),
+            ("Current title", info.get("current_title") or "(none)"),
+            ("Suggested artist", suggested_artist or "(none)"),
+            ("Suggested title", suggested_title or "(none)"),
+            ("Cover match", cover_summary),
+            ("Mention detected", info.get("mention_detected") or "(none)"),
+            ("Apply changes", "Yes" if info.get("apply_changes") else "No"),
+            ("Convert to MP3", "Yes" if info.get("convert") else "No"),
+        ]
+
+        grid = ttk.Frame(dialog)
+        grid.pack(padx=20, pady=15)
+        for row_index, (label, value) in enumerate(rows):
+            ttk.Label(grid, text=f"{label}:", font=("", 9, "bold")).grid(
+                row=row_index, column=0, sticky="ne", padx=(0, 10), pady=2
+            )
+            ttk.Label(grid, text=str(value), wraplength=280, justify="left").grid(
+                row=row_index, column=1, sticky="nw", pady=2
+            )
+
+        ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=(0, 15))
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+
+        self._center_dialog(dialog)
 
     def _report_track(self, info):
         """Sends this row's info (file name, current/suggested tags, cover
