@@ -239,6 +239,32 @@ def log_history_entry(old_file, new_file, old_artist, old_title, new_artist, new
         print(f"  Could not write history entry: {error}")
 
 
+def load_history_entries():
+    """
+    Returns every logged processing-history entry as a list of dicts, oldest
+    first (empty list if HISTORY_FILE doesn't exist yet, or on any read
+    error). A single malformed line (e.g. a partial write) is skipped
+    rather than losing the rest of the history.
+    """
+    if not os.path.exists(HISTORY_FILE):
+        return []
+
+    entries = []
+    try:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entries.append(json.loads(line))
+                except ValueError:
+                    continue
+    except Exception as error:
+        print(f"  Could not read history: {error}")
+    return entries
+
+
 # --- Runtime config (set by the UI at startup / per scan) ---
 
 # Folder containing the audio files to process

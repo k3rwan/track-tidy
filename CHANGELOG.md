@@ -11,20 +11,12 @@ on [Keep a Changelog](https://keepachangelog.com/).
 - The installer now detects an existing installation (via a fixed AppId) and
   asks to update instead of silently reinstalling with no explanation. Lets
   the user cancel instead of proceeding.
-
-### Added
 - Click a cover thumbnail in the table to see it full-size in a popup
-  (click the popup, or press Escape, to close it).
-
-### Fixed
-- Switching to Dark still showed a small downward shift even after the
-  earlier padding fix (2px difference, but any window resize at all was
-  visible). The window no longer resizes when the theme changes - the 2px
-  of slack is absorbed silently instead.
-- The dark title bar's forced repaint used `SetWindowPos(..., SWP_FRAMECHANGED)`
-  - a real resize/reposition call even as a no-op, which Windows' window
-  animations could turn into a visible jump on its own. Switched to
-  `RedrawWindow`, a pure repaint call with no size/position semantics.
+  (click the popup, or press Escape, to close it). Hovering a cover that has
+  one shows a small magnifier badge as a hint.
+- "View processing history" button in Settings: a table of every file ever
+  processed (old/new filename and tags, cover updated, converted), most
+  recent first, read from `history.jsonl`.
 
 ### Removed
 - The "Default (follow Windows)" appearance option - only Light/Dark remain.
@@ -38,7 +30,18 @@ on [Keep a Changelog](https://keepachangelog.com/).
 - Dark mode's button/entry padding was much taller than the native theme's
   (26px difference in the window's total height), causing a visible jump
   when switching themes even after the resize above was made clean. Trimmed
-  down to within 2px of the native size - no more noticeable jump.
+  down to within 2px of the native size.
+- Switching to Dark still showed a small downward shift even after the
+  padding fix above (2px difference, but any window resize at all was
+  visible). The window no longer resizes when the theme changes - the 2px
+  of slack is absorbed silently instead.
+- The dark title bar's forced repaint used `SetWindowPos(..., SWP_FRAMECHANGED)`
+  - a real resize/reposition call even as a no-op, which Windows' window
+  animations could turn into a visible jump on its own. Switched to
+  `RedrawWindow`, a pure repaint call with no size/position semantics.
+- A popup wider than the main window (e.g. the history table) could get
+  centered partly or fully off-screen. All dialogs now share one centering
+  helper that clamps to the screen bounds.
 
 ## [0.3]
 
