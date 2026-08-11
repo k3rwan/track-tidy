@@ -202,6 +202,29 @@ class HistoryLogTests(unittest.TestCase):
         self.assertIsNone(entries[1]["old_artist"])
         self.assertIn("timestamp", entries[0])
 
+    def test_load_history_entries_missing_file_returns_empty_list(self):
+        self.assertEqual(tagger.load_history_entries(), [])
+
+    def test_load_history_entries_reads_back_in_order(self):
+        tagger.log_history_entry(
+            old_file="A.wav", new_file="A.mp3", old_artist="A", old_title="A",
+            new_artist="A", new_title="A", cover_updated=False, converted=True,
+        )
+        tagger.log_history_entry(
+            old_file="B.wav", new_file="B.mp3", old_artist="B", old_title="B",
+            new_artist="B", new_title="B", cover_updated=True, converted=False,
+        )
+        entries = tagger.load_history_entries()
+        self.assertEqual([e["old_file"] for e in entries], ["A.wav", "B.wav"])
+
+    def test_load_history_entries_skips_malformed_line(self):
+        with open(tagger.HISTORY_FILE, "w", encoding="utf-8") as f:
+            f.write('{"old_file": "Good.wav"}\n')
+            f.write("not valid json\n")
+            f.write('{"old_file": "AlsoGood.wav"}\n')
+        entries = tagger.load_history_entries()
+        self.assertEqual([e["old_file"] for e in entries], ["Good.wav", "AlsoGood.wav"])
+
 
 class SettingsPersistenceTests(unittest.TestCase):
     def setUp(self):
