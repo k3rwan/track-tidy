@@ -6,7 +6,7 @@
 ;
 ; Bump MyAppVersion below to match track_tidy.py's APP_VERSION on release -
 ; it's the only place the version needs to change in this file.
-#define MyAppVersion "0.4"
+#define MyAppVersion "0.5"
 
 [Setup]
 ; Fixed forever, regardless of AppName/version changes - this is how Setup
