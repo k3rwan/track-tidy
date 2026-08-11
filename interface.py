@@ -1529,22 +1529,27 @@ class TaggerInterface:
     def _show_history_window(self):
         """Settings -> 'View processing history': every file ever actually
         processed (tagger.HISTORY_FILE), most recent first. Each entry shows
-        its old file/tags on one line, with the applied (new) file/tags
-        indented right below it as a child row."""
+        its old file/artist/title on one (selectable) line, with the applied
+        (new) file/artist/title indented right below it as a child row -
+        children exist to show what changed, but only the old-info parent row
+        can be selected, since Restore always acts on the OLD info."""
         dialog = tk.Toplevel(self.window)
         self._style_toplevel(dialog)
         dialog.title("Processing history")
-        dialog.geometry("760x440")
+        dialog.geometry("840x440")
         dialog.transient(self.window)
 
-        columns = ("file", "tags", "cover", "converted")
-        headings = {"file": "File", "tags": "Artist - Title", "cover": "Cover", "converted": "Converted"}
-        widths = {"file": 220, "tags": 220, "cover": 60, "converted": 75}
+        columns = ("file", "artist", "title", "cover", "converted")
+        headings = {
+            "file": "File", "artist": "Artist", "title": "Title",
+            "cover": "Cover", "converted": "Converted",
+        }
+        widths = {"file": 200, "artist": 140, "title": 160, "cover": 55, "converted": 70}
 
         table_frame = ttk.Frame(dialog)
         table_frame.pack(fill="both", expand=True, padx=10, pady=(10, 5))
 
-        tree = ttk.Treeview(table_frame, columns=columns, show="tree headings", height=15)
+        tree = ttk.Treeview(table_frame, columns=columns, show="tree headings", height=15, selectmode="extended")
         tree.heading("#0", text="When")
         tree.column("#0", width=140, anchor="w")
         for col in columns:
@@ -1577,17 +1582,17 @@ class TaggerInterface:
                 except ValueError:
                     date_display = timestamp
 
-                old_tags = tagger.build_display_name(entry.get("old_artist") or "", entry.get("old_title") or "")
-                new_tags = tagger.build_display_name(entry.get("new_artist") or "", entry.get("new_title") or "")
-
                 parent_id = tree.insert(
                     "", "end", text=date_display,
-                    values=(entry.get("old_file", ""), old_tags or "-", "", ""),
+                    values=(
+                        entry.get("old_file", ""), entry.get("old_artist") or "-", entry.get("old_title") or "-",
+                        "", "",
+                    ),
                 )
                 tree.insert(
                     parent_id, "end", text="↳ Applied",
                     values=(
-                        entry.get("new_file", ""), new_tags or "-",
+                        entry.get("new_file", ""), entry.get("new_artist") or "-", entry.get("new_title") or "-",
                         "Yes" if entry.get("cover_updated") else "No",
                         "Yes" if entry.get("converted") else "No",
                     ),
@@ -1595,38 +1600,65 @@ class TaggerInterface:
                 tree.item(parent_id, open=True)
                 entries_by_parent[parent_id] = entry
 
+        def enforce_parent_only_selection(event=None):
+            """Clicking (or ctrl/shift-clicking) a child 'Applied' row selects
+            its parent instead - Restore always acts on the OLD info, so only
+            old-info rows are meant to be selectable."""
+            current = tree.selection()
+            corrected, seen = [], set()
+            for item_id in current:
+                target = item_id if item_id in entries_by_parent else tree.parent(item_id)
+                if target and target not in seen:
+                    seen.add(target)
+                    corrected.append(target)
+            if tuple(corrected) != current:
+                tree.selection_set(corrected)
+
+        def select_all(event=None):
+            tree.selection_set(list(entries_by_parent.keys()))
+            return "break"
+
+        tree.bind("<<TreeviewSelect>>", enforce_parent_only_selection)
+        tree.bind("<Control-a>", select_all)
+
         def restore_selected():
-            selection = tree.selection()
-            if not selection:
-                messagebox.showinfo("Restore", "Select an entry first.")
-                return
-            item_id = selection[0]
-            parent_id = item_id if item_id in entries_by_parent else tree.parent(item_id)
-            entry = entries_by_parent.get(parent_id)
-            if not entry:
+            selection = tree.selection()  # already parent-only, enforced above
+            entries = [entries_by_parent[item_id] for item_id in selection if item_id in entries_by_parent]
+            if not entries:
+                messagebox.showinfo("Restore", "Select one or more entries first.")
                 return
 
-            old_tags = tagger.build_display_name(entry.get("old_artist") or "", entry.get("old_title") or "") or "(no tags)"
-            if not messagebox.askyesno(
-                "Restore previous version",
-                f"Restore this file's tags and cover to:\n\n{old_tags}\n\n"
-                "This changes the file on disk right now.",
-            ):
+            if len(entries) == 1:
+                old_tags = tagger.build_display_name(
+                    entries[0].get("old_artist") or "", entries[0].get("old_title") or ""
+                ) or "(no tags)"
+                prompt = f"Restore this file's tags and cover to:\n\n{old_tags}\n\nThis changes the file on disk right now."
+            else:
+                prompt = f"Restore {len(entries)} files to their previous tags and cover?\n\nThis changes the files on disk right now."
+
+            if not messagebox.askyesno("Restore previous version(s)", prompt):
                 return
 
-            try:
-                tagger.restore_history_entry(entry, log=self._append_to_journal)
-            except FileNotFoundError:
-                messagebox.showerror("Restore failed", "This file can't be found anymore - it may have been moved, renamed, or deleted since.")
-                return
-            except ValueError as error:
-                messagebox.showerror("Restore failed", str(error))
-                return
-            except Exception as error:
-                messagebox.showerror("Restore failed", f"Could not restore this file: {error}")
-                return
+            successes, failures = 0, []
+            for entry in entries:
+                try:
+                    tagger.restore_history_entry(entry, log=self._append_to_journal)
+                    successes += 1
+                except Exception as error:
+                    failures.append((entry.get("new_file", "?"), str(error)))
 
-            messagebox.showinfo("Restored", "The file's previous tags and cover have been restored.")
+            if failures:
+                detail = "\n".join(f"- {name}: {error}" for name, error in failures[:5])
+                if len(failures) > 5:
+                    detail += f"\n...and {len(failures) - 5} more"
+                messagebox.showwarning(
+                    "Restore finished with errors", f"{successes} restored, {len(failures)} failed:\n\n{detail}"
+                )
+            else:
+                messagebox.showinfo(
+                    "Restored",
+                    f"{successes} file(s) restored." if successes > 1 else "The file's previous tags and cover have been restored.",
+                )
 
         populate()
 
