@@ -1941,17 +1941,39 @@ class TaggerInterface:
         tree.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="left", fill="y")
 
+        search_frame = ttk.Frame(dialog)
+        search_frame.pack(fill="x", padx=10, pady=(0, 5))
+        history_filter_entry = ttk.Entry(search_frame)
+        history_filter_entry.pack(fill="x", expand=True)
+        self._bind_entry_context_menu(history_filter_entry)
+
         empty_label = ttk.Label(dialog, text="No files have been processed yet.", padding=20)
         entries_by_parent = {}
+
+        def matches_query(entry, query):
+            haystack = " ".join(str(entry.get(key) or "") for key in (
+                "old_file", "old_artist", "old_title", "new_file", "new_artist", "new_title",
+            )).lower()
+            return query in haystack
 
         def populate():
             for row in tree.get_children():
                 tree.delete(row)
             entries_by_parent.clear()
 
-            entries = list(reversed(tagger.load_history_entries()))
+            if getattr(history_filter_entry, "placeholder_active", False):
+                query = ""
+            else:
+                query = history_filter_entry.get().strip().lower()
+
+            all_entries = list(reversed(tagger.load_history_entries()))
+            entries = [e for e in all_entries if matches_query(e, query)] if query else all_entries
+
             empty_label.pack_forget()
             if not entries:
+                empty_label.configure(
+                    text="No matching entries." if query else "No files have been processed yet."
+                )
                 empty_label.pack()
                 return
 
@@ -1979,6 +2001,15 @@ class TaggerInterface:
                 )
                 tree.item(parent_id, open=True)
                 entries_by_parent[parent_id] = entry
+
+        def schedule_history_filter(event=None):
+            """Debounces the search filter the same way the main table's does."""
+            if getattr(dialog, "_filter_after_id", None):
+                dialog.after_cancel(dialog._filter_after_id)
+            dialog._filter_after_id = dialog.after(300, populate)
+
+        history_filter_entry.bind("<KeyRelease>", schedule_history_filter)
+        setup_placeholder(history_filter_entry, "Search history...", on_change=populate)
 
         def enforce_parent_only_selection(event=None):
             """Clicking (or ctrl/shift-clicking) a child 'Applied' row selects
@@ -2042,11 +2073,27 @@ class TaggerInterface:
                     parent=dialog,
                 )
 
+        def reset_history():
+            if not tagger.load_history_entries():
+                messagebox.showinfo("Nothing to reset", "The processing history is already empty.", parent=dialog)
+                return
+            if not messagebox.askyesno(
+                "Reset history",
+                "Permanently delete the entire processing history?\n\n"
+                "This only removes the log - it doesn't touch any audio file. "
+                "This cannot be undone.",
+                parent=dialog,
+            ):
+                return
+            tagger.clear_history_entries()
+            populate()
+
         populate()
 
         button_frame = ttk.Frame(dialog)
         button_frame.pack(fill="x", padx=10, pady=(0, 10))
         ttk.Button(button_frame, text="Restore selected", command=restore_selected).pack(side="left")
+        ttk.Button(button_frame, text="Reset", command=reset_history).pack(side="left", padx=(5, 0))
 
         self._center_dialog(dialog)
 

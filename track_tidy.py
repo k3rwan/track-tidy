@@ -451,6 +451,13 @@ def load_history_entries():
     return entries
 
 
+def clear_history_entries():
+    """Deletes the entire processing history log. Does nothing (no error)
+    if there's no history file yet."""
+    if os.path.exists(HISTORY_FILE):
+        os.remove(HISTORY_FILE)
+
+
 # --- Runtime config (set by the UI at startup / per scan) ---
 
 # Folder containing the audio files to process
