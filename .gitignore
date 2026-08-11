@@ -17,6 +17,9 @@ installer_output/
 # Large binaries / bundled tools
 ffmpeg.exe
 
-# Audio test/sample files
+# Audio test/sample files (but NOT the two app assets used as UI sound
+# effects - see resource_path() in interface.py - and bundled by PyInstaller)
 *.mp3
 *.wav
+!fart.wav
+!success.wav
