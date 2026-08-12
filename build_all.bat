@@ -12,7 +12,7 @@ if not exist "venv_build" (
     echo Create it first with:
     echo   py -3.12 -m venv venv_build
     echo   venv_build\Scripts\Activate.ps1
-    echo   pip install mutagen requests pillow pyinstaller tkinterdnd2
+    echo   pip install -r requirements.txt pyinstaller
     echo.
     pause
     exit /b 1
@@ -43,8 +43,8 @@ echo Activating build environment (venv_build)...
 call venv_build\Scripts\activate.bat
 
 echo.
-echo Installing/updating PyInstaller...
-pip install pyinstaller tkinterdnd2 --quiet
+echo Installing/updating dependencies...
+pip install -r requirements.txt pyinstaller --quiet
 
 echo.
 echo Building the app (this can take a minute)...
@@ -56,6 +56,7 @@ pyinstaller --onedir --windowed --noconfirm ^
   --add-data "fart.wav;." ^
   --add-data "success.wav;." ^
   --collect-all tkinterdnd2 ^
+  --collect-all keyring ^
   interface.py
 
 if not exist "dist\Track-Tidy\Track-Tidy.exe" (
