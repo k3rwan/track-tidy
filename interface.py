@@ -219,6 +219,7 @@ class TaggerInterface:
         self._start_message_loop()
         self._check_cover_source_credentials_on_startup()
         self._check_for_update_on_startup()
+        self._check_internet_connection(is_startup_check=True)
 
     # --- Theme & dialog helpers ---
 
@@ -555,6 +556,18 @@ class TaggerInterface:
 
         self._run_in_background(_run_check)
 
+    def _check_internet_connection(self, is_startup_check=False):
+        """Checks connectivity in the background, updates the status
+        indicator, and (only for the initial startup check) warns once via
+        a popup if there's no connection. Re-checks itself every 30s so the
+        indicator stays accurate for the life of the run."""
+        def _run_check():
+            is_online = tagger.check_internet_connection()
+            self.message_queue.put(("internet_status", (is_online, is_startup_check)))
+
+        self._run_in_background(_run_check)
+        self.window.after(30000, self._check_internet_connection)
+
     def _check_for_update_manual(self):
         """Same check as on startup, but always reports back (up to date /
         failed / available) since the user explicitly asked for it here."""
@@ -762,6 +775,9 @@ class TaggerInterface:
 
         version_label = ttk.Label(self.window, text=f"v{tagger.APP_VERSION}", foreground="#999999")
         version_label.place(relx=1.0, rely=1.0, x=-6, y=-4, anchor="se")
+
+        self.internet_status_label = ttk.Label(self.window, text="● Checking connection...", foreground="#999999")
+        self.internet_status_label.place(relx=0.0, rely=1.0, x=6, y=-4, anchor="sw")
 
         tagger_tab = ttk.Frame(self.notebook)
         extractor_tab = ttk.Frame(self.notebook)
@@ -2727,6 +2743,21 @@ class TaggerInterface:
                             os.startfile(folder)
                         except Exception:
                             pass
+
+                elif message_type == "internet_status":
+                    is_online, is_startup_check = content
+                    if is_online:
+                        self.internet_status_label.configure(text="● Online", foreground="#2ecc71")
+                    else:
+                        self.internet_status_label.configure(text="● Offline", foreground="#e74c3c")
+                        if is_startup_check:
+                            messagebox.showwarning(
+                                "No internet connection",
+                                "No internet connection was detected.\n\nOnline cover search "
+                                "(iTunes/Spotify/SoundCloud) won't be available until your "
+                                "connection is restored.",
+                                parent=self.window,
+                            )
 
                 elif message_type == "update_available":
                     latest_version, release_url, installer_url = content
