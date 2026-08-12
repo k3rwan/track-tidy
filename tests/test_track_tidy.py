@@ -8,6 +8,8 @@ import os
 import sys
 import json
 import shutil
+import time
+import threading
 import unittest
 import tempfile
 
@@ -548,6 +550,85 @@ class ListAudioFilesTests(unittest.TestCase):
     def test_excludes_wav_when_auto_convert_disabled(self):
         tagger.AUTO_CONVERT_MP3 = False
         self.assertEqual(set(tagger.list_audio_files()), {"Song.mp3", "Other.flac"})
+
+
+class ScanFilesParallelITunesTests(unittest.TestCase):
+    """scan_files() searches iTunes for every file concurrently (bounded by
+    ITUNES_SCAN_MAX_WORKERS), while Spotify/SoundCloud stay sequential."""
+
+    def setUp(self):
+        self._original_music_folder = tagger.MUSIC_FOLDER
+        self._original_use_itunes = tagger.USE_ITUNES
+        self._original_use_spotify = tagger.USE_SPOTIFY
+        self._original_use_soundcloud = tagger.USE_SOUNDCLOUD
+        self._original_itunes_search = tagger.search_cover_itunes
+        self._original_soundcloud_search = tagger.search_cover_soundcloud
+
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        tagger.MUSIC_FOLDER = self._tmp_dir.name
+        self.file_names = [f"Artist {i} - Title {i}.mp3" for i in range(6)]
+        for name in self.file_names:
+            with open(os.path.join(self._tmp_dir.name, name), "w") as f:
+                f.write("x")
+
+        tagger.USE_ITUNES = True
+        tagger.USE_SPOTIFY = False
+        tagger.USE_SOUNDCLOUD = True
+
+    def tearDown(self):
+        tagger.MUSIC_FOLDER = self._original_music_folder
+        tagger.USE_ITUNES = self._original_use_itunes
+        tagger.USE_SPOTIFY = self._original_use_spotify
+        tagger.USE_SOUNDCLOUD = self._original_use_soundcloud
+        tagger.search_cover_itunes = self._original_itunes_search
+        tagger.search_cover_soundcloud = self._original_soundcloud_search
+        self._tmp_dir.cleanup()
+
+    def test_itunes_searches_run_concurrently(self):
+        active = {"count": 0, "max": 0}
+        lock = threading.Lock()
+
+        def fake_itunes(artist, title, log=None, **kwargs):
+            with lock:
+                active["count"] += 1
+                active["max"] = max(active["max"], active["count"])
+            time.sleep(0.05)  # hold the "slot" briefly so overlap is observable
+            with lock:
+                active["count"] -= 1
+            return (b"cover", artist, title)
+
+        tagger.search_cover_itunes = fake_itunes
+
+        results = tagger.scan_files(self.file_names, log=lambda msg: None)
+
+        self.assertEqual(len(results), len(self.file_names))
+        self.assertTrue(all(info["cover_source"] == "iTunes" for info in results))
+        self.assertGreater(active["max"], 1, "expected genuine concurrency across files")
+        self.assertLessEqual(active["max"], tagger.ITUNES_SCAN_MAX_WORKERS)
+
+    def test_falls_back_to_soundcloud_when_itunes_misses(self):
+        tagger.search_cover_itunes = lambda artist, title, log=None, **kwargs: None
+        tagger.search_cover_soundcloud = lambda artist, title, token, log=None: (b"cover", artist, title)
+
+        results = tagger.scan_files(self.file_names[:2], log=lambda msg: None)
+
+        self.assertTrue(all(info["cover_source"] == "SoundCloud" for info in results))
+
+    def test_itunes_disabled_skips_the_parallel_phase_entirely(self):
+        tagger.USE_ITUNES = False
+        calls = {"itunes": 0}
+
+        def fake_itunes(artist, title, log=None, **kwargs):
+            calls["itunes"] += 1
+            return (b"cover", artist, title)
+
+        tagger.search_cover_itunes = fake_itunes
+        tagger.search_cover_soundcloud = lambda artist, title, token, log=None: (b"cover", artist, title)
+
+        results = tagger.scan_files(self.file_names[:2], log=lambda msg: None)
+
+        self.assertEqual(calls["itunes"], 0)
+        self.assertTrue(all(info["cover_source"] == "SoundCloud" for info in results))
 
 
 class HistoryLogTests(unittest.TestCase):
