@@ -86,26 +86,26 @@ LIGHT_TABLE_SELECT_FG = "#1a1a1a"
 # means "leave the native theme's own colors alone", captured at startup
 # (see App._native_bg etc.) so it matches today's look exactly.
 DARK_COLORS = {
-    "bg": "#2b2b2b",
+    "bg": "#18191C",  # background
     "fg": "#e0e0e0",
-    "entry_bg": "#3c3c3c",
+    "entry_bg": "#202225",  # panels (LabelFrame boxes, buttons, inputs, inactive tabs)
     "entry_fg": "#f0f0f0",
     "select_bg": "#3f6fb0",
     "select_fg": "#ffffff",
-    "tree_bg": "#333333",
+    "tree_bg": "#24262A",  # list area (table body, listboxes, log)
     "tree_fg": "#e0e0e0",
-    "tree_odd_row": "#3a3a3a",
-    "tree_heading_bg": "#3c3c3c",
-    "listbox_bg": "#333333",
+    "tree_odd_row": "#2A2C31",
+    "tree_heading_bg": "#2B2E33",  # list header
+    "listbox_bg": "#24262A",
     "listbox_fg": "#e0e0e0",
-    "journal_bg": "#1e1e1e",
+    "journal_bg": "#24262A",
     "journal_fg": "#d4d4d4",
-    "progress_track": "#3c3c3c",
+    "progress_track": "#24262A",
     "progress_fill": "#4a90d9",
     "progress_text": "#f0f0f0",
-    "menu_bg": "#333333",
+    "menu_bg": "#2B2E33",
     "menu_fg": "#e0e0e0",
-    "border": "#4a4a4a",
+    "border": "#2B2E33",
 }
 
 
@@ -392,21 +392,24 @@ class TaggerInterface:
             style.configure(".", background=colors["bg"], foreground=colors["fg"])
             style.configure("TFrame", background=colors["bg"])
             style.configure("TLabel", background=colors["bg"], foreground=colors["fg"])
-            style.configure("TLabelframe", background=colors["bg"], foreground=colors["fg"])
-            style.configure("TLabelframe.Label", background=colors["bg"], foreground=colors["fg"])
+            style.configure("TLabelframe", background=colors["entry_bg"], foreground=colors["fg"])
+            style.configure("TLabelframe.Label", background=colors["entry_bg"], foreground=colors["fg"])
             # clam's default dotted focus ring renders as a solid block unless
             # focuscolor is pinned to the background - blend it in instead.
+            # Uses entry_bg (the panel color) rather than bg since every
+            # checkbutton/radiobutton in this app lives inside a LabelFrame
+            # panel, not directly on the plain window background.
             style.configure(
-                "TCheckbutton", background=colors["bg"], foreground=colors["fg"], focuscolor=colors["bg"],
+                "TCheckbutton", background=colors["entry_bg"], foreground=colors["fg"], focuscolor=colors["entry_bg"],
             )
             style.configure(
-                "TRadiobutton", background=colors["bg"], foreground=colors["fg"], focuscolor=colors["bg"],
+                "TRadiobutton", background=colors["entry_bg"], foreground=colors["fg"], focuscolor=colors["entry_bg"],
             )
             style.configure("TNotebook", background=colors["bg"], borderwidth=0)
             style.configure("TNotebook.Tab", background=colors["entry_bg"], foreground=colors["fg"])
             style.map("TNotebook.Tab", background=[("selected", colors["bg"])])
             style.configure(
-                "TButton", background=colors["entry_bg"], foreground=colors["fg"], focuscolor=colors["bg"],
+                "TButton", background=colors["entry_bg"], foreground=colors["fg"], focuscolor=colors["entry_bg"],
                 # clam's default vertical button padding is much taller than
                 # the native theme's (which ignores this option entirely and
                 # uses its own compact OS metrics instead) - trimmed down so
