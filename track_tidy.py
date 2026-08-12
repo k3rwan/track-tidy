@@ -1556,10 +1556,17 @@ def search_cover_itunes(artist, title, log=safe_print, max_retries=2, allow_loos
                 timeout=10,
             )
 
+            # 403 is usually a transient rate-limit/bot-detection block too
+            # (not a real "access denied") - a plain retry alone, with no
+            # extra wait, has been observed to succeed immediately after.
             if response.status_code == 429 and attempt < max_retries:
                 wait_seconds = 2 * (attempt + 1)
                 log(f"  [iTunes] Rate limited, retrying in {wait_seconds}s...")
                 time.sleep(wait_seconds)
+                continue
+
+            if response.status_code == 403 and attempt < max_retries:
+                log("  [iTunes] Got HTTP 403 (likely transient), retrying...")
                 continue
 
             break
