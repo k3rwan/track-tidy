@@ -216,7 +216,7 @@ class TaggerInterface:
         self._hovered_cover_row = None
         self._tooltip_window = None
         self._tooltip_key = None
-        self._pending_play_after_id = None
+        self._pending_double_click_after_id = None
         self._table_font = tkfont.nametofont("TkDefaultFont")
         self.soundcloud_rate_limit_warned = False
         self.mention_counts = {}  # raw mention text -> number of times seen
@@ -2794,11 +2794,12 @@ class TaggerInterface:
     # --- Table editing & context menu ---
 
     def _toggle_cell_double_click(self, event):
-        """Double-click on Title/Artist: plays the audio file in the
-        default player. Deliberately delayed rather than fired right away -
-        Tk fires <Double-1> on the 2nd click of every <Triple-1> sequence
-        too, so playing immediately here would also launch the file on
-        every rename (see _toggle_cell_triple_click, which cancels this)."""
+        """Double-click on Title/Artist: opens editing (still editable even
+        after processing). Deliberately delayed rather than fired right
+        away - Tk fires <Double-1> on the 2nd click of every <Triple-1>
+        sequence too, so editing immediately here would also flash open the
+        rename box on every triple-click-to-play (see
+        _toggle_cell_triple_click, which cancels this)."""
         item_id = self.table.identify_row(event.y)
         column_id = self.table.identify_column(event.x)
 
@@ -2814,17 +2815,19 @@ class TaggerInterface:
         ):
             return
 
-        if self._pending_play_after_id:
-            self.window.after_cancel(self._pending_play_after_id)
-        self._pending_play_after_id = self.window.after(300, lambda: self._play_audio_file(info))
+        if self._pending_double_click_after_id:
+            self.window.after_cancel(self._pending_double_click_after_id)
+        self._pending_double_click_after_id = self.window.after(
+            300, lambda: self._edit_cell(item_id, info, "title" if column_id == f"#{COLUMNS.index('title') + 1}" else "artist", column_id),
+        )
 
     def _toggle_cell_triple_click(self, event):
-        """Triple-click on Title/Artist: opens editing (still editable even
-        after processing) - cancels the pending play from the 2nd click of
+        """Triple-click on Title/Artist: plays the audio file in the
+        default player - cancels the pending rename from the 2nd click of
         this same sequence first."""
-        if self._pending_play_after_id:
-            self.window.after_cancel(self._pending_play_after_id)
-            self._pending_play_after_id = None
+        if self._pending_double_click_after_id:
+            self.window.after_cancel(self._pending_double_click_after_id)
+            self._pending_double_click_after_id = None
 
         item_id = self.table.identify_row(event.y)
         column_id = self.table.identify_column(event.x)
@@ -2836,14 +2839,15 @@ class TaggerInterface:
         if not info:
             return
 
-        if column_id == f"#{COLUMNS.index('title') + 1}":
-            self._edit_cell(item_id, info, "title", column_id)
-        elif column_id == f"#{COLUMNS.index('artist') + 1}":
-            self._edit_cell(item_id, info, "artist", column_id)
+        if column_id not in (
+            f"#{COLUMNS.index('title') + 1}", f"#{COLUMNS.index('artist') + 1}",
+        ):
+            return
+
+        self._play_audio_file(info)
 
     def _play_audio_file(self, info):
         """Launches this row's file in the default audio player."""
-        self._pending_play_after_id = None
         full_path = self._resolve_full_path(info)
         if not os.path.exists(full_path):
             self._append_to_journal(f"Can't play, file not found: '{full_path}'")
