@@ -1105,6 +1105,57 @@ def _search_one_source(source, artist, search_title, remix_qualified_title, spot
     return match_result, ("SoundCloud" if match_result else None)
 
 
+def search_cover_manual(artist, title, soundcloud_token, spotify_token=None, log=safe_print):
+    """
+    Searches for a cover using the given artist/title directly, trying
+    every enabled source in priority order and stopping at the first
+    match - shared by scan_one_file() (filename/tag-derived artist/title)
+    and the "fix Artist/Title and search again" flow after a scan finds no
+    match at all (user-corrected artist/title).
+
+    Returns (found_cover_image, cover_source, returned_artist,
+    returned_title) - the last three are None if nothing matched.
+    """
+    if not artist or not title:
+        return None, None, None, None
+
+    search_title = strip_parentheses(title)
+    has_parenthetical = search_title != title
+    remix_qualified_title = strip_trailing_noise_words(title) if has_parenthetical else search_title
+
+    for source, enabled in (
+        ("itunes", USE_ITUNES),
+        ("spotify", USE_SPOTIFY),
+        ("soundcloud", USE_SOUNDCLOUD and not SOUNDCLOUD_RATE_LIMITED and not SOUNDCLOUD_UNAVAILABLE),
+    ):
+        if not enabled:
+            continue
+        match_result, cover_source = _search_one_source(
+            source, artist, search_title, remix_qualified_title, spotify_token, soundcloud_token, log,
+        )
+        if match_result:
+            found_cover_image, returned_artist, returned_title = match_result
+            return found_cover_image, cover_source, returned_artist, returned_title
+
+    return None, None, None, None
+
+
+def search_cover_manual_with_tokens(artist, title, log=safe_print):
+    """
+    Same as search_cover_manual(), but also fetches the SoundCloud/Spotify
+    tokens itself - for a single ad-hoc search (e.g. the "fix Artist/Title
+    and search again" flow after a scan finds nothing) that doesn't go
+    through scan_files()'s full per-run setup.
+    """
+    soundcloud_token = None
+    if USE_SOUNDCLOUD and SOUNDCLOUD_CLIENT_ID and SOUNDCLOUD_CLIENT_SECRET:
+        soundcloud_token = get_soundcloud_token(log=log)
+
+    spotify_token = get_spotify_token(log=log) if USE_SPOTIFY else None
+
+    return search_cover_manual(artist, title, soundcloud_token, spotify_token, log=log)
+
+
 def scan_one_file(file_name, soundcloud_token, spotify_token=None, log=safe_print, on_new_mention=None):
     """
     Analyzes a single file (path relative to MUSIC_FOLDER): current tags,
@@ -1139,30 +1190,11 @@ def scan_one_file(file_name, soundcloud_token, spotify_token=None, log=safe_prin
     found_cover_image = None
     cover_source = None
     if search_source_artist and search_source_title:
-        search_title = strip_parentheses(search_source_title)
-        has_parenthetical = search_title != search_source_title
-        remix_qualified_title = strip_trailing_noise_words(search_source_title) if has_parenthetical else search_title
+        found_cover_image, cover_source, returned_artist, returned_title = search_cover_manual(
+            search_source_artist, search_source_title, soundcloud_token, spotify_token, log,
+        )
 
-        # Tries each enabled source in a fixed priority order, stopping at
-        # the first match.
-        match_result = None
-        for source, enabled in (
-            ("itunes", USE_ITUNES),
-            ("spotify", USE_SPOTIFY),
-            ("soundcloud", USE_SOUNDCLOUD and not SOUNDCLOUD_RATE_LIMITED and not SOUNDCLOUD_UNAVAILABLE),
-        ):
-            if not enabled:
-                continue
-            match_result, cover_source = _search_one_source(
-                source, search_source_artist, search_title, remix_qualified_title,
-                spotify_token, soundcloud_token, log,
-            )
-            if match_result:
-                break
-
-        if match_result:
-            found_cover_image, returned_artist, returned_title = match_result
-
+        if found_cover_image:
             # Only try to fix a swap on the FILENAME-derived guess - the file's
             # own existing tags are trusted as-is and never rewritten this way.
             if not tags_already_present:
