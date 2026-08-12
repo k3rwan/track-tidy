@@ -693,7 +693,7 @@ class TaggerInterface:
         soundcloud_tab = ttk.Frame(self.notebook)
         self.tagger_tab = tagger_tab
         self.notebook.add(tagger_tab, text="Tagger")
-        self.notebook.add(extractor_tab, text="Extracter")
+        self.notebook.add(extractor_tab, text="Extractor")
         self.notebook.add(soundcloud_tab, text="Settings")
 
         # ============================== Tagger tab ==============================
@@ -860,7 +860,7 @@ class TaggerInterface:
         self.apply_status_label = ttk.Label(apply_row, text="0 tracks selected")
         self.apply_status_label.pack(side="left")
 
-        self.apply_button = ttk.Button(apply_row, text="Apply", command=self._start_processing)
+        self.apply_button = ttk.Button(apply_row, text="Apply", command=self._start_processing, width=18)
         self.apply_button.configure(state="disabled")
         self.apply_button.pack(side="right")
 
@@ -872,7 +872,7 @@ class TaggerInterface:
             0, 12, text="", fill="#1a1a1a", font=("TkDefaultFont", 9, "bold")
         )
 
-        # ============================== Extracter tab ==============================
+        # ============================== Extractor tab ==============================
 
         ttk.Label(
             extractor_tab,
@@ -1194,7 +1194,7 @@ class TaggerInterface:
 
         self._center_dialog(dialog)
 
-    # --- Extracter tab actions ---
+    # --- Extractor tab actions ---
 
     def _choose_extract_folder(self):
         folder = filedialog.askdirectory(title="Choose the folder to flatten")
