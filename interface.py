@@ -105,7 +105,7 @@ DARK_COLORS = {
     "progress_text": "#f0f0f0",
     "menu_bg": "#2B2E33",
     "menu_fg": "#e0e0e0",
-    "border": "#2B2E33",
+    "border": "#3A3D42",
 }
 
 
@@ -392,7 +392,12 @@ class TaggerInterface:
             style.configure(".", background=colors["bg"], foreground=colors["fg"])
             style.configure("TFrame", background=colors["bg"])
             style.configure("TLabel", background=colors["bg"], foreground=colors["fg"])
-            style.configure("TLabelframe", background=colors["entry_bg"], foreground=colors["fg"])
+            # No border at all - panels are set apart from the plain window
+            # background by color contrast (entry_bg vs bg) rather than a
+            # drawn line, per the "no old-Windows bevels" dark mode design.
+            style.configure(
+                "TLabelframe", background=colors["entry_bg"], foreground=colors["fg"], borderwidth=0,
+            )
             style.configure("TLabelframe.Label", background=colors["entry_bg"], foreground=colors["fg"])
             # clam's default dotted focus ring renders as a solid block unless
             # focuscolor is pinned to the background - blend it in instead.
@@ -406,10 +411,20 @@ class TaggerInterface:
                 "TRadiobutton", background=colors["entry_bg"], foreground=colors["fg"], focuscolor=colors["entry_bg"],
             )
             style.configure("TNotebook", background=colors["bg"], borderwidth=0)
-            style.configure("TNotebook.Tab", background=colors["entry_bg"], foreground=colors["fg"])
+            style.configure(
+                "TNotebook.Tab", background=colors["entry_bg"], foreground=colors["fg"],
+                bordercolor=colors["border"],
+            )
             style.map("TNotebook.Tab", background=[("selected", colors["bg"])])
+            # clam draws every control with a 2px raised/sunken bevel
+            # (lightcolor/darkcolor highlight+shadow on two opposite edges) -
+            # that's the "old Windows" look. Pinning lightcolor/darkcolor to
+            # the same flat bordercolor and trimming borderwidth to 1px kills
+            # the bevel everywhere without touching layout.
             style.configure(
                 "TButton", background=colors["entry_bg"], foreground=colors["fg"], focuscolor=colors["entry_bg"],
+                bordercolor=colors["border"], lightcolor=colors["border"], darkcolor=colors["border"],
+                borderwidth=1,
                 # clam's default vertical button padding is much taller than
                 # the native theme's (which ignores this option entirely and
                 # uses its own compact OS metrics instead) - trimmed down so
@@ -420,17 +435,25 @@ class TaggerInterface:
             style.configure(
                 "TEntry", fieldbackground=colors["entry_bg"], foreground=colors["entry_fg"],
                 insertcolor=colors["fg"], padding=(1, 0),
+                bordercolor=colors["border"], lightcolor=colors["border"], darkcolor=colors["border"],
+                borderwidth=1,
             )
             style.configure("TSeparator", background=colors["border"])
             style.configure(
                 "Table.Treeview", background=colors["tree_bg"], fieldbackground=colors["tree_bg"],
                 foreground=colors["tree_fg"],
+                bordercolor=colors["border"], lightcolor=colors["border"], darkcolor=colors["border"],
+                borderwidth=1,
             )
             style.map(
                 "Table.Treeview",
                 background=[("selected", colors["select_bg"])], foreground=[("selected", colors["select_fg"])],
             )
-            style.configure("Treeview.Heading", background=colors["tree_heading_bg"], foreground=colors["fg"])
+            style.configure(
+                "Treeview.Heading", background=colors["tree_heading_bg"], foreground=colors["fg"],
+                bordercolor=colors["border"], lightcolor=colors["tree_heading_bg"], darkcolor=colors["tree_heading_bg"],
+                relief="flat",
+            )
             style.map(
                 "ReadonlyWhite.TEntry",
                 fieldbackground=[("readonly", colors["entry_bg"])],
