@@ -3,6 +3,34 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.10]
+
+### Added
+- "Report track..." now shows exactly what's about to be sent (your
+  Windows username, file name, current/suggested tags, cover source,
+  and that a cover image may be attached) and asks for confirmation
+  before sending, instead of sending immediately with no disclosure.
+  Reports now include your Windows username, so reports from different
+  people aren't all anonymous.
+- The auto-updater verifies the downloaded installer's checksum against
+  the release before running it, when the release provides one.
+- Settings: a note about the project's license, and a "View license &
+  third-party notices" link.
+
+### Changed
+- Triple-click on Title/Artist in the scan table now plays the file in
+  your default audio player (double-click still opens the rename edit,
+  as before).
+- SoundCloud/Spotify credentials are now encrypted at rest (tied to
+  your Windows account) instead of stored as plain text.
+
+### Legal
+- Track Tidy is now licensed under the GNU General Public License v2
+  or later, since it bundles mutagen (GPL-2.0-or-later) and FFmpeg
+  (GPLv3) - see LICENSE and THIRD-PARTY-NOTICES.md. A source archive
+  is attached to this release to satisfy the GPL's source-availability
+  requirement.
+
 ## [0.9]
 
 ### Added
