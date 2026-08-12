@@ -114,6 +114,32 @@ DARK_COLORS = {
     "border": "#3A3D42",
 }
 
+# Checkbutton/Radiobutton indicator colors. Light and dark draw the exact
+# same clam-sourced indicator shape (see the "Uniform.*.indicator" block in
+# _apply_theme) - the native theme's own indicator is pure OS drawing with
+# no configurable colors at all, so without this both modes would show two
+# completely different checkbox/radio shapes for the same control. Only the
+# colors differ here; "checked" intentionally reuses dark mode's own accent
+# blue in both themes.
+INDICATOR_CHECKED_BG = DARK_COLORS["select_bg"]
+LIGHT_INDICATOR_COLORS = {
+    "indicator_bg": "#ffffff",
+    "indicator_border": "#8a8a8a",
+}
+
+# Scrollbar colors for light mode. The native theme's own scrollbar (like
+# its checkbox indicator above) has zero stylable properties either, so it
+# can't literally be copied pixel-for-pixel - both modes instead render the
+# same clam-sourced scrollbar shape (see _apply_theme), recolored to
+# approximate each theme's look. Chosen to sit close to stock Windows'
+# light-grey thumb/near-white trough.
+LIGHT_SCROLLBAR_COLORS = {
+    "thumb": "#c1c1c1",
+    "trough": "#f0f0f0",
+    "arrow": "#606060",
+    "active_thumb": "#8c8c8c",
+}
+
 
 def setup_placeholder(entry, placeholder, on_change=None):
     """
@@ -399,6 +425,99 @@ class TaggerInterface:
             font=(self._table_font.actual("family"), self._table_font.actual("size")),
         )
 
+        # Same reasoning as Table.Treeview above, but for Checkbutton/
+        # Radiobutton: pull clam's own indicator element into whichever
+        # theme is active (native "vista" included) so light and dark
+        # render the identical indicator shape, just recolored. Guarded by
+        # element_names() - re-creating an element that already exists in
+        # the current theme raises a TclError, but once created it's
+        # visible from every theme, so this only actually runs once.
+        for element_name, source_element in (
+            ("Uniform.Checkbutton.indicator", "Checkbutton.indicator"),
+            ("Uniform.Radiobutton.indicator", "Radiobutton.indicator"),
+        ):
+            if element_name not in style.element_names():
+                style.element_create(element_name, "from", "clam", source_element)
+        style.layout("TCheckbutton", [
+            ("Checkbutton.padding", {"sticky": "nswe", "children": [
+                ("Uniform.Checkbutton.indicator", {"side": "left", "sticky": ""}),
+                ("Checkbutton.focus", {"side": "left", "sticky": "", "children": [
+                    ("Checkbutton.label", {"sticky": "nswe"}),
+                ]}),
+            ]}),
+        ])
+        style.layout("TRadiobutton", [
+            ("Radiobutton.padding", {"sticky": "nswe", "children": [
+                ("Uniform.Radiobutton.indicator", {"side": "left", "sticky": ""}),
+                ("Radiobutton.focus", {"side": "left", "sticky": "", "children": [
+                    ("Radiobutton.label", {"sticky": "nswe"}),
+                ]}),
+            ]}),
+        ])
+        if dark:
+            indicator_bg, indicator_border = colors["entry_bg"], colors["border"]
+        else:
+            indicator_bg, indicator_border = LIGHT_INDICATOR_COLORS["indicator_bg"], LIGHT_INDICATOR_COLORS["indicator_border"]
+        for indicator_style in ("TCheckbutton", "TRadiobutton"):
+            style.configure(
+                indicator_style,
+                indicatorbackground=indicator_bg, indicatorforeground="#ffffff",
+                upperbordercolor=indicator_border, lowerbordercolor=indicator_border,
+            )
+            style.map(
+                indicator_style,
+                indicatorbackground=[("selected", INDICATOR_CHECKED_BG), ("!selected", indicator_bg)],
+            )
+
+        # Same cross-theme trick again, for the scrollbar: native's own
+        # trough/thumb/arrow elements have zero stylable options too
+        # (verified the same way as the checkbutton indicator above), so
+        # "copying" light mode's scrollbar into dark really means giving
+        # both modes the identical clam-drawn shape and only varying the
+        # colors - there's no native chrome left to literally copy pixels
+        # from either way.
+        for element_name, source_element in (
+            ("Uniform.Vertical.Scrollbar.trough", "Vertical.Scrollbar.trough"),
+            ("Uniform.Vertical.Scrollbar.thumb", "Vertical.Scrollbar.thumb"),
+            ("Uniform.Vertical.Scrollbar.uparrow", "Vertical.Scrollbar.uparrow"),
+            ("Uniform.Vertical.Scrollbar.downarrow", "Vertical.Scrollbar.downarrow"),
+            ("Uniform.Horizontal.Scrollbar.trough", "Horizontal.Scrollbar.trough"),
+            ("Uniform.Horizontal.Scrollbar.thumb", "Horizontal.Scrollbar.thumb"),
+            ("Uniform.Horizontal.Scrollbar.leftarrow", "Horizontal.Scrollbar.leftarrow"),
+            ("Uniform.Horizontal.Scrollbar.rightarrow", "Horizontal.Scrollbar.rightarrow"),
+        ):
+            if element_name not in style.element_names():
+                style.element_create(element_name, "from", "clam", source_element)
+        style.layout("Vertical.TScrollbar", [
+            ("Uniform.Vertical.Scrollbar.trough", {"sticky": "ns", "children": [
+                ("Uniform.Vertical.Scrollbar.uparrow", {"side": "top", "sticky": ""}),
+                ("Uniform.Vertical.Scrollbar.downarrow", {"side": "bottom", "sticky": ""}),
+                ("Uniform.Vertical.Scrollbar.thumb", {"sticky": "nswe"}),
+            ]}),
+        ])
+        style.layout("Horizontal.TScrollbar", [
+            ("Uniform.Horizontal.Scrollbar.trough", {"sticky": "we", "children": [
+                ("Uniform.Horizontal.Scrollbar.leftarrow", {"side": "left", "sticky": ""}),
+                ("Uniform.Horizontal.Scrollbar.rightarrow", {"side": "right", "sticky": ""}),
+                ("Uniform.Horizontal.Scrollbar.thumb", {"sticky": "nswe"}),
+            ]}),
+        ])
+        if dark:
+            scrollbar_colors = dict(
+                thumb=colors["border"], trough=colors["tree_bg"], arrow=colors["fg"], active_thumb=colors["select_bg"],
+            )
+        else:
+            scrollbar_colors = LIGHT_SCROLLBAR_COLORS
+        for scrollbar_style in ("TScrollbar", "Vertical.TScrollbar", "Horizontal.TScrollbar"):
+            style.configure(
+                scrollbar_style,
+                background=scrollbar_colors["thumb"], troughcolor=scrollbar_colors["trough"],
+                bordercolor=scrollbar_colors["trough"], arrowcolor=scrollbar_colors["arrow"],
+                lightcolor=scrollbar_colors["thumb"], darkcolor=scrollbar_colors["thumb"],
+                relief="flat", borderwidth=1,
+            )
+            style.map(scrollbar_style, background=[("active", scrollbar_colors["active_thumb"])])
+
         if dark:
             style.configure(".", background=colors["bg"], foreground=colors["fg"])
             style.configure("TFrame", background=colors["bg"])
@@ -461,20 +580,6 @@ class TaggerInterface:
                 borderwidth=1,
             )
             style.configure("TSeparator", background=colors["border"])
-            # clam's default scrollbar is a light beige trough/thumb that
-            # otherwise never gets touched by the dark palette - flat
-            # thumb (no bevel) a shade lighter than the list area it
-            # scrolls, on a trough that blends into that same list area,
-            # with a soft highlight while hovering/dragging.
-            for scrollbar_style in ("TScrollbar", "Vertical.TScrollbar", "Horizontal.TScrollbar"):
-                style.configure(
-                    scrollbar_style,
-                    background=colors["border"], troughcolor=colors["tree_bg"],
-                    bordercolor=colors["tree_bg"], arrowcolor=colors["fg"],
-                    lightcolor=colors["border"], darkcolor=colors["border"],
-                    relief="flat", borderwidth=1,
-                )
-                style.map(scrollbar_style, background=[("active", colors["select_bg"])])
             style.configure(
                 "Table.Treeview", background=colors["tree_bg"], fieldbackground=colors["tree_bg"],
                 foreground=colors["tree_fg"],
