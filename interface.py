@@ -461,6 +461,20 @@ class TaggerInterface:
                 borderwidth=1,
             )
             style.configure("TSeparator", background=colors["border"])
+            # clam's default scrollbar is a light beige trough/thumb that
+            # otherwise never gets touched by the dark palette - flat
+            # thumb (no bevel) a shade lighter than the list area it
+            # scrolls, on a trough that blends into that same list area,
+            # with a soft highlight while hovering/dragging.
+            for scrollbar_style in ("TScrollbar", "Vertical.TScrollbar", "Horizontal.TScrollbar"):
+                style.configure(
+                    scrollbar_style,
+                    background=colors["border"], troughcolor=colors["tree_bg"],
+                    bordercolor=colors["tree_bg"], arrowcolor=colors["fg"],
+                    lightcolor=colors["border"], darkcolor=colors["border"],
+                    relief="flat", borderwidth=1,
+                )
+                style.map(scrollbar_style, background=[("active", colors["select_bg"])])
             style.configure(
                 "Table.Treeview", background=colors["tree_bg"], fieldbackground=colors["tree_bg"],
                 foreground=colors["tree_fg"],
