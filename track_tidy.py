@@ -658,6 +658,27 @@ def delete_history_entries(entries_to_delete):
         print(f"  Could not delete history entries: {error}")
 
 
+def mark_history_entries_restored(entries_to_mark):
+    """Flags specific entries as "restored" (rewriting the file with that
+    field set), so the history view can show they were later reverted -
+    the log entry itself is otherwise left untouched. Does nothing if the
+    history file doesn't exist."""
+    if not os.path.exists(HISTORY_FILE):
+        return
+    keys_to_mark = {_history_entry_key(entry) for entry in entries_to_mark}
+    updated = []
+    for entry in load_history_entries():
+        if _history_entry_key(entry) in keys_to_mark:
+            entry = dict(entry, restored=True)
+        updated.append(entry)
+    try:
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            for entry in updated:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as error:
+        print(f"  Could not mark history entries as restored: {error}")
+
+
 # --- Runtime config (set by the UI at startup / per scan) ---
 
 # Folder containing the audio files to process
@@ -2436,18 +2457,23 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
 
         info["final_path"] = file_name  # actual current path, useful for a later fix
 
-        log_history_entry(
-            old_file=info["file"],
-            new_file=file_name,
-            old_artist=info.get("current_artist"),
-            old_title=info.get("current_title"),
-            new_artist=artist if update_artist else info.get("current_artist"),
-            new_title=title if update_title else info.get("current_title"),
-            cover_updated=bool(update_cover and (cover_image or force_remove_if_missing)),
-            converted=converted_this_file,
-            folder=os.path.abspath(MUSIC_FOLDER) if MUSIC_FOLDER else None,
-            old_cover_bytes=info.get("current_cover_bytes") if info.get("has_cover") else None,
-        )
+        # Only log a history entry when tags actually changed (apply_changes
+        # was True) - an unchecked row still reaches this point (e.g. it
+        # just needed converting), but old==new for it, so logging it would
+        # just clutter the history with entries there's nothing to restore.
+        if update_title:
+            log_history_entry(
+                old_file=info["file"],
+                new_file=file_name,
+                old_artist=info.get("current_artist"),
+                old_title=info.get("current_title"),
+                new_artist=artist,
+                new_title=title,
+                cover_updated=bool(update_cover and (cover_image or force_remove_if_missing)),
+                converted=converted_this_file,
+                folder=os.path.abspath(MUSIC_FOLDER) if MUSIC_FOLDER else None,
+                old_cover_bytes=info.get("current_cover_bytes") if info.get("has_cover") else None,
+            )
 
         if update_cover and cover_image:
             log("  Tags updated (cover found and added).\n")
