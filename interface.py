@@ -199,6 +199,7 @@ class TaggerInterface:
         self.use_soundcloud_var = tk.BooleanVar(value=saved_settings.get("use_soundcloud", True))
         self.auto_convert_var = tk.BooleanVar(value=saved_settings.get("auto_convert_mp3", True))
         self.show_log_var = tk.BooleanVar(value=saved_settings.get("show_log_section", False))
+        self._tagger_resize_pending = False
         tagger.USE_ITUNES = self.use_itunes_var.get()
         tagger.USE_SPOTIFY = self.use_spotify_var.get()
         tagger.USE_SOUNDCLOUD = self.use_soundcloud_var.get()
@@ -290,13 +291,33 @@ class TaggerInterface:
 
         if enabled:
             if not self.journal_toggle.winfo_ismapped():
-                self.journal_toggle.pack(anchor="w", padx=10, pady=(0, 5), before=self.apply_button.master)
+                self.journal_toggle.pack(anchor="w", padx=10, pady=(0, 5), before=self.launch_frame)
         else:
             if self.journal_section_visible:
-                self._toggle_journal_section()  # also collapses journal_frame and resets the arrow/text
+                # Collapse without going through _toggle_journal_section() -
+                # that one always resizes the window immediately, which is
+                # right when the user clicks it on the Tagger tab, but not
+                # here (the single resize decision below already handles it).
+                self.journal_section_visible = False
+                self.journal_frame.pack_forget()
+                self.journal_toggle.configure(text="▸ Log")
             self.journal_toggle.pack_forget()
 
-        self._adjust_window_height()
+        # This setting only changes the Tagger tab's layout - resizing the
+        # window right now would visibly affect whatever tab the user is
+        # actually looking at (e.g. Settings) even though nothing there
+        # changed. Only resize immediately if Tagger is the active tab;
+        # otherwise the pending resize is applied once the user switches
+        # back to it (see _on_tab_changed).
+        if self.notebook.index("current") == 0:
+            self._adjust_window_height()
+        else:
+            self._tagger_resize_pending = True
+
+    def _on_tab_changed(self, event=None):
+        if self._tagger_resize_pending and self.notebook.index("current") == 0:
+            self._tagger_resize_pending = False
+            self._adjust_window_height()
 
     def _style_toplevel(self, dialog):
         """Applies the current theme's background (and title bar) to a dialog
@@ -719,6 +740,7 @@ class TaggerInterface:
         self.notebook.add(tagger_tab, text="Tagger")
         self.notebook.add(extractor_tab, text="Extractor")
         self.notebook.add(soundcloud_tab, text="Settings")
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         # ============================== Tagger tab ==============================
 
@@ -875,7 +897,7 @@ class TaggerInterface:
         self.journal_text.pack(fill="both", expand=True, padx=5, pady=5)
 
         # --- Launch + progress ---
-        launch_frame = ttk.Frame(tagger_tab)
+        self.launch_frame = launch_frame = ttk.Frame(tagger_tab)
         # Extra bottom margin - the "vX.Y" version label sits fixed at the
         # window's bottom-right corner and would otherwise overlap the
         # Apply button below it.
