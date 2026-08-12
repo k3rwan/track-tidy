@@ -854,9 +854,15 @@ class TaggerInterface:
         launch_frame = ttk.Frame(tagger_tab)
         launch_frame.pack(fill="x", padx=10, pady=(0, 10))
 
-        self.apply_button = ttk.Button(launch_frame, text="Apply changes - 0/0", command=self._start_processing)
+        apply_row = ttk.Frame(launch_frame)
+        apply_row.pack(fill="x", pady=(0, 5))
+
+        self.apply_status_label = ttk.Label(apply_row, text="0 tracks selected")
+        self.apply_status_label.pack(side="left")
+
+        self.apply_button = ttk.Button(apply_row, text="Apply", command=self._start_processing)
         self.apply_button.configure(state="disabled")
-        self.apply_button.pack(fill="x", pady=(0, 5))
+        self.apply_button.pack(side="right")
 
         self.progress_canvas = tk.Canvas(launch_frame, height=24, bg="#e2e2e2", highlightthickness=0)
         # not packed yet: only shown once a run has actually started (see _start_processing)
@@ -1359,9 +1365,9 @@ class TaggerInterface:
 
     def _update_apply_button_label(self):
         """Shows how many of the scanned tracks are currently checked to be applied."""
-        total = len(self.scanned_plan)
         checked = sum(1 for info in self.scanned_plan if info.get("apply_changes"))
-        self.apply_button.configure(text=f"Apply changes - {checked}/{total}")
+        unit = "track" if checked == 1 else "tracks"
+        self.apply_status_label.configure(text=f"{checked} {unit} selected")
 
     def _set_buttons_enabled(self, enabled):
         """Enables/disables every action button, to avoid interference during a run."""
@@ -1372,7 +1378,7 @@ class TaggerInterface:
         if enabled:
             self.scan_button.configure(text="Scan")
             self._update_apply_button_label()
-            self.apply_button.configure(command=self._start_processing, state="normal")
+            self.apply_button.configure(text="Apply", command=self._start_processing, state="normal")
         else:
             self.cancel_requested.clear()
             self.apply_button.configure(text="Cancel", command=self._request_cancel, state="normal")
