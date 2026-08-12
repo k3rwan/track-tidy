@@ -263,7 +263,7 @@ def check_for_update(log=safe_print, timeout=5):
                     timeout=timeout,
                 )
                 break
-            except requests.exceptions.ConnectionError:
+            except requests.exceptions.RequestException:
                 # GitHub's edge occasionally resets the very first connection
                 # in a pool with no response at all - same flakiness observed
                 # on the release-asset download below. One retry clears it.
@@ -341,10 +341,12 @@ def download_installer(url, dest_path, on_progress=None, timeout=30, expected_sh
     the same as a failed download (file removed, returns False) rather
     than letting a tampered/corrupted installer through.
 
-    A connection-level failure (GitHub's release-asset redirect resets the
-    connection with no response at all every so often - confirmed by hand,
-    not specific to any one machine/network) is retried a few times, with a
-    short growing pause between attempts, before giving up.
+    A connection-level failure - whether right at the start (a plain
+    ConnectionError) or partway through the transfer (ChunkedEncodingError,
+    when the connection drops mid-stream - GitHub's release-asset redirect
+    resets fairly often on a 70+ MB file, confirmed by hand, not specific
+    to any one machine/network) - is retried a few times, with a short
+    growing pause between attempts, before giving up.
     """
     max_retries = 3
     for attempt in range(max_retries + 1):
@@ -372,7 +374,7 @@ def download_installer(url, dest_path, on_progress=None, timeout=30, expected_sh
 
             return True
 
-        except requests.exceptions.ConnectionError:
+        except requests.exceptions.RequestException:
             try:
                 if os.path.exists(dest_path):
                     os.remove(dest_path)
