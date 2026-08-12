@@ -415,6 +415,17 @@ class TaggerInterface:
             style.configure(
                 "TRadiobutton", background=colors["entry_bg"], foreground=colors["fg"], focuscolor=colors["entry_bg"],
             )
+            # clam shows a light "active" (hover) background by default -
+            # against dark text that's nearly white-on-white. Pin both the
+            # background and foreground back to the normal panel colors.
+            style.map(
+                "TCheckbutton",
+                background=[("active", colors["entry_bg"])], foreground=[("active", colors["fg"])],
+            )
+            style.map(
+                "TRadiobutton",
+                background=[("active", colors["entry_bg"])], foreground=[("active", colors["fg"])],
+            )
             style.configure("TNotebook", background=colors["bg"], borderwidth=0)
             style.configure(
                 "TNotebook.Tab", background=colors["entry_bg"], foreground=colors["fg"],
@@ -1671,6 +1682,7 @@ class TaggerInterface:
         got a cover from each source, how many kept their original one, how
         many had none at all, and how many were converted."""
         itunes_count = 0
+        spotify_count = 0
         soundcloud_count = 0
         kept_existing_count = 0
         no_cover_count = 0
@@ -1682,6 +1694,8 @@ class TaggerInterface:
             source = info.get("cover_source")
             if source == "iTunes":
                 itunes_count += 1
+            elif source == "Spotify":
+                spotify_count += 1
             elif source == "SoundCloud":
                 soundcloud_count += 1
             elif info.get("has_cover"):
@@ -1691,7 +1705,7 @@ class TaggerInterface:
             if info.get("convert"):
                 converted_count += 1
 
-        return itunes_count, soundcloud_count, kept_existing_count, no_cover_count, converted_count
+        return itunes_count, spotify_count, soundcloud_count, kept_existing_count, no_cover_count, converted_count
 
     def _show_success_dialog(self):
         """Custom success dialog with a green checkmark, a distinct chime sound, and a summary."""
@@ -1701,7 +1715,7 @@ class TaggerInterface:
         except Exception:
             pass  # if the sound file is missing, just show the dialog silently
 
-        itunes_count, soundcloud_count, kept_existing_count, no_cover_count, converted_count = (
+        itunes_count, spotify_count, soundcloud_count, kept_existing_count, no_cover_count, converted_count = (
             self._compute_processing_summary()
         )
 
@@ -1721,6 +1735,7 @@ class TaggerInterface:
 
         summary_text = (
             f"Cover from iTunes: {itunes_count}\n"
+            f"Cover from Spotify: {spotify_count}\n"
             f"Cover from SoundCloud: {soundcloud_count}\n"
             f"Kept original cover: {kept_existing_count}\n"
             f"No cover at all: {no_cover_count}\n"
@@ -1872,11 +1887,15 @@ class TaggerInterface:
     # --- Table interactions (sort, toggle, reorder) ---
 
     def _toggle_all(self):
-        """Checks or unchecks 'apply_changes' for all rows not yet processed."""
+        """Checks or unchecks 'apply_changes' for all *visible* rows not yet
+        processed - rows currently hidden by a filter (e.g. "Only show
+        tracks with no cover match") are left untouched, since the user
+        never saw them to make that choice."""
         self.all_checked_state = not self.all_checked_state
+        visible_files = set(self.table.get_children())
 
         for info in self.scanned_plan:
-            if not info.get("processed"):
+            if not info.get("processed") and info["file"] in visible_files:
                 info["apply_changes"] = self.all_checked_state
                 self._refresh_row(info)
 
@@ -2700,7 +2719,7 @@ class TaggerInterface:
 
                 elif message_type == "scan_progress":
                     scanned_count, total = content
-                    self.scan_button.configure(text=f"Scan - {scanned_count:02d}/{total:02d}")
+                    self.scan_button.configure(text=f"Scan - {scanned_count}/{total}")
 
                 elif message_type == "mention_added":
                     self.mention_counts[content] = self.mention_counts.get(content, 0) + 1
