@@ -206,6 +206,7 @@ class TaggerInterface:
         self.window.resizable(False, False)  # prevents fullscreen / resizing
 
         self.message_queue = queue.Queue()
+        self._is_online = True  # optimistic default until the first real check lands
         self.processing_in_progress = False
         self.cancel_requested = threading.Event()
         self.scanned_plan = []
@@ -358,6 +359,8 @@ class TaggerInterface:
         if self._tagger_resize_pending and self.notebook.index("current") == 0:
             self._tagger_resize_pending = False
             self._adjust_window_height()
+        if self.notebook.index("current") == 2:  # Settings - recheck right away rather than
+            self._check_internet_connection()      # waiting for the next background 10s poll
 
     def _style_toplevel(self, dialog):
         """Applies the current theme's background (and title bar) to a dialog
@@ -782,14 +785,35 @@ class TaggerInterface:
     def _check_internet_connection(self, is_startup_check=False):
         """Checks connectivity in the background, updates the status
         indicator, and (only for the initial startup check) warns once via
-        a popup if there's no connection. Re-checks itself every 30s so the
-        indicator stays accurate for the life of the run."""
+        a popup if there's no connection. Re-checks itself every 10s so the
+        indicator (and the Tagger tab's buttons - see
+        _refresh_tagger_buttons_for_connectivity) stay accurate for the
+        life of the run."""
         def _run_check():
             is_online = tagger.check_internet_connection()
             self.message_queue.put(("internet_status", (is_online, is_startup_check)))
 
         self._run_in_background(_run_check)
-        self.window.after(30000, self._check_internet_connection)
+        self.window.after(10000, self._check_internet_connection)
+
+    def _refresh_tagger_buttons_for_connectivity(self):
+        """Scan/Apply/Reset need internet for cover search, so they're
+        disabled while offline - Browse is exempt (still useful to pick a
+        folder while offline). Skipped entirely while a scan/apply run is
+        active: browse_button is only ever disabled by _set_buttons_enabled
+        for that, never by connectivity, so its state doubles as "is
+        something already running" without a separate flag to track."""
+        if str(self.browse_button.cget("state")) == "disabled":
+            return
+        if not self._is_online:
+            self.scan_button.configure(state="disabled")
+            self.reset_button.configure(state="disabled")
+            self.apply_button.configure(state="disabled")
+            return
+        if self.folder_variable.get().strip():
+            self.scan_button.configure(state="normal")
+            self.reset_button.configure(state="normal")
+            self.apply_button.configure(state="normal")
 
     def _check_for_update_manual(self):
         """Same check as on startup, but always reports back (up to date /
@@ -1601,9 +1625,7 @@ class TaggerInterface:
         folder = filedialog.askdirectory(title="Choose the audio files folder")
         if folder:
             self.folder_variable.set(folder)
-            self.scan_button.configure(state="normal")
-            self.reset_button.configure(state="normal")
-            self.apply_button.configure(state="normal")
+            self._refresh_tagger_buttons_for_connectivity()
 
             tagger.MUSIC_FOLDER = folder
             file_count = len(tagger.list_audio_files())
@@ -2604,6 +2626,17 @@ class TaggerInterface:
             tree.heading(col, text=headings[col])
             tree.column(col, width=widths[col], anchor="w")
 
+        if self.theme_colors:
+            tree.tag_configure(
+                "odd_row", background=self.theme_colors["tree_odd_row"], foreground=self.theme_colors["tree_fg"],
+            )
+            tree.tag_configure(
+                "even_row", background=self.theme_colors["tree_bg"], foreground=self.theme_colors["tree_fg"],
+            )
+        else:
+            tree.tag_configure("odd_row", background="#e9e9e9", foreground="black")
+            tree.tag_configure("even_row", background="white", foreground="black")
+
         scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=scrollbar.set)
         tree.pack(side="left", fill="both", expand=True)
@@ -2615,7 +2648,7 @@ class TaggerInterface:
         history_filter_entry.pack(fill="x", expand=True)
         self._bind_entry_context_menu(history_filter_entry)
 
-        empty_label = ttk.Label(dialog, text="No files have been processed yet.", padding=20)
+        EMPTY_ROW_ID = "__history_empty_row__"
         entries_by_parent = {}
 
         def matches_query(entry, query):
@@ -2637,35 +2670,38 @@ class TaggerInterface:
             all_entries = list(reversed(tagger.load_history_entries()))
             entries = [e for e in all_entries if matches_query(e, query)] if query else all_entries
 
-            empty_label.pack_forget()
             if not entries:
-                empty_label.configure(
-                    text="No matching entries." if query else "No files have been processed yet."
+                tree.insert(
+                    "", "end", iid=EMPTY_ROW_ID,
+                    text="No matching entries." if query else "No files have been processed yet.",
+                    values=("", "", "", "", ""),
                 )
-                empty_label.pack()
                 return
 
-            for entry in entries:
+            for index, entry in enumerate(entries):
                 timestamp = entry.get("timestamp", "")
                 try:
                     date_display = datetime.fromisoformat(timestamp).astimezone().strftime("%Y-%m-%d %H:%M")
                 except ValueError:
                     date_display = timestamp
 
+                tag = "even_row" if index % 2 == 0 else "odd_row"
                 parent_id = tree.insert(
                     "", "end", text=date_display,
                     values=(
                         entry.get("old_file", ""), entry.get("old_artist") or "-", entry.get("old_title") or "-",
                         "", "",
                     ),
+                    tags=(tag,),
                 )
                 tree.insert(
-                    parent_id, "end", text="↳ Applied",
+                    parent_id, "end", text="↳ Restored" if entry.get("restored") else "↳ Applied",
                     values=(
                         entry.get("new_file", ""), entry.get("new_artist") or "-", entry.get("new_title") or "-",
                         "Yes" if entry.get("cover_updated") else "No",
                         "Yes" if entry.get("converted") else "No",
                     ),
+                    tags=(tag,),
                 )
                 tree.item(parent_id, open=True)
                 entries_by_parent[parent_id] = entry
@@ -2718,13 +2754,18 @@ class TaggerInterface:
             if not messagebox.askyesno("Restore previous version(s)", prompt, parent=dialog):
                 return
 
-            successes, failures = 0, []
+            successes, failures, restored_entries = 0, [], []
             for entry in entries:
                 try:
                     tagger.restore_history_entry(entry, log=self._append_to_journal)
                     successes += 1
+                    restored_entries.append(entry)
                 except Exception as error:
                     failures.append((entry.get("new_file", "?"), str(error)))
+
+            if restored_entries:
+                tagger.mark_history_entries_restored(restored_entries)
+                populate()
 
             if failures:
                 detail = "\n".join(f"- {name}: {error}" for name, error in failures[:5])
@@ -2776,6 +2817,8 @@ class TaggerInterface:
                     activebackground=self.theme_colors["select_bg"], activeforeground=self.theme_colors["select_fg"],
                 )
             menu.add_command(label="Delete", command=delete_selected)
+            menu.add_separator()
+            menu.add_command(label="Reset (clear all history)", command=reset_history)
             menu.tk_popup(event.x_root, event.y_root)
 
         tree.bind("<Button-3>", show_context_menu)
@@ -2800,7 +2843,6 @@ class TaggerInterface:
         button_frame = ttk.Frame(dialog)
         button_frame.pack(fill="x", padx=10, pady=(0, 10))
         ttk.Button(button_frame, text="Restore selected", command=restore_selected).pack(side="left")
-        ttk.Button(button_frame, text="Reset", command=reset_history).pack(side="left", padx=(5, 0))
 
         self._center_dialog(dialog)
 
@@ -3379,6 +3421,7 @@ class TaggerInterface:
 
                 elif message_type == "internet_status":
                     is_online, is_startup_check = content
+                    self._is_online = is_online
                     if is_online:
                         self.internet_status_label.configure(text="● Online", foreground="#2ecc71")
                     else:
@@ -3391,6 +3434,7 @@ class TaggerInterface:
                                 "connection is restored.",
                                 parent=self.window,
                             )
+                    self._refresh_tagger_buttons_for_connectivity()
 
                 elif message_type == "fix_row_search_result":
                     self._apply_fix_row_search_result(content)
