@@ -420,15 +420,25 @@ class TaggerInterface:
 
         entry.bind("<Button-3>", show_menu)
 
-    def _build_folder_icon_photo(self, size=16, color="#8a8a8a"):
+    def _build_folder_icon_photo(self, dark, size=16):
         """Small flat folder glyph shown to the left of the parent-folder
-        path - drawn as a raster image (like the checkbox indicator) rather
-        than a Unicode folder emoji, so it's a plain solid color instead of
-        an uncontrollable colored glyph that wouldn't match the theme."""
+        path - drawn as a raster image (like the checkbox indicator)
+        rather than a Unicode folder emoji, so it's a plain solid color
+        instead of an uncontrollable colored glyph that wouldn't match the
+        theme. A single connected polygon (tab + body as one outline), not
+        two separate rectangles - at this size two adjacent-but-separate
+        shapes rendered as a visible seam instead of reading as one folder.
+        Recolored per theme and rebuilt in _apply_theme, like the checkbox
+        indicator - it was previously built once with a fixed color and
+        never updated on a light/dark switch."""
+        color = "#c1c1c1" if dark else "#707070"
         image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
-        draw.rectangle([size * 0.06, size * 0.19, size * 0.44, size * 0.31], fill=color)
-        draw.rectangle([size * 0.06, size * 0.31, size * 0.94, size * 0.81], fill=color)
+        points = [
+            (size * 0.06, size * 0.25), (size * 0.06, size * 0.81), (size * 0.94, size * 0.81),
+            (size * 0.94, size * 0.34), (size * 0.42, size * 0.34), (size * 0.34, size * 0.25),
+        ]
+        draw.polygon(points, fill=color)
         return ImageTk.PhotoImage(image)
 
     def _build_checkbox_indicator_photo(self, box_bg, box_border, checked, size=13):
@@ -712,6 +722,9 @@ class TaggerInterface:
             entry.normal_color = colors["entry_fg"] if dark else "black"
             if not getattr(entry, "placeholder_active", False):
                 entry.configure(foreground=entry.normal_color)
+
+        self._folder_icon_photo = self._build_folder_icon_photo(dark)
+        self.folder_icon_label.configure(image=self._folder_icon_photo)
 
         self.theme_colors = colors
         self._set_titlebar_dark(self.window, dark)
@@ -1046,8 +1059,11 @@ class TaggerInterface:
         folder_entry_row = ttk.Frame(folder_frame)
         folder_entry_row.pack(fill="x", padx=10, pady=(10, 5))
 
-        self._folder_icon_photo = self._build_folder_icon_photo()
-        ttk.Label(folder_entry_row, image=self._folder_icon_photo).pack(side="left", padx=(0, 6))
+        # Image is set in _apply_theme (needs to know light/dark, and is
+        # rebuilt every time the theme changes, same as the checkbox
+        # indicator images).
+        self.folder_icon_label = ttk.Label(folder_entry_row)
+        self.folder_icon_label.pack(side="left", padx=(0, 6))
 
         # "ReadonlyWhite.TEntry"'s actual colors are (re)configured by _apply_theme,
         # since they depend on the light/dark choice and ttk styles are per-theme.
@@ -1079,11 +1095,14 @@ class TaggerInterface:
         self.advanced_toggle.pack(anchor="w", padx=10, pady=(0, 2))
         self.advanced_toggle.bind("<Button-1>", lambda event: self._toggle_advanced_section())
 
-        self.advanced_frame = ttk.LabelFrame(tagger_tab, text="")
+        # Plain Frame, not LabelFrame - an empty-title LabelFrame still
+        # reserves space for its (invisible) label line at the top, which
+        # was most of the excess gap above "Suggested"/"To remove".
+        self.advanced_frame = ttk.Frame(tagger_tab)
         # not shown by default (pack() is called/undone in _toggle_advanced_section)
 
         columns_frame = ttk.Frame(self.advanced_frame)
-        columns_frame.pack(fill="x", padx=10, pady=(4, 5))
+        columns_frame.pack(fill="x", padx=10, pady=(2, 5))
 
         suggested_column = ttk.Frame(columns_frame)
         suggested_column.pack(side="left", fill="both", expand=True, padx=(0, 5))
@@ -1111,10 +1130,12 @@ class TaggerInterface:
         ttk.Checkbutton(
             self.advanced_frame, text="Only show tracks with no cover match",
             variable=self.no_cover_filter_var, command=self._apply_table_filter,
-        ).pack(anchor="w", padx=10, pady=(0, 10))
+        ).pack(anchor="w", padx=10, pady=(0, 6))
 
         # --- Scan results table ---
-        table_frame = ttk.LabelFrame(tagger_tab, text="")
+        # Plain Frame, not LabelFrame - same reasoning as advanced_frame
+        # above, this was most of the excess gap above the table headers.
+        table_frame = ttk.Frame(tagger_tab)
         table_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
         search_frame = ttk.Frame(table_frame)
