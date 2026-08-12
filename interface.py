@@ -77,6 +77,11 @@ COLUMNS = ("apply", "title", "artist", "format")
 # backed by a real scanned_plan entry.
 NO_COVER_SUMMARY_ROW_ID = "__no_cover_summary_row__"
 
+# Synthetic row id for the "N track(s) found" summary shown at the bottom
+# of the table while the search box has an active query - never backed by
+# a real scanned_plan entry.
+SEARCH_RESULT_SUMMARY_ROW_ID = "__search_result_summary_row__"
+
 # Soft selection highlight for the main table in light mode, in place of the
 # native theme's stock (harsher) Windows blue - the rest of light mode still
 # intentionally leaves the native theme's own colors alone (see below).
@@ -180,6 +185,7 @@ class TaggerInterface:
         self.tk_images = {}  # keeps a reference to PhotoImages (otherwise Tkinter clears them)
         self.tk_images_hover = {}  # same thumbnails, with a magnifier badge - built lazily on first hover
         self._thumbnail_pil_images = {}  # pre-PhotoImage PIL images, so the hover badge can be composited cheaply
+        self._fix_dialog_rows = {}  # file -> row widgets, while the "fix no-cover tracks" dialog is open
         self._hovered_cover_row = None
         self._tooltip_window = None
         self._tooltip_key = None
@@ -1623,14 +1629,16 @@ class TaggerInterface:
 
         no_cover_only = self.no_cover_filter_var.get()
 
-        if self.table.exists(NO_COVER_SUMMARY_ROW_ID):
-            self.table.delete(NO_COVER_SUMMARY_ROW_ID)
+        for summary_row_id in (NO_COVER_SUMMARY_ROW_ID, SEARCH_RESULT_SUMMARY_ROW_ID):
+            if self.table.exists(summary_row_id):
+                self.table.delete(summary_row_id)
 
         for info in self.scanned_plan:
             if self.table.exists(info["file"]):
                 self.table.detach(info["file"])
 
         hidden_with_cover = 0
+        visible_count = 0
         for info in self.scanned_plan:
             title = info.get("title_override") or info.get("detected_title") or info.get("current_title") or ""
             artist = info.get("artist_override") or info.get("detected_artist") or info.get("current_artist") or ""
@@ -1642,6 +1650,7 @@ class TaggerInterface:
                 hidden_with_cover += 1
                 continue
 
+            visible_count += 1
             if self.table.exists(info["file"]):
                 self.table.move(info["file"], "", "end")
 
@@ -1649,6 +1658,16 @@ class TaggerInterface:
             self.table.insert(
                 "", "end", iid=NO_COVER_SUMMARY_ROW_ID,
                 values=("", f"- - - {hidden_with_cover} track(s) with cover - - -", "", ""),
+            )
+
+        # Shown alongside the results themselves (not instead of them) so a
+        # search's match count is clear at a glance, the same way the
+        # no-cover filter already summarizes what it hides.
+        if query:
+            unit = "track" if visible_count == 1 else "tracks"
+            self.table.insert(
+                "", "end", iid=SEARCH_RESULT_SUMMARY_ROW_ID,
+                values=("", f"- - - {visible_count} {unit} found - - -", "", ""),
             )
 
         self._restripe_rows()
@@ -1808,14 +1827,16 @@ class TaggerInterface:
                     f"{len(removed_files)} removed, {len(self.scanned_plan)} total."
                 )
 
-            missing_count = sum(
-                1 for info in self.scanned_plan if not info.get("processed") and not info.get("cover_source")
-            )
-            if missing_count:
-                self._append_to_journal(f"{missing_count} track(s) currently have no cover match.")
+            no_cover_infos = [
+                info for info in self.scanned_plan if not info.get("processed") and not info.get("cover_source")
+            ]
+            if no_cover_infos:
+                self._append_to_journal(f"{len(no_cover_infos)} track(s) currently have no cover match.")
 
             if number_new > 0:
                 self._show_scan_summary_dialog()
+                if no_cover_infos:
+                    self._offer_fix_no_cover_tracks(no_cover_infos)
 
         self._check_for_duplicates()
 
@@ -1849,6 +1870,148 @@ class TaggerInterface:
             self.tk_images_hover.pop(dot_file, None)
             self._thumbnail_pil_images.pop(dot_file, None)
             self.scanned_plan = [info for info in self.scanned_plan if info["file"] != dot_file]
+
+    # --- Fix Artist/Title and search again (tracks with no cover match) ---
+
+    def _offer_fix_no_cover_tracks(self, no_cover_infos):
+        count = len(no_cover_infos)
+        unit = "track" if count == 1 else "tracks"
+        confirmed = messagebox.askyesno(
+            "No cover found",
+            f"{count} {unit} had no cover match.\n\n"
+            "Would you like to review and correct their Artist/Title now, then search again?",
+            parent=self.window,
+        )
+        if confirmed:
+            self._show_fix_no_cover_dialog(no_cover_infos)
+
+    def _show_fix_no_cover_dialog(self, infos):
+        """Lets the user correct Artist/Title for each track that had no
+        cover match, and retry the search right there - each row is
+        independent, so some can be fixed while others are left for later."""
+        dialog = tk.Toplevel(self.window)
+        self._style_toplevel(dialog)
+        dialog.title("Fix tracks with no cover")
+        dialog.geometry("640x420")
+        dialog.transient(self.window)
+
+        ttk.Label(
+            dialog, text="Correct the Artist/Title below, then click Search to try again.",
+            padding=(10, 10, 10, 5),
+        ).pack(anchor="w")
+
+        canvas_frame = ttk.Frame(dialog)
+        canvas_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        canvas = tk.Canvas(canvas_frame, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(canvas_frame, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="left", fill="y")
+
+        rows_frame = ttk.Frame(canvas)
+        canvas_window = canvas.create_window((0, 0), window=rows_frame, anchor="nw")
+        rows_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(canvas_window, width=e.width))
+
+        if self.theme_colors:
+            canvas.configure(bg=self.theme_colors["bg"])
+
+        self._fix_dialog_rows = {}
+
+        for info in infos:
+            file_name = info["file"]
+            row = ttk.Frame(rows_frame)
+            row.pack(fill="x", padx=(0, 10), pady=(0, 10))
+
+            ttk.Label(row, text=file_name, font=("TkDefaultFont", 8, "bold")).pack(anchor="w")
+
+            fields_row = ttk.Frame(row)
+            fields_row.pack(fill="x", pady=(2, 0))
+
+            artist_entry = ttk.Entry(fields_row, width=20)
+            artist_entry.insert(0, info.get("artist_override") or info.get("detected_artist") or "")
+            artist_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+            self._bind_entry_context_menu(artist_entry)
+
+            title_entry = ttk.Entry(fields_row, width=20)
+            title_entry.insert(0, info.get("title_override") or info.get("detected_title") or "")
+            title_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+            self._bind_entry_context_menu(title_entry)
+
+            search_button = ttk.Button(fields_row, text="Search")
+            search_button.pack(side="left", padx=(0, 5))
+
+            status_label = ttk.Label(fields_row, text="", width=12)
+            status_label.pack(side="left")
+
+            search_button.configure(
+                command=lambda i=info, ae=artist_entry, te=title_entry, sb=search_button, sl=status_label:
+                    self._search_fix_row(i, ae, te, sb, sl)
+            )
+
+            self._fix_dialog_rows[file_name] = {
+                "artist_entry": artist_entry, "title_entry": title_entry,
+                "search_button": search_button, "status_label": status_label,
+            }
+
+        ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=(0, 10))
+
+        def on_close():
+            self._fix_dialog_rows = {}
+            dialog.destroy()
+
+        dialog.protocol("WM_DELETE_WINDOW", on_close)
+        self._center_dialog(dialog)
+
+    def _search_fix_row(self, info, artist_entry, title_entry, search_button, status_label):
+        artist = artist_entry.get().strip()
+        title = title_entry.get().strip()
+        if not artist or not title:
+            messagebox.showwarning(
+                "Missing info", "Both Artist and Title are required.", parent=search_button.winfo_toplevel(),
+            )
+            return
+
+        search_button.configure(state="disabled")
+        status_label.configure(text="Searching...")
+
+        def _run():
+            found_cover_image, cover_source, returned_artist, returned_title = tagger.search_cover_manual_with_tokens(
+                artist, title, log=self._append_to_journal,
+            )
+            self.message_queue.put((
+                "fix_row_search_result",
+                (info["file"], artist, title, found_cover_image, cover_source, returned_artist, returned_title),
+            ))
+
+        self._run_in_background(_run)
+
+    def _apply_fix_row_search_result(self, content):
+        file_name, artist, title, found_cover_image, cover_source, returned_artist, returned_title = content
+
+        info = next((i for i in self.scanned_plan if i["file"] == file_name), None)
+        if info is not None:
+            # Same override mechanism as double-clicking the Title/Artist
+            # cell - keeps the correction visible in the main table even if
+            # this particular search still doesn't find a cover.
+            info["artist_override"] = artist
+            info["title_override"] = title
+            if found_cover_image:
+                info["found_cover_image"] = found_cover_image
+                info["cover_source"] = cover_source
+                if not info.get("processed"):
+                    info["apply_changes"] = True
+            if self.table.exists(file_name):
+                self._refresh_row(info)
+
+        row_widgets = self._fix_dialog_rows.get(file_name)
+        if row_widgets and row_widgets["status_label"].winfo_exists():
+            if found_cover_image:
+                row_widgets["status_label"].configure(text=f"{PROCESSED_CHECK} Found ({cover_source})")
+            else:
+                row_widgets["status_label"].configure(text="Not found")
+                row_widgets["search_button"].configure(state="normal")
 
     # --- Table row rendering ---
 
@@ -2469,9 +2632,10 @@ class TaggerInterface:
 
     def _select_all_rows(self, event=None):
         """Ctrl+A: selects every currently visible track row (skips the
-        synthetic "N track(s) with cover" summary row, if shown)."""
+        synthetic summary rows, if shown)."""
+        summary_row_ids = (NO_COVER_SUMMARY_ROW_ID, SEARCH_RESULT_SUMMARY_ROW_ID)
         self.table.selection_set([
-            item_id for item_id in self.table.get_children() if item_id != NO_COVER_SUMMARY_ROW_ID
+            item_id for item_id in self.table.get_children() if item_id not in summary_row_ids
         ])
         return "break"
 
@@ -2824,6 +2988,9 @@ class TaggerInterface:
                                 "connection is restored.",
                                 parent=self.window,
                             )
+
+                elif message_type == "fix_row_search_result":
+                    self._apply_fix_row_search_result(content)
 
                 elif message_type == "update_available":
                     latest_version, release_url, installer_url = content

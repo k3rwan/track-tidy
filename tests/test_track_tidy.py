@@ -380,6 +380,64 @@ class SearchOneSourceTests(unittest.TestCase):
         self.assertIsNotNone(match_result)
 
 
+class SearchCoverManualTests(unittest.TestCase):
+    """search_cover_manual() - the "fix Artist/Title and search again" flow
+    after a scan finds no match - searches with the given artist/title
+    directly, stopping at the first enabled source that matches."""
+
+    def setUp(self):
+        self._original_itunes = tagger.search_cover_itunes
+        self._original_soundcloud = tagger.search_cover_soundcloud
+        self._original_use_itunes = tagger.USE_ITUNES
+        self._original_use_spotify = tagger.USE_SPOTIFY
+        self._original_use_soundcloud = tagger.USE_SOUNDCLOUD
+        tagger.USE_ITUNES = True
+        tagger.USE_SPOTIFY = False
+        tagger.USE_SOUNDCLOUD = True
+
+    def tearDown(self):
+        tagger.search_cover_itunes = self._original_itunes
+        tagger.search_cover_soundcloud = self._original_soundcloud
+        tagger.USE_ITUNES = self._original_use_itunes
+        tagger.USE_SPOTIFY = self._original_use_spotify
+        tagger.USE_SOUNDCLOUD = self._original_use_soundcloud
+
+    def test_returns_none_for_empty_artist_or_title(self):
+        self.assertEqual(
+            tagger.search_cover_manual("", "Title", None), (None, None, None, None),
+        )
+        self.assertEqual(
+            tagger.search_cover_manual("Artist", "", None), (None, None, None, None),
+        )
+
+    def test_uses_the_given_artist_title_directly(self):
+        calls = []
+
+        def fake_itunes(artist, title, log=None, **kwargs):
+            calls.append((artist, title))
+            return (b"cover", "Real Artist", "Real Title")
+
+        tagger.search_cover_itunes = fake_itunes
+
+        result = tagger.search_cover_manual("Corrected Artist", "Corrected Title", None)
+        self.assertEqual(calls, [("Corrected Artist", "Corrected Title")])
+        self.assertEqual(result, (b"cover", "iTunes", "Real Artist", "Real Title"))
+
+    def test_falls_through_to_the_next_enabled_source_on_miss(self):
+        tagger.search_cover_itunes = lambda artist, title, log=None, **kwargs: None
+        tagger.search_cover_soundcloud = lambda artist, title, token, log=None: (b"cover", artist, title)
+
+        result = tagger.search_cover_manual("Artist", "Title", "sc-token")
+        self.assertEqual(result, (b"cover", "SoundCloud", "Artist", "Title"))
+
+    def test_no_match_from_any_source_returns_none_tuple(self):
+        tagger.search_cover_itunes = lambda artist, title, log=None, **kwargs: None
+        tagger.search_cover_soundcloud = lambda artist, title, token, log=None: None
+
+        result = tagger.search_cover_manual("Artist", "Title", None)
+        self.assertEqual(result, (None, None, None, None))
+
+
 class TitleWordsOverlapTests(unittest.TestCase):
     def test_shared_meaningful_word_overlaps(self):
         self.assertTrue(tagger.title_words_overlap("Je La Connais", "Je La Connais (Remix)"))
