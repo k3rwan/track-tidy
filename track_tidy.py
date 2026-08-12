@@ -40,8 +40,6 @@ Contents (in the order they appear below):
     14. Processing (Apply)                - process_files, process_folder, main
 """
 
-import ctypes
-from ctypes import wintypes
 import os
 import socket
 import hashlib
@@ -58,6 +56,8 @@ import unicodedata
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 import requests
+import keyring
+import platformdirs
 from mutagen import File as MutagenFile
 from mutagen.mp3 import MP3
 from mutagen.wave import WAVE
@@ -103,89 +103,78 @@ def user_config_dir():
     """
     A per-user folder that's always writable, regardless of where the app itself
     is installed (e.g. Program Files, which needs admin rights to write into).
+    Resolves to %APPDATA%\\Track-Tidy on Windows, ~/Library/Application
+    Support/Track-Tidy on macOS, ~/.config/Track-Tidy on Linux.
     """
-    appdata = os.getenv("APPDATA") or os.path.expanduser("~")
-    config_dir = os.path.join(appdata, "Track-Tidy")
+    config_dir = platformdirs.user_config_dir("Track-Tidy", appauthor=False, roaming=True)
     os.makedirs(config_dir, exist_ok=True)
     return config_dir
 
 
-# --- SoundCloud credentials (read from separate files, next to the app) ---
+# --- SoundCloud/Spotify credentials (via the OS's native credential store -
+# Windows Credential Manager, macOS Keychain, Secret Service on Linux) ---
 
-CLIENT_ID_FILE = os.path.join(user_config_dir(), "clientID.txt")
-CLIENT_SECRET_FILE = os.path.join(user_config_dir(), "clientSecret.txt")
+KEYRING_SERVICE = "Track-Tidy"
+
+CLIENT_ID_KEY = "soundcloud_client_id"
+CLIENT_SECRET_KEY = "soundcloud_client_secret"
+SPOTIFY_CLIENT_ID_KEY = "spotify_client_id"
+SPOTIFY_CLIENT_SECRET_KEY = "spotify_client_secret"
+
+# Old plaintext file locations (pre-keyring) - read once at startup as a
+# migration path, then deleted. Not used for anything else.
+_LEGACY_CREDENTIAL_FILES = {
+    CLIENT_ID_KEY: os.path.join(user_config_dir(), "clientID.txt"),
+    CLIENT_SECRET_KEY: os.path.join(user_config_dir(), "clientSecret.txt"),
+    SPOTIFY_CLIENT_ID_KEY: os.path.join(user_config_dir(), "spotifyClientID.txt"),
+    SPOTIFY_CLIENT_SECRET_KEY: os.path.join(user_config_dir(), "spotifyClientSecret.txt"),
+}
 
 
-class _DataBlob(ctypes.Structure):
-    _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+def write_credential(key, value):
+    """Saves a credential via the OS's native credential store instead of
+    a file on disk."""
+    keyring.set_password(KEYRING_SERVICE, key, value)
 
 
-def _dpapi_protect(data):
-    """Encrypts bytes with Windows DPAPI, tied to the current Windows user
-    account - only a process running as this same user can decrypt it back."""
-    buffer = ctypes.create_string_buffer(data, len(data))
-    blob_in = _DataBlob(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_char)))
-    blob_out = _DataBlob()
-    if not ctypes.windll.crypt32.CryptProtectData(
-        ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
-    ):
-        raise ctypes.WinError()
+def read_credential(key):
+    """Returns a saved credential, or None if there isn't one. Migrates a
+    legacy PLAINTEXT credential file (from before this was ever
+    encrypted) into the keyring on first read, then removes the file.
+    Does NOT migrate the DPAPI-encrypted files an older Windows-only
+    version of this app wrote (that decryption code needed ctypes.windll,
+    which doesn't exist cross-platform) - those are simply left in place,
+    unused, and read_credential returns None for them like any other
+    missing credential. In practice this means: upgrading from that
+    specific older version asks you to re-enter SoundCloud/Spotify
+    credentials once; upgrading from anything older (plaintext) or newer
+    (already keyring-based) is seamless."""
     try:
-        return ctypes.string_at(blob_out.pbData, blob_out.cbData)
-    finally:
-        ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+        value = keyring.get_password(KEYRING_SERVICE, key)
+    except Exception as error:
+        print(f"  Could not read credential '{key}': {error}")
+        value = None
+
+    if not value:
+        legacy_path = _LEGACY_CREDENTIAL_FILES.get(key)
+        if legacy_path and os.path.exists(legacy_path):
+            try:
+                with open(legacy_path, "r", encoding="utf-8") as f:
+                    legacy_value = f.read().strip()
+                if legacy_value:
+                    write_credential(key, legacy_value)
+                    value = legacy_value
+                os.remove(legacy_path)
+            except Exception as error:
+                print(f"  Could not migrate legacy credential file '{legacy_path}': {error}")
+
+    return value.strip() if value else None
 
 
-def _dpapi_unprotect(data):
-    buffer = ctypes.create_string_buffer(data, len(data))
-    blob_in = _DataBlob(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_char)))
-    blob_out = _DataBlob()
-    if not ctypes.windll.crypt32.CryptUnprotectData(
-        ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
-    ):
-        raise ctypes.WinError()
-    try:
-        return ctypes.string_at(blob_out.pbData, blob_out.cbData)
-    finally:
-        ctypes.windll.kernel32.LocalFree(blob_out.pbData)
-
-
-def write_credential(file_path, value):
-    """Saves a credential DPAPI-encrypted at rest instead of as plaintext."""
-    encrypted = _dpapi_protect(value.encode("utf-8"))
-    with open(file_path, "wb") as f:
-        f.write(encrypted)
-
-
-def read_credential(file_path):
-    if not os.path.exists(file_path):
-        print(f"  Missing credential file: {file_path}")
-        return None
-    with open(file_path, "rb") as f:
-        raw = f.read()
-    try:
-        return _dpapi_unprotect(raw).decode("utf-8").strip()
-    except Exception:
-        # Not a DPAPI blob - a credential file saved before this was added.
-        # Fall back to reading it as plaintext directly (it gets
-        # re-encrypted the next time it's saved from Settings).
-        try:
-            return raw.decode("utf-8").strip()
-        except Exception:
-            return None
-
-
-SOUNDCLOUD_CLIENT_ID = read_credential(CLIENT_ID_FILE)
-SOUNDCLOUD_CLIENT_SECRET = read_credential(CLIENT_SECRET_FILE)
-
-
-# --- Spotify credentials (read from separate files, next to the app) ---
-
-SPOTIFY_CLIENT_ID_FILE = os.path.join(user_config_dir(), "spotifyClientID.txt")
-SPOTIFY_CLIENT_SECRET_FILE = os.path.join(user_config_dir(), "spotifyClientSecret.txt")
-
-SPOTIFY_CLIENT_ID = read_credential(SPOTIFY_CLIENT_ID_FILE)
-SPOTIFY_CLIENT_SECRET = read_credential(SPOTIFY_CLIENT_SECRET_FILE)
+SOUNDCLOUD_CLIENT_ID = read_credential(CLIENT_ID_KEY)
+SOUNDCLOUD_CLIENT_SECRET = read_credential(CLIENT_SECRET_KEY)
+SPOTIFY_CLIENT_ID = read_credential(SPOTIFY_CLIENT_ID_KEY)
+SPOTIFY_CLIENT_SECRET = read_credential(SPOTIFY_CLIENT_SECRET_KEY)
 
 
 def load_id_txt_credentials():
@@ -278,11 +267,12 @@ def check_for_update(log=safe_print, timeout=5):
         latest_tag = data.get("tag_name", "")
         release_url = data.get("html_url") or f"https://github.com/{GITHUB_REPO}/releases/latest"
 
+        installer_extension = ".dmg" if sys.platform == "darwin" else ".exe"
         assets = data.get("assets", [])
         installer_url = None
         installer_name = None
         for asset in assets:
-            if asset.get("name", "").lower().endswith(".exe"):
+            if asset.get("name", "").lower().endswith(installer_extension):
                 installer_url = asset.get("browser_download_url")
                 installer_name = asset.get("name", "")
                 break
