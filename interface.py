@@ -194,6 +194,7 @@ class TaggerInterface:
         self.use_spotify_var = tk.BooleanVar(value=saved_settings.get("use_spotify", False))
         self.use_soundcloud_var = tk.BooleanVar(value=saved_settings.get("use_soundcloud", True))
         self.auto_convert_var = tk.BooleanVar(value=saved_settings.get("auto_convert_mp3", True))
+        self.show_log_var = tk.BooleanVar(value=saved_settings.get("show_log_section", False))
         tagger.USE_ITUNES = self.use_itunes_var.get()
         tagger.USE_SPOTIFY = self.use_spotify_var.get()
         tagger.USE_SOUNDCLOUD = self.use_soundcloud_var.get()
@@ -258,6 +259,20 @@ class TaggerInterface:
             )
         tagger.AUTO_CONVERT_MP3 = enabled
         tagger.save_setting("auto_convert_mp3", enabled)
+
+    def _on_show_log_changed(self):
+        enabled = self.show_log_var.get()
+        tagger.save_setting("show_log_section", enabled)
+
+        if enabled:
+            if not self.journal_toggle.winfo_ismapped():
+                self.journal_toggle.pack(anchor="w", padx=10, pady=(0, 5), before=self.apply_button.master)
+        else:
+            if self.journal_section_visible:
+                self._toggle_journal_section()  # also collapses journal_frame and resets the arrow/text
+            self.journal_toggle.pack_forget()
+
+        self._adjust_window_height()
 
     def _style_toplevel(self, dialog):
         """Applies the current theme's background (and title bar) to a dialog
@@ -821,11 +836,12 @@ class TaggerInterface:
         self.table.bind("<Motion>", self._on_table_hover, add="+")
         self.table.bind("<Leave>", self._on_table_leave, add="+")
 
-        # --- Journal section (collapsible) ---
+        # --- Journal section (collapsible, shown/hidden via Settings -> "Show log section") ---
         self.journal_section_visible = False
 
         self.journal_toggle = ttk.Label(tagger_tab, text="▸ Log", cursor="hand2", foreground="#1a73e8")
-        self.journal_toggle.pack(anchor="w", padx=10, pady=(0, 5))
+        if self.show_log_var.get():
+            self.journal_toggle.pack(anchor="w", padx=10, pady=(0, 5))
         self.journal_toggle.bind("<Button-1>", lambda event: self._toggle_journal_section())
 
         self.journal_frame = ttk.LabelFrame(tagger_tab, text="Log")
@@ -925,7 +941,11 @@ class TaggerInterface:
         ttk.Checkbutton(
             behavior_frame, text="Convert everything to MP3 (320 kbps)", variable=self.auto_convert_var,
             command=self._on_auto_convert_changed,
-        ).pack(anchor="w", padx=10, pady=(10, 10))
+        ).pack(anchor="w", padx=10, pady=(10, 0))
+        ttk.Checkbutton(
+            behavior_frame, text="Show log section", variable=self.show_log_var,
+            command=self._on_show_log_changed,
+        ).pack(anchor="w", padx=10, pady=(0, 10))
 
         update_history_row = ttk.Frame(soundcloud_tab)
         update_history_row.pack(fill="x", padx=10, pady=(0, 10))
