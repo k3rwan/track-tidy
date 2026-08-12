@@ -29,6 +29,10 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ; close (and relaunch) it instead of failing to overwrite locked files.
 CloseApplications=yes
 RestartApplications=yes
+; Shows a mandatory license-acceptance page (Setup won't proceed past it
+; without "I accept the agreement") - required because mutagen (GPL,
+; imported directly into the app) makes this whole distribution GPL.
+LicenseFile=INSTALLER-LICENSE.txt
 
 [Files]
 Source: "dist\Track-Tidy\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -37,6 +41,7 @@ Source: "ffmpeg.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; (GPLv3, bundled as a separate executable) both require their license
 ; text to accompany the distribution - see THIRD-PARTY-NOTICES.md.
 Source: "THIRD-PARTY-NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "INSTALLER-LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "LICENSE-GPLv2-mutagen.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "LICENSE-GPLv3-FFmpeg.txt"; DestDir: "{app}"; Flags: ignoreversion
 

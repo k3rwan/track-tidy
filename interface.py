@@ -803,7 +803,7 @@ class TaggerInterface:
         dialog.grab_set()
         dialog.protocol("WM_DELETE_WINDOW", lambda: None)  # can't close mid-download
 
-        ttk.Label(dialog, text=f"Downloading Track Tidy v{latest_version}...", padding=(20, 15, 20, 5)).pack()
+        ttk.Label(dialog, text=f"Downloading Track Tidy {latest_version}...", padding=(20, 15, 20, 5)).pack()
         self._update_progress_var = tk.DoubleVar(value=0)
         ttk.Progressbar(
             dialog, variable=self._update_progress_var, maximum=100, length=320
@@ -818,7 +818,7 @@ class TaggerInterface:
             self.message_queue.put(("update_download_progress", (downloaded, total)))
 
         def _run():
-            dest_path = os.path.join(tempfile.gettempdir(), f"Track-Tidy-Setup-v{latest_version}.exe")
+            dest_path = os.path.join(tempfile.gettempdir(), f"Track-Tidy-Setup-{latest_version}.exe")
             success = tagger.download_installer(
                 installer_url, dest_path, on_progress=on_progress,
                 expected_sha256=expected_sha256, log=self._append_to_journal,
