@@ -293,8 +293,8 @@ class TaggerInterface:
         # early (mainloop() hasn't started yet), so it's deferred.
         self.window.after(100, self._rewarm_theme)
         self._start_message_loop()
-        self._check_cover_source_credentials_on_startup()
         self._check_for_update_on_startup()
+        self._check_cover_source_credentials_on_startup()
         self._check_internet_connection(is_startup_check=True)
         self._notify_new_install_on_startup()
 
