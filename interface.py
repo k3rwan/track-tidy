@@ -941,6 +941,7 @@ class TaggerInterface:
         self.table.bind("<Double-1>", self._toggle_cell_double_click, add="+")
         self.table.bind("<Button-3>", self._show_context_menu)
         self.table.bind("<Delete>", self._delete_selected_rows)
+        self.table.bind("<Control-a>", self._select_all_rows)
         self.table.bind("<Motion>", self._on_table_hover, add="+")
         self.table.bind("<Leave>", self._on_table_leave, add="+")
 
@@ -1678,19 +1679,26 @@ class TaggerInterface:
         self._center_dialog(dialog)
 
     def _compute_processing_summary(self):
-        """Counts, among the files actually processed in this session, how many
-        got a cover from each source, how many kept their original one, how
-        many had none at all, and how many were converted."""
+        """Counts, among the files actually processed in this session, how
+        many were converted - the cover breakdown itself is shown right
+        after scanning instead (see _compute_cover_summary), since it's
+        already known by then and doesn't change during Apply."""
+        converted_count = sum(
+            1 for info in self.scanned_plan if info.get("processed") and info.get("convert")
+        )
+        return converted_count
+
+    def _compute_cover_summary(self):
+        """Counts, among all currently scanned tracks, how many got a cover
+        from each source, how many kept their original one, and how many
+        have none at all - independent of whether Apply has run yet."""
         itunes_count = 0
         spotify_count = 0
         soundcloud_count = 0
         kept_existing_count = 0
         no_cover_count = 0
-        converted_count = 0
 
         for info in self.scanned_plan:
-            if not info.get("processed"):
-                continue
             source = info.get("cover_source")
             if source == "iTunes":
                 itunes_count += 1
@@ -1702,22 +1710,54 @@ class TaggerInterface:
                 kept_existing_count += 1
             else:
                 no_cover_count += 1
-            if info.get("convert"):
-                converted_count += 1
 
-        return itunes_count, spotify_count, soundcloud_count, kept_existing_count, no_cover_count, converted_count
+        return itunes_count, spotify_count, soundcloud_count, kept_existing_count, no_cover_count
+
+    def _show_scan_summary_dialog(self):
+        """Cover-source breakdown shown right after a scan finds new files -
+        this is the earliest point every track's cover_source is known."""
+        itunes_count, spotify_count, soundcloud_count, kept_existing_count, no_cover_count = (
+            self._compute_cover_summary()
+        )
+
+        dialog = tk.Toplevel(self.window)
+        self._style_toplevel(dialog)
+        dialog.title("Scan complete")
+        dialog.resizable(False, False)
+        dialog.transient(self.window)
+        dialog.grab_set()
+
+        ttk.Label(
+            dialog,
+            text=f"{PROCESSED_CHECK} Scan complete.",
+            justify="center",
+            padding=(20, 20, 20, 5),
+        ).pack()
+
+        summary_text = (
+            f"Cover from iTunes: {itunes_count}\n"
+            f"Cover from Spotify: {spotify_count}\n"
+            f"Cover from SoundCloud: {soundcloud_count}\n"
+            f"Kept original cover: {kept_existing_count}\n"
+            f"No cover at all: {no_cover_count}"
+        )
+        ttk.Label(dialog, text=summary_text, justify="left", foreground="#555555").pack(padx=20, pady=(0, 15))
+
+        ttk.Button(dialog, text="OK", command=dialog.destroy).pack(pady=(0, 15))
+
+        self._center_dialog(dialog)
 
     def _show_success_dialog(self):
-        """Custom success dialog with a green checkmark, a distinct chime sound, and a summary."""
+        """Custom success dialog with a green checkmark and a distinct chime
+        sound - the cover breakdown is shown earlier at scan time, so this
+        one just confirms the run finished and how many files were converted."""
         sound_path = resource_path("success.wav")
         try:
             winsound.PlaySound(sound_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
         except Exception:
             pass  # if the sound file is missing, just show the dialog silently
 
-        itunes_count, spotify_count, soundcloud_count, kept_existing_count, no_cover_count, converted_count = (
-            self._compute_processing_summary()
-        )
+        converted_count = self._compute_processing_summary()
 
         dialog = tk.Toplevel(self.window)
         self._style_toplevel(dialog)
@@ -1733,15 +1773,9 @@ class TaggerInterface:
             padding=(20, 20, 20, 5),
         ).pack()
 
-        summary_text = (
-            f"Cover from iTunes: {itunes_count}\n"
-            f"Cover from Spotify: {spotify_count}\n"
-            f"Cover from SoundCloud: {soundcloud_count}\n"
-            f"Kept original cover: {kept_existing_count}\n"
-            f"No cover at all: {no_cover_count}\n"
-            f"Converted to MP3: {converted_count}"
-        )
-        ttk.Label(dialog, text=summary_text, justify="left", foreground="#555555").pack(padx=20, pady=(0, 15))
+        ttk.Label(
+            dialog, text=f"Converted to MP3: {converted_count}", justify="left", foreground="#555555",
+        ).pack(padx=20, pady=(0, 15))
 
         ttk.Button(dialog, text="OK", command=dialog.destroy).pack(pady=(0, 15))
 
@@ -1779,6 +1813,9 @@ class TaggerInterface:
             )
             if missing_count:
                 self._append_to_journal(f"{missing_count} track(s) currently have no cover match.")
+
+            if number_new > 0:
+                self._show_scan_summary_dialog()
 
         self._check_for_duplicates()
 
@@ -2430,6 +2467,14 @@ class TaggerInterface:
         elif column_id == f"#{COLUMNS.index('artist') + 1}":
             self._edit_cell(item_id, info, "artist", column_id)
 
+    def _select_all_rows(self, event=None):
+        """Ctrl+A: selects every currently visible track row (skips the
+        synthetic "N track(s) with cover" summary row, if shown)."""
+        self.table.selection_set([
+            item_id for item_id in self.table.get_children() if item_id != NO_COVER_SUMMARY_ROW_ID
+        ])
+        return "break"
+
     def _delete_selected_rows(self, event=None):
         """Removes the selected row(s) from the list only - never touches the actual file on disk."""
         selected_items = self.table.selection()
@@ -2863,6 +2908,16 @@ class TaggerInterface:
 
         if not to_process and not fixes:
             messagebox.showinfo("Nothing to do", "No new file and no pending change.", parent=self.window)
+            return
+
+        confirmed = messagebox.askyesno(
+            "Apply changes?",
+            "This will overwrite the original artist/title/cover info for every "
+            "selected track.\n\nThe original values are saved in the processing "
+            "history and can be restored from there if needed.\n\nContinue?",
+            parent=self.window,
+        )
+        if not confirmed:
             return
 
         if self._is_filter_active():
