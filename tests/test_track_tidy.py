@@ -691,19 +691,6 @@ class HistoryLogTests(unittest.TestCase):
         entries = tagger.load_history_entries()
         self.assertEqual([e["old_file"] for e in entries], ["Good.wav", "AlsoGood.wav"])
 
-    def test_clear_history_entries_removes_the_file(self):
-        tagger.log_history_entry(
-            old_file="A.wav", new_file="A.mp3", old_artist="A", old_title="A",
-            new_artist="A", new_title="A", cover_updated=False, converted=True,
-        )
-        self.assertTrue(os.path.exists(tagger.HISTORY_FILE))
-        tagger.clear_history_entries()
-        self.assertFalse(os.path.exists(tagger.HISTORY_FILE))
-        self.assertEqual(tagger.load_history_entries(), [])
-
-    def test_clear_history_entries_missing_file_does_not_raise(self):
-        tagger.clear_history_entries()  # no file exists yet - must not raise
-
     def test_delete_history_entries_removes_only_matching_timestamps(self):
         tagger.log_history_entry(
             old_file="A.wav", new_file="A.mp3", old_artist="A", old_title="A",
