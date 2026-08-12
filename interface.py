@@ -1083,7 +1083,7 @@ class TaggerInterface:
         # not shown by default (pack() is called/undone in _toggle_advanced_section)
 
         columns_frame = ttk.Frame(self.advanced_frame)
-        columns_frame.pack(fill="x", padx=10, pady=(10, 5))
+        columns_frame.pack(fill="x", padx=10, pady=(4, 5))
 
         suggested_column = ttk.Frame(columns_frame)
         suggested_column.pack(side="left", fill="both", expand=True, padx=(0, 5))
@@ -2132,7 +2132,7 @@ class TaggerInterface:
             if no_cover_infos:
                 self._append_to_journal(f"{len(no_cover_infos)} track(s) currently have no cover match.")
 
-            if number_new > 0:
+            if number_new > 0 and not self.cancel_requested.is_set():
                 self._show_scan_summary_dialog(no_cover_infos=no_cover_infos)
 
         self._check_for_duplicates()
@@ -2381,21 +2381,29 @@ class TaggerInterface:
 
     # --- Table interactions (sort, toggle, reorder) ---
 
-    def _toggle_all(self):
+    def _set_all_checked_state(self, checked):
         """Checks or unchecks 'apply_changes' for all *visible* rows not yet
         processed - rows currently hidden by a filter (e.g. "Only show
         tracks with no cover match") are left untouched, since the user
         never saw them to make that choice."""
-        self.all_checked_state = not self.all_checked_state
+        self.all_checked_state = checked
         visible_files = set(self.table.get_children())
 
         for info in self.scanned_plan:
             if not info.get("processed") and info["file"] in visible_files:
-                info["apply_changes"] = self.all_checked_state
+                info["apply_changes"] = checked
                 self._refresh_row(info)
 
-        self.table.heading("apply", text=CHECKED_BOX if self.all_checked_state else EMPTY_BOX)
+        self.table.heading("apply", text=CHECKED_BOX if checked else EMPTY_BOX)
         self._update_apply_button_label()
+
+    def _toggle_all(self):
+        """The "apply" and "format" header checkboxes are kept in sync -
+        a track that isn't going to be touched at all shouldn't still have
+        a pending conversion queued, and vice versa."""
+        new_state = not self.all_checked_state
+        self._set_all_checked_state(new_state)
+        self._set_all_convert_state(new_state)
 
     def _sort_by(self, field):
         """
@@ -2427,16 +2435,22 @@ class TaggerInterface:
         self.table.heading("title", text="Title" + title_arrow)
         self.table.heading("artist", text="Artist" + artist_arrow)
 
-    def _toggle_all_convert(self):
-        """Toggles 'convert' for all non-MP3 files not yet processed."""
-        self.all_convert_state = not self.all_convert_state
+    def _set_all_convert_state(self, checked):
+        """Sets 'convert' for all non-MP3 files not yet processed."""
+        self.all_convert_state = checked
 
         for info in self.scanned_plan:
             if not info.get("processed") and info["format"] != "MP3":
-                info["convert"] = self.all_convert_state
+                info["convert"] = checked
                 self.table.item(info["file"], values=self._build_row_values(info))
 
-        self.table.heading("format", text=CHECKED_BOX if self.all_convert_state else EMPTY_BOX)
+        self.table.heading("format", text=CHECKED_BOX if checked else EMPTY_BOX)
+
+    def _toggle_all_convert(self):
+        """See _toggle_all - the two header checkboxes stay in sync."""
+        new_state = not self.all_convert_state
+        self._set_all_convert_state(new_state)
+        self._set_all_checked_state(new_state)
 
     def _reorder_table_rows(self):
         """Reorders the table rows to match the current order of self.scanned_plan."""
@@ -2756,12 +2770,34 @@ class TaggerInterface:
 
             successes, failures, restored_entries = 0, [], []
             for entry in entries:
+                display_name = entry.get("new_file") or entry.get("old_file") or "the file"
                 try:
                     tagger.restore_history_entry(entry, log=self._append_to_journal)
                     successes += 1
                     restored_entries.append(entry)
+                except FileNotFoundError:
+                    # restore_history_entry already tried a bounded search
+                    # of the original folder tree - ask the user to locate
+                    # it manually rather than just failing outright.
+                    if messagebox.askyesno(
+                        "File not found",
+                        f"'{display_name}' wasn't found where it was originally processed - "
+                        "it may have moved or been renamed.\n\nLocate it manually?",
+                        parent=dialog,
+                    ):
+                        chosen = filedialog.askopenfilename(title=f"Locate '{display_name}'", parent=dialog)
+                        if chosen:
+                            try:
+                                tagger.restore_history_entry(entry, log=self._append_to_journal, override_path=chosen)
+                                successes += 1
+                                restored_entries.append(entry)
+                                continue
+                            except Exception as error:
+                                failures.append((display_name, str(error)))
+                                continue
+                    failures.append((display_name, "File not found"))
                 except Exception as error:
-                    failures.append((entry.get("new_file", "?"), str(error)))
+                    failures.append((display_name, str(error)))
 
             if restored_entries:
                 tagger.mark_history_entries_restored(restored_entries)
@@ -2817,26 +2853,9 @@ class TaggerInterface:
                     activebackground=self.theme_colors["select_bg"], activeforeground=self.theme_colors["select_fg"],
                 )
             menu.add_command(label="Delete", command=delete_selected)
-            menu.add_separator()
-            menu.add_command(label="Reset (clear all history)", command=reset_history)
             menu.tk_popup(event.x_root, event.y_root)
 
         tree.bind("<Button-3>", show_context_menu)
-
-        def reset_history():
-            if not tagger.load_history_entries():
-                messagebox.showinfo("Nothing to reset", "The processing history is already empty.", parent=dialog)
-                return
-            if not messagebox.askyesno(
-                "Reset history",
-                "Permanently delete the entire processing history?\n\n"
-                "This only removes the log - it doesn't touch any audio file. "
-                "This cannot be undone.",
-                parent=dialog,
-            ):
-                return
-            tagger.clear_history_entries()
-            populate()
 
         populate()
 
@@ -3221,7 +3240,16 @@ class TaggerInterface:
             return
 
         try:
-            subprocess.run(["explorer", f"/select,{full_path}"])
+            # Deliberately NOT list-form: subprocess.list2cmdline() would
+            # quote the whole "/select,<path>" argument as one unit
+            # ("/select,C:\my folder\file.mp3"), but explorer's own
+            # /select, parser specifically expects the comma OUTSIDE the
+            # quotes and only the path itself quoted (/select,"C:\my
+            # folder\file.mp3") - list form silently broke this. Safe as a
+            # raw string on Windows without shell=True (the whole string is
+            # passed straight to CreateProcess as-is), and full_path can't
+            # contain '"' (not a legal character in a Windows path).
+            subprocess.run(f'explorer /select,"{full_path}"')
         except Exception as error:
             self._append_to_journal(f"Error opening file location: {error}")
 
