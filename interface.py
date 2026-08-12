@@ -51,12 +51,13 @@ def resource_path(filename):
         base = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base, filename)
 
-# A ballot box (with/without an X) rather than a checkmark-in-box glyph
-# (☑/☐) - Windows renders that one inconsistently: a thin outline in the
-# native ttk column header vs. a solid black emoji-style box in table cells
-# (same character, different font fallback per rendering path). ☒/☐ don't
-# have an emoji-color variant, so header and cells always render identically.
-CHECKED_BOX = "☒"
+# Windows renders ☑/☐ inconsistently when the Treeview has no explicit
+# font: a thin outline in the native column header vs. a solid black
+# emoji-style box in table cells (same character, different font fallback
+# per rendering path). Fixed at the root by pinning Table.Treeview's font
+# explicitly (see _build_interface / _apply_theme) rather than avoiding
+# the glyph - both now render identically.
+CHECKED_BOX = "☑"
 EMPTY_BOX = "☐"
 PROCESSED_CHECK = "✔"
 
@@ -386,7 +387,10 @@ class TaggerInterface:
         # Custom style names are scoped to the CURRENTLY active ttk theme, so
         # switching theme_use() above resets them - both of these have to be
         # re-applied every time, for every theme, not just for dark mode.
-        style.configure("Table.Treeview", rowheight=TABLE_ROW_HEIGHT)
+        style.configure(
+            "Table.Treeview", rowheight=TABLE_ROW_HEIGHT,
+            font=(self._table_font.actual("family"), self._table_font.actual("size")),
+        )
 
         if dark:
             style.configure(".", background=colors["bg"], foreground=colors["fg"])
@@ -874,7 +878,15 @@ class TaggerInterface:
         }
 
         style = ttk.Style()
-        style.configure("Table.Treeview", rowheight=TABLE_ROW_HEIGHT)  # tall enough for the bigger thumbnail
+        # An explicit font (even one that just matches TkDefaultFont) keeps
+        # cell glyph rendering aligned with the native column header - left
+        # unset, Windows silently falls back to the color emoji font for
+        # certain characters (e.g. the checkbox glyphs below) in table
+        # cells but not in the header, so the same glyph looks different.
+        style.configure(
+            "Table.Treeview", rowheight=TABLE_ROW_HEIGHT,
+            font=(self._table_font.actual("family"), self._table_font.actual("size")),
+        )
         self.table.configure(style="Table.Treeview")
 
         for col in COLUMNS:
