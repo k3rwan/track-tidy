@@ -436,17 +436,24 @@ class TaggerInterface:
         y = max(0, min(y, dialog.winfo_screenheight() - dialog.winfo_height()))
         dialog.geometry(f"+{x}+{y}")
 
+    def _make_themed_menu(self, parent):
+        """A tk.Menu with the current theme's colors applied - tk.Menu is
+        plain Tk, not ttk, so it doesn't pick up theme colors on its own
+        the way ttk widgets do."""
+        menu = tk.Menu(parent, tearoff=0)
+        if self.theme_colors:
+            menu.configure(
+                bg=self.theme_colors["menu_bg"], fg=self.theme_colors["menu_fg"],
+                activebackground=self.theme_colors["select_bg"], activeforeground=self.theme_colors["select_fg"],
+            )
+        return menu
+
     def _bind_entry_context_menu(self, entry, readonly=False):
         """Adds a right-click Cut/Copy/Paste/Select All menu to an Entry -
         unlike native Windows edit controls, Tk Entry widgets don't get one
         for free."""
         def show_menu(event):
-            menu = tk.Menu(entry, tearoff=0)
-            if self.theme_colors:
-                menu.configure(
-                    bg=self.theme_colors["menu_bg"], fg=self.theme_colors["menu_fg"],
-                    activebackground=self.theme_colors["select_bg"], activeforeground=self.theme_colors["select_fg"],
-                )
+            menu = self._make_themed_menu(entry)
             if not readonly:
                 menu.add_command(label="Cut", command=lambda: entry.event_generate("<<Cut>>"))
             menu.add_command(label="Copy", command=lambda: entry.event_generate("<<Copy>>"))
@@ -2917,12 +2924,7 @@ class TaggerInterface:
             if target and target not in tree.selection():
                 tree.selection_set(target)
 
-            menu = tk.Menu(dialog, tearoff=0)
-            if self.theme_colors:
-                menu.configure(
-                    bg=self.theme_colors["menu_bg"], fg=self.theme_colors["menu_fg"],
-                    activebackground=self.theme_colors["select_bg"], activeforeground=self.theme_colors["select_fg"],
-                )
+            menu = self._make_themed_menu(dialog)
             menu.add_command(label="Delete", command=delete_selected)
             menu.tk_popup(event.x_root, event.y_root)
 
@@ -3278,12 +3280,7 @@ class TaggerInterface:
         selected_ids = self.table.selection()
         selected_infos = [i for i in self.scanned_plan if i["file"] in selected_ids] or [info]
 
-        menu = tk.Menu(self.window, tearoff=0)
-        if self.theme_colors:
-            menu.configure(
-                bg=self.theme_colors["menu_bg"], fg=self.theme_colors["menu_fg"],
-                activebackground=self.theme_colors["select_bg"], activeforeground=self.theme_colors["select_fg"],
-            )
+        menu = self._make_themed_menu(self.window)
         rescan_label = "Rescan this file" if len(selected_infos) <= 1 else f"Rescan selected ({len(selected_infos)})"
         menu.add_command(label="Info", command=lambda: self._show_track_info(info))
         menu.add_command(label=rescan_label, command=lambda: self._show_fix_no_cover_dialog(selected_infos))
