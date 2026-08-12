@@ -2312,7 +2312,13 @@ class TaggerInterface:
             if displayed_artist is None:
                 displayed_artist = info["detected_artist"] if info["detected_artist"] else "(empty)"
             displayed_format = f"MP3 {PROCESSED_CHECK}" if (needs_conversion and info["convert"]) else info["format"]
-            return (CHECKED_BOX, displayed_title, displayed_artist, displayed_format)
+            # Reflects what actually happened to THIS row, not "processed
+            # means checked" - a row that was unchecked (kept as-is) still
+            # ends up "processed" once the run reaches it, and showing it
+            # checked made every row look selected after Apply even when
+            # most weren't.
+            apply_box = PROCESSED_CHECK if info.get("apply_changes") else EMPTY_BOX
+            return (apply_box, displayed_title, displayed_artist, displayed_format)
 
         apply = info["apply_changes"]
 
@@ -2408,7 +2414,11 @@ class TaggerInterface:
             self.table.item(info["file"], tags=(tag,))
 
     def _toggle_cell(self, event):
-        """Single click on '✓' or 'Format' only: toggles the value."""
+        """Single click on '✓' or 'Format' only: toggles the value. Cover
+        zoom ("#0") is exempt from the "locked once processed" rule below -
+        it writes straight to the file on disk and isn't part of the
+        apply/checked state, so there's no reason it should stop working
+        just because the row's already been processed."""
         item_id = self.table.identify_row(event.y)
         column_id = self.table.identify_column(event.x)  # "#0", "#1", "#2"...
 
@@ -2419,12 +2429,14 @@ class TaggerInterface:
         if not info:
             return
 
+        if column_id == "#0":
+            self._show_cover_zoom(info)
+            return
+
         if info.get("processed"):
             return  # checkbox and format are locked once the file has been processed
 
-        if column_id == "#0":
-            self._show_cover_zoom(info)
-        elif column_id == f"#{COLUMNS.index('apply') + 1}":
+        if column_id == f"#{COLUMNS.index('apply') + 1}":
             info["apply_changes"] = not info["apply_changes"]
             self._refresh_row(info)  # the image also changes based on current/suggested
             self._update_apply_button_label()
@@ -2559,7 +2571,7 @@ class TaggerInterface:
         dialog = tk.Toplevel(self.window)
         self._style_toplevel(dialog)
         dialog.title("Processing history")
-        dialog.geometry("840x440")
+        dialog.geometry("840x660")
         dialog.transient(self.window)
 
         columns = ("file", "artist", "title", "cover", "converted")
@@ -2573,7 +2585,7 @@ class TaggerInterface:
         table_frame.pack(fill="both", expand=True, padx=10, pady=(10, 5))
 
         tree = ttk.Treeview(
-            table_frame, columns=columns, show="tree headings", height=15, selectmode="extended",
+            table_frame, columns=columns, show="tree headings", height=10, selectmode="extended",
             style="Table.Treeview",
         )
         tree.heading("#0", text="When")
