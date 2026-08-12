@@ -800,6 +800,40 @@ class CredentialEncryptionTests(unittest.TestCase):
         self.assertIsNone(tagger.read_credential(self._path))
 
 
+class NewInstallNotificationTests(unittest.TestCase):
+    def setUp(self):
+        self.original_post = tagger.requests.post
+
+    def tearDown(self):
+        tagger.requests.post = self.original_post
+
+    def test_sends_username_and_returns_true_on_success(self):
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["url"] = url
+            captured["json"] = json
+
+            class FakeResponse:
+                status_code = 204
+            return FakeResponse()
+
+        tagger.requests.post = fake_post
+        result = tagger.send_new_install_notification(reporter_name="kevin")
+
+        self.assertTrue(result)
+        self.assertEqual(captured["url"], tagger.DISCORD_REPORT_WEBHOOK_URL)
+        fields = captured["json"]["embeds"][0]["fields"]
+        self.assertEqual(fields[0], {"name": "User", "value": "kevin", "inline": True})
+
+    def test_returns_false_on_network_failure(self):
+        def fake_post(url, json=None, timeout=None):
+            raise ConnectionError("no network")
+
+        tagger.requests.post = fake_post
+        self.assertFalse(tagger.send_new_install_notification(reporter_name="kevin"))
+
+
 class UpdateChecksumTests(unittest.TestCase):
     """check_for_update looks for a "<installer>.sha256" release asset, and
     download_installer verifies the download against it before letting the
