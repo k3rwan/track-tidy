@@ -1593,12 +1593,22 @@ class TaggerInterface:
     # --- Folder / mention actions ---
 
     def _choose_folder(self):
+        """Windows' native folder-browser dialog (which askdirectory uses)
+        never shows files, only folders - a Tk/Windows limitation, not
+        something this app can turn on. As the next best thing, log how
+        many audio files are actually in the chosen folder right away,
+        instead of only finding out once Scan is clicked."""
         folder = filedialog.askdirectory(title="Choose the audio files folder")
         if folder:
             self.folder_variable.set(folder)
             self.scan_button.configure(state="normal")
             self.reset_button.configure(state="normal")
             self.apply_button.configure(state="normal")
+
+            tagger.MUSIC_FOLDER = folder
+            file_count = len(tagger.list_audio_files())
+            unit = "audio file" if file_count == 1 else "audio files"
+            self._append_to_journal(f"Selected folder contains {file_count} {unit}.")
 
     def _add_mention(self, event=None):
         """Manual entries go straight into the 'To remove' list (press Enter to confirm)."""
@@ -3460,7 +3470,17 @@ class TaggerInterface:
             messagebox.showwarning("No scan", "Please scan the files first before processing them.", parent=self.window)
             return
 
-        to_process = [i for i in self.scanned_plan if not i.get("processed")]
+        # Only rows with something actually pending (checked for apply, or
+        # marked to convert) - a fully-untouched row (unchecked, no
+        # conversion queued) must stay untouched and selectable for a LATER
+        # Apply run. process_files() marks every row it's given as
+        # "processed" (locked) unconditionally, whether or not its tags
+        # actually changed, so previously every unchecked row got swept up
+        # and permanently locked out just because Apply ran at all.
+        to_process = [
+            i for i in self.scanned_plan
+            if not i.get("processed") and (i.get("apply_changes") or i.get("convert"))
+        ]
         fixes = [i for i in self.scanned_plan if i.get("processed") and i.get("fix_pending")]
 
         if not to_process and not fixes:
