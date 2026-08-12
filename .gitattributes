@@ -1,0 +1,4 @@
+# Shell scripts must keep LF line endings regardless of the checkout
+# platform's core.autocrlf setting - a CRLF shebang line breaks on macOS/
+# Linux ("bad interpreter" errors).
+*.sh text eol=lf

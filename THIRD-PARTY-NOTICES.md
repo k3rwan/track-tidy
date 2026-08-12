@@ -31,3 +31,11 @@ is attached to every GitHub release alongside the installer.
 - **certifi** (requests dependency) - Mozilla Public License 2.0
 - **charset-normalizer** (requests dependency) - MIT License
 - **idna** (requests dependency) - BSD 3-Clause License
+- **keyring** 25.7.0 - MIT License (credential storage via the OS's
+  native credential store - Windows Credential Manager, macOS Keychain)
+- **platformdirs** 4.11.2 - MIT License (per-OS config directory)
+- **jaraco.classes / jaraco.functools / jaraco.context** (keyring
+  dependencies) - MIT License
+- **more-itertools** (keyring dependency) - MIT License
+- **pywin32-ctypes** (keyring dependency, Windows only) - BSD 3-Clause
+  License
