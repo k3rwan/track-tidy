@@ -13,6 +13,8 @@ import time
 import threading
 import unittest
 import tempfile
+import keyring
+import keyring.backend
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import track_tidy as tagger
@@ -821,31 +823,55 @@ class SettingsPersistenceTests(unittest.TestCase):
         self.assertEqual(tagger.load_settings(), {"theme": "dark", "other_key": "value"})
 
 
+class _FakeKeyringBackend(keyring.backend.KeyringBackend):
+    """In-memory stand-in for the real OS credential store (Windows
+    Credential Manager / macOS Keychain / ...), so tests never touch
+    Kevin's actual saved credentials."""
+    priority = 1
+
+    def __init__(self):
+        self._store = {}
+
+    def set_password(self, service, username, password):
+        self._store[(service, username)] = password
+
+    def get_password(self, service, username):
+        return self._store.get((service, username))
+
+    def delete_password(self, service, username):
+        self._store.pop((service, username), None)
+
+
 class CredentialEncryptionTests(unittest.TestCase):
     def setUp(self):
+        self._original_keyring = keyring.get_keyring()
+        keyring.set_keyring(_FakeKeyringBackend())
         self._tmp_dir = tempfile.TemporaryDirectory()
-        self._path = os.path.join(self._tmp_dir.name, "clientSecret.txt")
+        self._key = "test_credential_key"
+        self._legacy_path = os.path.join(self._tmp_dir.name, "legacy.txt")
+        self._original_legacy_files = tagger._LEGACY_CREDENTIAL_FILES
+        tagger._LEGACY_CREDENTIAL_FILES = {self._key: self._legacy_path}
 
     def tearDown(self):
+        keyring.set_keyring(self._original_keyring)
+        tagger._LEGACY_CREDENTIAL_FILES = self._original_legacy_files
         self._tmp_dir.cleanup()
 
     def test_write_then_read_roundtrip(self):
-        tagger.write_credential(self._path, "super-secret-value")
-        self.assertEqual(tagger.read_credential(self._path), "super-secret-value")
+        tagger.write_credential(self._key, "super-secret-value")
+        self.assertEqual(tagger.read_credential(self._key), "super-secret-value")
 
-    def test_saved_file_is_not_plaintext_on_disk(self):
-        tagger.write_credential(self._path, "super-secret-value")
-        with open(self._path, "rb") as f:
-            raw = f.read()
-        self.assertNotIn(b"super-secret-value", raw)
+    def test_read_credential_missing_returns_none(self):
+        self.assertIsNone(tagger.read_credential(self._key))
 
-    def test_read_credential_falls_back_to_plaintext_for_pre_encryption_files(self):
-        with open(self._path, "w", encoding="utf-8") as f:
+    def test_read_credential_migrates_legacy_plaintext_file(self):
+        with open(self._legacy_path, "w", encoding="utf-8") as f:
             f.write("old-plaintext-secret")
-        self.assertEqual(tagger.read_credential(self._path), "old-plaintext-secret")
 
-    def test_read_credential_missing_file_returns_none(self):
-        self.assertIsNone(tagger.read_credential(self._path))
+        self.assertEqual(tagger.read_credential(self._key), "old-plaintext-secret")
+        self.assertFalse(os.path.exists(self._legacy_path), "legacy file should be removed after migrating")
+        # Now saved for real - reading again works with no legacy file left.
+        self.assertEqual(tagger.read_credential(self._key), "old-plaintext-secret")
 
 
 class NewInstallNotificationTests(unittest.TestCase):
