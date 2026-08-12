@@ -217,6 +217,7 @@ class TaggerInterface:
         self._tooltip_window = None
         self._tooltip_key = None
         self._pending_double_click_after_id = None
+        self._removal_undo_stack = []  # list of [(original_index, info), ...] per "Remove from list" action
         self._table_font = tkfont.nametofont("TkDefaultFont")
         self.soundcloud_rate_limit_warned = False
         self.mention_counts = {}  # raw mention text -> number of times seen
@@ -413,6 +414,17 @@ class TaggerInterface:
             menu.tk_popup(event.x_root, event.y_root)
 
         entry.bind("<Button-3>", show_menu)
+
+    def _build_folder_icon_photo(self, size=16, color="#8a8a8a"):
+        """Small flat folder glyph shown to the left of the parent-folder
+        path - drawn as a raster image (like the checkbox indicator) rather
+        than a Unicode folder emoji, so it's a plain solid color instead of
+        an uncontrollable colored glyph that wouldn't match the theme."""
+        image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        draw.rectangle([size * 0.06, size * 0.19, size * 0.44, size * 0.31], fill=color)
+        draw.rectangle([size * 0.06, size * 0.31, size * 0.94, size * 0.81], fill=color)
+        return ImageTk.PhotoImage(image)
 
     def _build_checkbox_indicator_photo(self, box_bg, box_border, checked, size=13):
         """
@@ -1004,12 +1016,19 @@ class TaggerInterface:
         folder_frame.pack(fill="x", padx=10, pady=(10, 2))
 
         self.folder_variable = tk.StringVar(value=os.path.abspath(tagger.MUSIC_FOLDER) if tagger.MUSIC_FOLDER else "")
+
+        folder_entry_row = ttk.Frame(folder_frame)
+        folder_entry_row.pack(fill="x", padx=10, pady=(10, 5))
+
+        self._folder_icon_photo = self._build_folder_icon_photo()
+        ttk.Label(folder_entry_row, image=self._folder_icon_photo).pack(side="left", padx=(0, 6))
+
         # "ReadonlyWhite.TEntry"'s actual colors are (re)configured by _apply_theme,
         # since they depend on the light/dark choice and ttk styles are per-theme.
         folder_entry = ttk.Entry(
-            folder_frame, textvariable=self.folder_variable, state="readonly", style="ReadonlyWhite.TEntry"
+            folder_entry_row, textvariable=self.folder_variable, state="readonly", style="ReadonlyWhite.TEntry"
         )
-        folder_entry.pack(fill="x", padx=10, pady=(10, 5))
+        folder_entry.pack(side="left", fill="x", expand=True)
         self._bind_entry_context_menu(folder_entry, readonly=True)
 
         folder_buttons_frame = ttk.Frame(folder_frame)
@@ -1144,6 +1163,7 @@ class TaggerInterface:
         self.table.bind("<Button-3>", self._show_context_menu)
         self.table.bind("<Delete>", self._delete_selected_rows)
         self.table.bind("<Control-a>", self._select_all_rows)
+        self.table.bind("<Control-z>", self._undo_last_removal)
         self.table.bind("<Motion>", self._on_table_hover, add="+")
         self.table.bind("<Leave>", self._on_table_leave, add="+")
 
@@ -2002,7 +2022,7 @@ class TaggerInterface:
                 dialog.destroy()
                 self._show_fix_no_cover_dialog(no_cover_infos)
 
-            ttk.Button(button_row, text=f"Fix {count} no-cover {unit}...", command=fix_no_cover).pack(side="left")
+            ttk.Button(button_row, text=f"Fix {count} {unit}...", command=fix_no_cover).pack(side="left")
 
         dialog.protocol("WM_DELETE_WINDOW", close)
 
@@ -2547,7 +2567,10 @@ class TaggerInterface:
         table_frame = ttk.Frame(dialog)
         table_frame.pack(fill="both", expand=True, padx=10, pady=(10, 5))
 
-        tree = ttk.Treeview(table_frame, columns=columns, show="tree headings", height=15, selectmode="extended")
+        tree = ttk.Treeview(
+            table_frame, columns=columns, show="tree headings", height=15, selectmode="extended",
+            style="Table.Treeview",
+        )
         tree.heading("#0", text="When")
         tree.column("#0", width=140, anchor="w")
         for col in columns:
@@ -2919,7 +2942,9 @@ class TaggerInterface:
         return "break"
 
     def _delete_selected_rows(self, event=None):
-        """Removes the selected row(s) from the list only - never touches the actual file on disk."""
+        """Removes the selected row(s) from the list only - never touches
+        the actual file on disk. Ctrl+Z (_undo_last_removal) brings them
+        back at their original position."""
         selected_items = self.table.selection()
         if not selected_items:
             return
@@ -2932,10 +2957,41 @@ class TaggerInterface:
             self._thumbnail_pil_images.pop(item_id, None)
 
         selected_set = set(selected_items)
+        removed = [
+            (index, info) for index, info in enumerate(self.scanned_plan) if info["file"] in selected_set
+        ]
+        self._removal_undo_stack.append(removed)
         self.scanned_plan = [info for info in self.scanned_plan if info["file"] not in selected_set]
 
         self._restripe_rows()
         self._update_apply_button_label()
+
+    def _undo_last_removal(self, event=None):
+        """Ctrl+Z: brings back the most recently removed row(s) (via Delete
+        or "Remove from list"), each at its original position in the list."""
+        if not self._removal_undo_stack:
+            return
+        removed = self._removal_undo_stack.pop()
+
+        for index, info in sorted(removed, key=lambda pair: pair[0]):
+            self.scanned_plan.insert(min(index, len(self.scanned_plan)), info)
+            image_tk = self._create_thumbnail(info)
+            self.tk_images[info["file"]] = image_tk
+            self.table.insert(
+                "", "end", iid=info["file"],
+                image=image_tk if image_tk else "",
+                values=self._build_row_values(info),
+            )
+
+        visible_files = set(self.table.get_children())
+        for info in self.scanned_plan:
+            if info["file"] in visible_files:
+                self.table.move(info["file"], "", "end")
+
+        self._restripe_rows()
+        self._update_apply_button_label()
+        unit = "row" if len(removed) == 1 else "rows"
+        self._append_to_journal(f"Restored {len(removed)} removed {unit}.")
 
     def _move_row(self, info, direction):
         """Moves a row up (direction=-1) or down (direction=+1) in scanned_plan,
