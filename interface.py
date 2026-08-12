@@ -254,6 +254,7 @@ class TaggerInterface:
         self._check_cover_source_credentials_on_startup()
         self._check_for_update_on_startup()
         self._check_internet_connection(is_startup_check=True)
+        self._notify_new_install_on_startup()
 
     # --- Theme & dialog helpers ---
 
@@ -742,6 +743,27 @@ class TaggerInterface:
                 )
 
         self._run_in_background(_run_check)
+
+    def _notify_new_install_on_startup(self):
+        """Pings Discord once (ever, per Windows account) to let the
+        developer know a new person/machine started using the app -
+        disclosed in Settings' legal notice text (see the "View license &
+        third-party notices" area), not sent silently with no mention
+        anywhere. Gated by a saved setting so it only ever fires once per
+        %APPDATA%\\Track-Tidy (i.e. once per machine + Windows account,
+        until that folder is cleared)."""
+        if tagger.load_settings().get("install_notified"):
+            return
+        tagger.save_setting("install_notified", True)
+        try:
+            reporter_name = getpass.getuser()
+        except Exception:
+            reporter_name = ""
+
+        def _send():
+            tagger.send_new_install_notification(reporter_name=reporter_name)
+
+        self._run_in_background(_send)
 
     def _check_internet_connection(self, is_startup_check=False):
         """Checks connectivity in the background, updates the status
@@ -1267,7 +1289,10 @@ class TaggerInterface:
                 "service it connects to. All trademarks are the property of their "
                 "respective owners.\n"
                 "Licensed under the GNU General Public License v2 or later - includes "
-                "mutagen (GPL-2.0-or-later) and FFmpeg (GPLv3)."
+                "mutagen (GPL-2.0-or-later) and FFmpeg (GPLv3).\n"
+                "The first time it's launched on a new Windows account, it sends your "
+                "Windows username to the developer (via Discord) so they know a new "
+                "person is using it - this happens once."
             ),
             justify="left",
             wraplength=440,

@@ -451,6 +451,30 @@ def send_track_report(info, reporter_name=None, timeout=10):
         return False
 
 
+def send_new_install_notification(reporter_name=None, timeout=10):
+    """
+    Posts a one-time "new install" ping to the same Discord webhook as
+    send_track_report, so the developer knows a new person/machine started
+    using the app. Called once per Windows user account (see
+    _check_new_install_notification_on_startup in interface.py, gated by a
+    saved setting so it never fires twice on the same machine+account).
+    Returns True on success, False on any failure (never raises).
+    """
+    embed = {
+        "title": "New install",
+        "color": 0x2ECC71,
+        "fields": [
+            {"name": "User", "value": reporter_name or "(unknown)", "inline": True},
+            {"name": "App version", "value": APP_VERSION, "inline": True},
+        ],
+    }
+    try:
+        response = requests.post(DISCORD_REPORT_WEBHOOK_URL, json={"embeds": [embed]}, timeout=timeout)
+        return response.status_code in (200, 204)
+    except Exception:
+        return False
+
+
 # --- Saved UI settings (theme choice...) ---
 
 SETTINGS_FILE = os.path.join(user_config_dir(), "settings.json")
