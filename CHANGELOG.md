@@ -3,6 +3,63 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.8]
+
+### Added
+- Spotify as a third cover source alongside iTunes and SoundCloud, each
+  independently toggled via three checkboxes in Settings -> Sources
+  (iTunes and SoundCloud on, Spotify off, by default), tried in that
+  order until one finds a match. iTunes and Spotify are mutually
+  exclusive (checking Spotify silently unchecks iTunes; re-checking
+  iTunes shows an explanatory popup and reverts).
+- Search bar and a Reset button (with confirmation) in the processing
+  history window.
+- "Show log section" toggle in Settings -> Behavior (off by default) -
+  the Log section in the Tagger tab is hidden entirely unless enabled.
+- Internet connectivity indicator ("Online"/"Offline") in Settings,
+  checked at launch (with a one-time warning popup if offline) and
+  every 30s while the app runs.
+
+### Changed
+- Track table visual overhaul: taller rows, bigger cover thumbnails,
+  wider Title/Artist columns, narrower MP3 column, wider window,
+  softer selection highlight in light mode, and a tooltip on
+  Title/Artist text that's too long to fit its column.
+- Settings reorganized: Sources (the three checkboxes plus SoundCloud/
+  Spotify credential buttons) is now its own category, separate from
+  Behavior.
+- "Advanced" section toggle is now a gear icon instead of the word
+  "Advanced".
+- Apply button redesigned: a separate "N tracks selected" label plus a
+  wider "Apply" button on the same row, replacing the old
+  "Apply changes - N/total" button text.
+- "Extracter" tab renamed to "Extractor" (typo).
+- Dark mode: refreshed color palette (distinct background/panel/
+  list-area/list-header shades) and removed the dated 3D bevel
+  borders (flat 1px borders, or none at all, relying on color
+  contrast instead).
+
+### Fixed
+- Artist/title matching now tolerates missing spaces in artist names
+  (e.g. a SoundCloud handle like "SpicyMarket") and dash-form generic
+  mix suffixes (e.g. "- Radio Edit" instead of "(Radio Edit)") that
+  previously caused a real match to be rejected.
+- "Select all" (the header checkbox) no longer selects tracks hidden
+  by the "Only show tracks with no cover match" filter.
+- The end-of-Apply summary now correctly counts Spotify-sourced
+  covers (previously miscounted as "kept original cover" or "no cover
+  at all").
+- Scan progress text no longer zero-pads ("Scan - 5/100" instead of
+  "Scan - 05/100").
+- Dark mode: Checkbutton/Radiobutton hover no longer shows
+  near-unreadable low-contrast text.
+- Fixed a Windows font-fallback bug that made the checkbox glyph
+  render differently in the table header vs. table rows.
+- Switching Light/Dark theme no longer causes a visible layout shift
+  the very first time it's switched (native theme metrics are now
+  warmed up at startup).
+- The version label no longer overlaps the Apply button.
+
 ## [0.7]
 
 ### Added
