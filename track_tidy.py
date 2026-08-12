@@ -275,7 +275,7 @@ def download_installer(url, dest_path, on_progress=None, timeout=30):
 DISCORD_REPORT_WEBHOOK_URL = "https://discord.com/api/webhooks/1536761165206782033/qPcjNi9XPi5aqWYLQ_IbrI9UoxHydX1SN5IAbTTEH975_dg6vSfrsrqR81DLUtQrE8Yj"
 
 
-def send_track_report(info, timeout=10):
+def send_track_report(info, reporter_name=None, timeout=10):
     """
     Posts this track's info to a Discord webhook, so the developer gets a
     notification for tracks users flag as wrong/problematic (e.g. no cover
@@ -287,6 +287,7 @@ def send_track_report(info, timeout=10):
     report shouldn't disrupt the user).
     """
     fields = [
+        {"name": "Reported by", "value": reporter_name or "(unknown)", "inline": False},
         {"name": "File", "value": info.get("file") or "(unknown)", "inline": False},
         {"name": "Current title", "value": info.get("current_title") or "(none)", "inline": True},
         {"name": "Current artist", "value": info.get("current_artist") or "(none)", "inline": True},
