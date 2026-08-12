@@ -3,6 +3,39 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.12]
+
+### Added
+- Track Tidy is now cross-platform: credential storage, config directory
+  resolution, and OS integrations (opening files, revealing them in the
+  file manager, playing sounds) all work on macOS as well as Windows.
+- Processing history: right-click "Delete" (with a confirmation prompt),
+  Ctrl+Z to undo a removed row, alternating row colors, a folder icon
+  next to file paths.
+- Restoring a moved file from Processing history now searches for it
+  automatically; if it truly can't be found, you're asked to locate it
+  manually instead of the restore just failing.
+- Right-click "Rescan" now opens the Artist/Title correction dialog
+  instead of blindly re-searching with the existing tags.
+- The number of audio files in a chosen folder is now shown right after
+  Browse, instead of only after Scan.
+
+### Changed
+- Processing history only lists files that were actually applied, shows
+  "Restored" on an entry after it's been restored, and no longer has a
+  "Reset" option (right-click Delete replaces it).
+- The scan-summary and "fix missing cover" dialogs were merged into one.
+
+### Fixed
+- Apply no longer locks tracks that weren't selected, so they can still
+  be selected afterward.
+- "Open file location" works again.
+- The Apply/Format header checkboxes stay in sync with each other and
+  with the individual row checkboxes.
+- No summary popup appears after a cancelled scan.
+- Several dark-mode and spacing fixes in Processing history and the
+  Advanced section.
+
 ## [0.11]
 
 ### Added
