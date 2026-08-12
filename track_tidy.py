@@ -545,29 +545,63 @@ def log_history_entry(old_file, new_file, old_artist, old_title, new_artist, new
         print(f"  Could not write history entry: {error}")
 
 
-def restore_history_entry(entry, log=safe_print):
+def _find_file_by_name(folder, basename):
+    """Walks folder looking for a file with the exact same name - a
+    lightweight auto-locate attempt for restore_history_entry when the file
+    isn't where it was originally processed (e.g. moved to a subfolder
+    since). Bounded to the entry's own logged folder tree, not a full-drive
+    search. Returns the first match's full path, or None."""
+    if not folder or not os.path.isdir(folder):
+        return None
+    for root, _dirs, files in os.walk(folder):
+        if basename in files:
+            return os.path.join(root, basename)
+    return None
+
+
+def restore_history_entry(entry, log=safe_print, override_path=None):
     """
     Restores a file's artist/title/cover to what they were before a previous
     run changed them (a history.jsonl entry from load_history_entries()).
 
     Locates the file via the entry's own logged folder + its current
     (new_file) relative path - NOT the global MUSIC_FOLDER, since the user
-    may have scanned a different folder since this entry was logged.
+    may have scanned a different folder since this entry was logged. If it's
+    not there anymore, tries a bounded search of that same folder tree for a
+    file with the same name (it may have just moved to a subfolder) before
+    giving up. override_path (an absolute path) skips both of those and
+    uses that location directly - for when the caller already asked the
+    user to locate the file manually.
 
     The file itself keeps its current format/extension (a WAV->MP3
     conversion isn't reversible - the original file is gone), but is renamed
     to match the restored artist/title if both are known.
 
-    Returns the file's new relative path (unchanged if it wasn't renamed).
-    Raises FileNotFoundError if the file can't be located, or ValueError if
-    this entry predates the "folder" field and can't be resolved at all.
+    Returns the file's new absolute path (unchanged if it wasn't renamed) -
+    absolute rather than relative-to-folder, since override_path/the
+    auto-locate search above can both put the file somewhere other than
+    the originally logged folder. Raises FileNotFoundError if the file
+    can't be located, or ValueError if this entry predates the "folder"
+    field and can't be resolved at all.
     """
-    folder = entry.get("folder")
-    if not folder:
-        raise ValueError("This entry has no folder recorded (logged by an older version) - can't locate the file.")
+    if override_path:
+        full_path = override_path
+        folder = os.path.dirname(full_path)
+        current_relative = os.path.basename(full_path)
+    else:
+        folder = entry.get("folder")
+        if not folder:
+            raise ValueError("This entry has no folder recorded (logged by an older version) - can't locate the file.")
 
-    current_relative = entry.get("new_file")
-    full_path = os.path.join(folder, current_relative)
+        current_relative = entry.get("new_file")
+        full_path = os.path.join(folder, current_relative)
+
+        if not os.path.exists(full_path):
+            found = _find_file_by_name(folder, os.path.basename(current_relative))
+            if found:
+                log(f"  Not at its logged location - found it at: '{found}'")
+                full_path = found
+
     if not os.path.exists(full_path):
         raise FileNotFoundError(f"File not found: {full_path}")
 
@@ -581,21 +615,24 @@ def restore_history_entry(entry, log=safe_print):
         force_remove_if_missing=True,  # no old cover logged -> remove whatever cover is there now
         update_title=bool(old_title), update_artist=bool(old_artist), update_cover=True,
     )
-    log(f"  Restored tags on: '{current_relative}'")
+    log(f"  Restored tags on: '{full_path}'")
 
     if old_artist and old_title:
-        folder_part = os.path.dirname(current_relative)
-        extension = os.path.splitext(current_relative)[1]
+        # Derived from full_path's actual current directory, not the
+        # originally-logged one - matters when the file was found via
+        # override_path or the auto-locate search above, since either can
+        # put it somewhere other than "folder".
+        actual_folder = os.path.dirname(full_path)
+        extension = os.path.splitext(full_path)[1]
         new_base_name = sanitize_filename(build_display_name(old_artist, old_title)) + extension
-        new_name = os.path.join(folder_part, new_base_name) if folder_part else new_base_name
-        new_full_path = os.path.join(folder, new_name)
+        new_full_path = os.path.join(actual_folder, new_base_name)
 
         if new_full_path != full_path:
             os.rename(full_path, new_full_path)
-            log(f"  Restored and renamed to: '{new_name}'")
-            return new_name
+            log(f"  Restored and renamed to: '{new_full_path}'")
+            return new_full_path
 
-    return current_relative
+    return full_path
 
 
 def load_history_entries():
