@@ -1076,10 +1076,10 @@ class TaggerInterface:
         self.check_update_button = ttk.Button(
             update_history_row, text="Check for updates", command=self._check_for_update_manual,
         )
-        self.check_update_button.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        self.check_update_button.pack(fill="x", pady=(0, 5))
         ttk.Button(
             update_history_row, text="View processing history", command=self._show_history_window,
-        ).pack(side="left", fill="x", expand=True)
+        ).pack(fill="x")
 
         self.internet_status_label = ttk.Label(
             soundcloud_tab, text="● Checking connection...", foreground="#999999",
