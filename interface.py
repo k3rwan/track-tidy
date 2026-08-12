@@ -735,9 +735,11 @@ class TaggerInterface:
 
     def _check_for_update_on_startup(self):
         def _run_check():
-            is_newer, latest_version, release_url, installer_url = tagger.check_for_update()
+            is_newer, latest_version, release_url, installer_url, expected_sha256 = tagger.check_for_update()
             if is_newer:
-                self.message_queue.put(("update_available", (latest_version, release_url, installer_url)))
+                self.message_queue.put(
+                    ("update_available", (latest_version, release_url, installer_url, expected_sha256))
+                )
 
         self._run_in_background(_run_check)
 
@@ -764,7 +766,7 @@ class TaggerInterface:
 
         self._run_in_background(_run_check)
 
-    def _offer_update(self, latest_version, release_url, installer_url):
+    def _offer_update(self, latest_version, release_url, installer_url, expected_sha256=None):
         """Shared by the silent startup check and the manual button - both
         end up here once they've decided a newer version really exists."""
         if not installer_url:
@@ -787,9 +789,9 @@ class TaggerInterface:
             parent=self.window,
         )
         if update_now:
-            self._start_in_app_update(installer_url, latest_version)
+            self._start_in_app_update(installer_url, latest_version, expected_sha256)
 
-    def _start_in_app_update(self, installer_url, latest_version):
+    def _start_in_app_update(self, installer_url, latest_version, expected_sha256=None):
         """Downloads the installer straight into the app (with a progress
         bar) and launches it once done, instead of sending the user to a
         browser to fetch it manually."""
@@ -817,7 +819,10 @@ class TaggerInterface:
 
         def _run():
             dest_path = os.path.join(tempfile.gettempdir(), f"Track-Tidy-Setup-v{latest_version}.exe")
-            success = tagger.download_installer(installer_url, dest_path, on_progress=on_progress)
+            success = tagger.download_installer(
+                installer_url, dest_path, on_progress=on_progress,
+                expected_sha256=expected_sha256, log=self._append_to_journal,
+            )
             self.message_queue.put(("update_download_done", (success, dest_path)))
 
         self._run_in_background(_run)
@@ -1338,10 +1343,8 @@ class TaggerInterface:
         client_secret = self.sc_client_secret_entry.get().strip()
 
         try:
-            with open(tagger.CLIENT_ID_FILE, "w", encoding="utf-8") as f:
-                f.write(client_id)
-            with open(tagger.CLIENT_SECRET_FILE, "w", encoding="utf-8") as f:
-                f.write(client_secret)
+            tagger.write_credential(tagger.CLIENT_ID_FILE, client_id)
+            tagger.write_credential(tagger.CLIENT_SECRET_FILE, client_secret)
 
             tagger.SOUNDCLOUD_CLIENT_ID = client_id or None
             tagger.SOUNDCLOUD_CLIENT_SECRET = client_secret or None
@@ -1417,10 +1420,8 @@ class TaggerInterface:
         client_secret = self.sp_client_secret_entry.get().strip()
 
         try:
-            with open(tagger.SPOTIFY_CLIENT_ID_FILE, "w", encoding="utf-8") as f:
-                f.write(client_id)
-            with open(tagger.SPOTIFY_CLIENT_SECRET_FILE, "w", encoding="utf-8") as f:
-                f.write(client_secret)
+            tagger.write_credential(tagger.SPOTIFY_CLIENT_ID_FILE, client_id)
+            tagger.write_credential(tagger.SPOTIFY_CLIENT_SECRET_FILE, client_secret)
 
             tagger.SPOTIFY_CLIENT_ID = client_id or None
             tagger.SPOTIFY_CLIENT_SECRET = client_secret or None
@@ -3010,7 +3011,7 @@ class TaggerInterface:
             return
 
         try:
-            subprocess.run(f'explorer /select,"{full_path}"')
+            subprocess.run(["explorer", f"/select,{full_path}"])
         except Exception as error:
             self._append_to_journal(f"Error opening file location: {error}")
 
@@ -3227,15 +3228,15 @@ class TaggerInterface:
                     self._apply_fix_row_search_result(content)
 
                 elif message_type == "update_available":
-                    latest_version, release_url, installer_url = content
-                    self._offer_update(latest_version, release_url, installer_url)
+                    latest_version, release_url, installer_url, expected_sha256 = content
+                    self._offer_update(latest_version, release_url, installer_url, expected_sha256)
 
                 elif message_type == "manual_update_check_result":
-                    is_newer, latest_version, release_url, installer_url = content
+                    is_newer, latest_version, release_url, installer_url, expected_sha256 = content
                     self.check_update_button.configure(state="normal", text="Check for updates")
 
                     if is_newer:
-                        self._offer_update(latest_version, release_url, installer_url)
+                        self._offer_update(latest_version, release_url, installer_url, expected_sha256)
                     elif latest_version:
                         messagebox.showinfo(
                             "Up to date", f"You already have the latest version (v{tagger.APP_VERSION}).",
