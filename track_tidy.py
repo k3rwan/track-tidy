@@ -45,6 +45,7 @@ from ctypes import wintypes
 import os
 import socket
 import hashlib
+import uuid
 import struct
 import shutil
 import re
@@ -524,6 +525,7 @@ def log_history_entry(old_file, new_file, old_artist, old_title, new_artist, new
     folder entirely.
     """
     entry = {
+        "id": str(uuid.uuid4()),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "folder": folder,
         "old_file": old_file,
@@ -627,6 +629,33 @@ def clear_history_entries():
     if there's no history file yet."""
     if os.path.exists(HISTORY_FILE):
         os.remove(HISTORY_FILE)
+
+
+def _history_entry_key(entry):
+    """Entries logged from now on carry a real unique "id" (uuid4). Older
+    entries (logged before that field existed) fall back to a composite key
+    - timestamp alone isn't reliably unique on its own, since two files
+    processed in the same run can log within the same microsecond."""
+    entry_id = entry.get("id")
+    if entry_id:
+        return entry_id
+    return (entry.get("timestamp"), entry.get("old_file"), entry.get("new_file"))
+
+
+def delete_history_entries(entries_to_delete):
+    """Removes specific entries from the processing history log, rewriting
+    the file without them. Never touches the actual audio files - only
+    the log."""
+    if not os.path.exists(HISTORY_FILE):
+        return
+    keys_to_delete = {_history_entry_key(entry) for entry in entries_to_delete}
+    remaining = [e for e in load_history_entries() if _history_entry_key(e) not in keys_to_delete]
+    try:
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            for entry in remaining:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as error:
+        print(f"  Could not delete history entries: {error}")
 
 
 # --- Runtime config (set by the UI at startup / per scan) ---
