@@ -3,6 +3,37 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.9]
+
+### Added
+- "Fix Artist/Title and search again" popup for tracks the scan couldn't
+  find a cover for - correct a misdetected artist or title and retry
+  the cover search without leaving the app.
+- A "- - - N track(s) found - - -" summary row while searching/filtering
+  the track table, and Ctrl+A now selects every currently visible track.
+- Confirmation popup before Apply, explaining that it will overwrite the
+  original artist/title/cover info (recoverable from history).
+
+### Changed
+- Cover-source summary is now shown at the end of the scan instead of at
+  the end of Apply.
+- iTunes searches now run in parallel during a scan (Spotify/SoundCloud
+  stay sequential), noticeably speeding up large scans.
+- "Check for updates" and "View processing history" buttons are stacked
+  vertically again.
+- Checkboxes/radio buttons and the scrollbar now look identical in light
+  and dark mode (previously light mode used Windows' native controls,
+  dark mode different clam-drawn ones); the checkbox's checked mark is
+  now a custom-drawn checkmark, and the box is smaller than the first
+  redesign.
+- The scan summary and "no cover found" popups are now shown one after
+  another instead of at the same time.
+
+### Fixed
+- iTunes searches now retry on a transient HTTP 403 (previously only
+  HTTP 429 was retried), fixing some tracks that failed to find a cover
+  on the first attempt.
+
 ## [0.8]
 
 ### Added
