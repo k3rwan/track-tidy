@@ -396,9 +396,18 @@ class SearchCoverManualTests(unittest.TestCase):
         self._original_use_itunes = tagger.USE_ITUNES
         self._original_use_spotify = tagger.USE_SPOTIFY
         self._original_use_soundcloud = tagger.USE_SOUNDCLOUD
+        self._original_soundcloud_rate_limited = tagger.SOUNDCLOUD_RATE_LIMITED
+        self._original_soundcloud_unavailable = tagger.SOUNDCLOUD_UNAVAILABLE
         tagger.USE_ITUNES = True
         tagger.USE_SPOTIFY = False
         tagger.USE_SOUNDCLOUD = True
+        # search_cover_manual() doesn't reset these itself (only scan_files()
+        # does, at the start of each run) - force known-good values so a
+        # flag left set by an earlier test (e.g. no SoundCloud credentials
+        # configured in this environment) can't silently skip the
+        # SoundCloud branch these tests are actually testing.
+        tagger.SOUNDCLOUD_RATE_LIMITED = False
+        tagger.SOUNDCLOUD_UNAVAILABLE = False
 
     def tearDown(self):
         tagger.search_cover_itunes = self._original_itunes
@@ -406,6 +415,8 @@ class SearchCoverManualTests(unittest.TestCase):
         tagger.USE_ITUNES = self._original_use_itunes
         tagger.USE_SPOTIFY = self._original_use_spotify
         tagger.USE_SOUNDCLOUD = self._original_use_soundcloud
+        tagger.SOUNDCLOUD_RATE_LIMITED = self._original_soundcloud_rate_limited
+        tagger.SOUNDCLOUD_UNAVAILABLE = self._original_soundcloud_unavailable
 
     def test_returns_none_for_empty_artist_or_title(self):
         self.assertEqual(
@@ -566,6 +577,9 @@ class ScanFilesParallelITunesTests(unittest.TestCase):
         self._original_use_soundcloud = tagger.USE_SOUNDCLOUD
         self._original_itunes_search = tagger.search_cover_itunes
         self._original_soundcloud_search = tagger.search_cover_soundcloud
+        self._original_soundcloud_client_id = tagger.SOUNDCLOUD_CLIENT_ID
+        self._original_soundcloud_client_secret = tagger.SOUNDCLOUD_CLIENT_SECRET
+        self._original_get_soundcloud_token = tagger.get_soundcloud_token
 
         self._tmp_dir = tempfile.TemporaryDirectory()
         tagger.MUSIC_FOLDER = self._tmp_dir.name
@@ -577,6 +591,15 @@ class ScanFilesParallelITunesTests(unittest.TestCase):
         tagger.USE_ITUNES = True
         tagger.USE_SPOTIFY = False
         tagger.USE_SOUNDCLOUD = True
+        # scan_files() skips SoundCloud entirely (SOUNDCLOUD_UNAVAILABLE) when
+        # no Client ID/Secret are configured - fake ones (plus a mocked
+        # get_soundcloud_token, so no real auth call happens) here so these
+        # tests exercise the actual fallback/parallel logic instead of
+        # silently depending on whatever happens to already be saved in
+        # this machine's keyring.
+        tagger.SOUNDCLOUD_CLIENT_ID = "test-client-id"
+        tagger.SOUNDCLOUD_CLIENT_SECRET = "test-client-secret"
+        tagger.get_soundcloud_token = lambda log=None, on_rate_limited=None: "fake-token"
 
     def tearDown(self):
         tagger.MUSIC_FOLDER = self._original_music_folder
@@ -585,6 +608,9 @@ class ScanFilesParallelITunesTests(unittest.TestCase):
         tagger.USE_SOUNDCLOUD = self._original_use_soundcloud
         tagger.search_cover_itunes = self._original_itunes_search
         tagger.search_cover_soundcloud = self._original_soundcloud_search
+        tagger.SOUNDCLOUD_CLIENT_ID = self._original_soundcloud_client_id
+        tagger.SOUNDCLOUD_CLIENT_SECRET = self._original_soundcloud_client_secret
+        tagger.get_soundcloud_token = self._original_get_soundcloud_token
         self._tmp_dir.cleanup()
 
     def test_itunes_searches_run_concurrently(self):
@@ -923,19 +949,23 @@ class UpdateChecksumTests(unittest.TestCase):
         self._tmp_dir.cleanup()
 
     def test_check_for_update_returns_sha256_when_asset_present(self):
+        # check_for_update() looks for a .dmg asset on macOS, .exe elsewhere
+        # (see its installer_extension line) - the fake release must offer
+        # whichever one matches the platform actually running this test.
+        installer_name = "Track-Tidy-Setup-v99.0.dmg" if sys.platform == "darwin" else "Track-Tidy-Setup-v99.0.exe"
         release_data = {
             "tag_name": "v99.0",
             "html_url": "https://example.com/release",
             "assets": [
-                {"name": "Track-Tidy-Setup-v99.0.exe", "browser_download_url": "https://example.com/installer.exe"},
-                {"name": "Track-Tidy-Setup-v99.0.exe.sha256", "browser_download_url": "https://example.com/installer.exe.sha256"},
+                {"name": installer_name, "browser_download_url": "https://example.com/installer"},
+                {"name": installer_name + ".sha256", "browser_download_url": "https://example.com/installer.sha256"},
             ],
         }
         expected_hash = "a" * 64
 
         def fake_get(url, timeout=None):
             if url.endswith(".sha256"):
-                return self.FakeResponse(200, text=f"{expected_hash}  Track-Tidy-Setup-v99.0.exe")
+                return self.FakeResponse(200, text=f"{expected_hash}  {installer_name}")
             return self.FakeResponse(200, payload=release_data)
 
         tagger.requests.get = fake_get
