@@ -651,13 +651,6 @@ def load_history_entries():
     return entries
 
 
-def clear_history_entries():
-    """Deletes the entire processing history log. Does nothing (no error)
-    if there's no history file yet."""
-    if os.path.exists(HISTORY_FILE):
-        os.remove(HISTORY_FILE)
-
-
 def _history_entry_key(entry):
     """Entries logged from now on carry a real unique "id" (uuid4). Older
     entries (logged before that field existed) fall back to a composite key
