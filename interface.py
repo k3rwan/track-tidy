@@ -776,9 +776,6 @@ class TaggerInterface:
         version_label = ttk.Label(self.window, text=f"v{tagger.APP_VERSION}", foreground="#999999")
         version_label.place(relx=1.0, rely=1.0, x=-6, y=-4, anchor="se")
 
-        self.internet_status_label = ttk.Label(self.window, text="● Checking connection...", foreground="#999999")
-        self.internet_status_label.place(relx=0.0, rely=1.0, x=6, y=-4, anchor="sw")
-
         tagger_tab = ttk.Frame(self.notebook)
         extractor_tab = ttk.Frame(self.notebook)
         soundcloud_tab = ttk.Frame(self.notebook)
@@ -1065,6 +1062,11 @@ class TaggerInterface:
         ttk.Button(
             update_history_row, text="View processing history", command=self._show_history_window,
         ).pack(side="left", fill="x", expand=True)
+
+        self.internet_status_label = ttk.Label(
+            soundcloud_tab, text="● Checking connection...", foreground="#999999",
+        )
+        self.internet_status_label.pack(anchor="w", padx=10, pady=(0, 10))
 
         legal_text_label = ttk.Label(
             soundcloud_tab,
