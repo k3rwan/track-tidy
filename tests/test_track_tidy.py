@@ -582,6 +582,29 @@ class VersionParsingTests(unittest.TestCase):
         self.assertTrue(tagger.parse_version("v0.2") == tagger.parse_version("0.2"))
 
 
+class InternetConnectionTests(unittest.TestCase):
+    def setUp(self):
+        self.original_create_connection = tagger.socket.create_connection
+
+    def tearDown(self):
+        tagger.socket.create_connection = self.original_create_connection
+
+    def test_check_internet_connection_true_on_success(self):
+        class FakeSocket:
+            def close(self):
+                pass
+
+        tagger.socket.create_connection = lambda *args, **kwargs: FakeSocket()
+        self.assertTrue(tagger.check_internet_connection())
+
+    def test_check_internet_connection_false_on_oserror(self):
+        def raise_oserror(*args, **kwargs):
+            raise OSError("unreachable")
+
+        tagger.socket.create_connection = raise_oserror
+        self.assertFalse(tagger.check_internet_connection())
+
+
 class SafePrintTests(unittest.TestCase):
     def test_safe_print_does_not_raise_on_emoji(self):
         # A Windows console using a legacy codepage (cp1252 etc.) can't
