@@ -26,7 +26,7 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox
 from tkinter import font as tkfont
-from PIL import Image, ImageTk, ImageDraw, ImageFont
+from PIL import Image, ImageTk, ImageDraw
 
 # When launched via pythonw.exe (no console), sys.stdout/stderr are None.
 # Any leftover print() call would then crash with AttributeError. Redirect
@@ -414,8 +414,8 @@ class TaggerInterface:
     def _build_checkbox_indicator_photo(self, box_bg, box_border, checked, size=16):
         """
         Draws one checkbox indicator state (empty box, or filled box with a
-        comma-shaped mark) as a small raster image - clam's own indicator
-        element can't draw a comma, only its own hardcoded tick, so the
+        checkmark) as a small raster image - clam's own indicator element
+        can't draw a custom mark, only its own hardcoded tick, so the
         indicator is fully custom-drawn here instead.
         """
         image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
@@ -423,11 +423,14 @@ class TaggerInterface:
         fill = INDICATOR_CHECKED_BG if checked else box_bg
         draw.rectangle([0, 0, size - 1, size - 1], fill=fill, outline=box_border, width=1)
         if checked:
-            try:
-                font = ImageFont.truetype("segoeuib.ttf", int(size * 1.6))
-            except OSError:
-                font = ImageFont.load_default()
-            draw.text((size / 2, size / 2 - size * 0.12), ",", font=font, fill="#ffffff", anchor="mm")
+            points = [
+                (size * 0.22, size * 0.52), (size * 0.42, size * 0.72), (size * 0.80, size * 0.28),
+            ]
+            width = max(2, size // 7)
+            draw.line(points, fill="#ffffff", width=width, joint="curve")
+            radius = width / 2
+            for x, y in points:
+                draw.ellipse([x - radius, y - radius, x + radius, y + radius], fill="#ffffff")
         return ImageTk.PhotoImage(image)
 
     def _ensure_checkbox_indicator_images(self, style, dark):
@@ -476,8 +479,8 @@ class TaggerInterface:
         # theme, so this only actually runs once.
         if "Uniform.Radiobutton.indicator" not in style.element_names():
             style.element_create("Uniform.Radiobutton.indicator", "from", "clam", "Radiobutton.indicator")
-        # Checkbutton's "checked" mark is custom-drawn (a comma, not clam's
-        # own tick) - clam's indicator element has no option to change the
+        # Checkbutton's "checked" mark is fully custom-drawn - clam's
+        # indicator element has no option to change the
         # mark shape itself, only its colors, so this uses a small raster
         # image per theme instead of clam's element. Built once per theme
         # and cached (element_create can't be re-called for a name that
