@@ -33,6 +33,12 @@ RestartApplications=yes
 [Files]
 Source: "dist\Track-Tidy\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "ffmpeg.exe"; DestDir: "{app}"; Flags: ignoreversion
+; mutagen (GPL-2.0-or-later, imported directly into the app) and FFmpeg
+; (GPLv3, bundled as a separate executable) both require their license
+; text to accompany the distribution - see THIRD-PARTY-NOTICES.md.
+Source: "THIRD-PARTY-NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "LICENSE-GPLv2-mutagen.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "LICENSE-GPLv3-FFmpeg.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\Track Tidy"; Filename: "{app}\Track-Tidy.exe"
