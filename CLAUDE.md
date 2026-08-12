@@ -14,16 +14,22 @@ the version, building the installer, `gh release create` on either
 workflow Kevin wants to explicitly approve each time, even though the PR
 steps before it don't need approval.
 
-**GPL compliance (as of the v0.9->v0.10 transition):** the project is
-licensed GPL-2.0-or-later (mutagen is GPL and imported directly into the
-packaged app - see LICENSE / THIRD-PARTY-NOTICES.md). Every release from
-v0.10 onward must attach a source archive
-(`git archive --format=zip --prefix=track-tidy-vX.Y-source/ -o ... vX.Y`)
-to the `track-tidy-releases` GitHub release alongside the installer -
-this is what makes the combined mutagen+app binary's distribution
-GPL-compliant. v0.9's release was left as-is (Kevin's call) without a
-source archive or license files bundled in the installer - not a
-precedent to repeat going forward.
+**GPL compliance:** the project is licensed GPL-2.0-or-later (mutagen is
+GPL and imported directly into the packaged app - see LICENSE /
+THIRD-PARTY-NOTICES.md). v0.10 and v0.11 briefly attached a manually
+generated source archive + a `.sha256` checksum file to each
+`track-tidy-releases` GitHub release - Kevin asked for those to stop
+appearing, and they were removed (`gh release delete-asset`). This is
+still GPL-compliant without them: GitHub auto-generates "Source code
+(zip)"/"(tar.gz)" links for every tagged release from the underlying git
+tag, with no way to disable them (verified - no `gh release`/API option
+for it) - that satisfies the source-availability requirement on its own,
+so there's no need to manually attach a source archive going forward.
+The `.sha256` checksum file (for the auto-updater's checksum
+verification, added in PR #103) is also no longer uploaded - the
+verification code in `check_for_update`/`download_installer` is still
+there and harmless (gracefully skips verification when no matching
+asset exists), just permanently dormant unless that's revisited later.
 
 Still flag before doing, even for the PR workflow:
 - Anything hard to reverse or unusual for this workflow: force-push,
