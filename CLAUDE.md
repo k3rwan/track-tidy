@@ -14,6 +14,17 @@ the version, building the installer, `gh release create` on either
 workflow Kevin wants to explicitly approve each time, even though the PR
 steps before it don't need approval.
 
+**GPL compliance (as of the v0.9->v0.10 transition):** the project is
+licensed GPL-2.0-or-later (mutagen is GPL and imported directly into the
+packaged app - see LICENSE / THIRD-PARTY-NOTICES.md). Every release from
+v0.10 onward must attach a source archive
+(`git archive --format=zip --prefix=track-tidy-vX.Y-source/ -o ... vX.Y`)
+to the `track-tidy-releases` GitHub release alongside the installer -
+this is what makes the combined mutagen+app binary's distribution
+GPL-compliant. v0.9's release was left as-is (Kevin's call) without a
+source archive or license files bundled in the installer - not a
+precedent to repeat going forward.
+
 Still flag before doing, even for the PR workflow:
 - Anything hard to reverse or unusual for this workflow: force-push,
   deleting a branch/repo, rewriting git history, changing repo visibility
