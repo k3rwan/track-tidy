@@ -852,7 +852,10 @@ class TaggerInterface:
 
         # --- Launch + progress ---
         launch_frame = ttk.Frame(tagger_tab)
-        launch_frame.pack(fill="x", padx=10, pady=(0, 10))
+        # Extra bottom margin - the "vX.Y" version label sits fixed at the
+        # window's bottom-right corner and would otherwise overlap the
+        # Apply button below it.
+        launch_frame.pack(fill="x", padx=10, pady=(0, 22))
 
         apply_row = ttk.Frame(launch_frame)
         apply_row.pack(fill="x", pady=(0, 5))
