@@ -255,10 +255,22 @@ def check_for_update(log=safe_print, timeout=5):
     treating an old release as untrusted.
     """
     try:
-        response = requests.get(
-            f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
-            timeout=timeout,
-        )
+        response = None
+        for attempt in range(2):
+            try:
+                response = requests.get(
+                    f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+                    timeout=timeout,
+                )
+                break
+            except requests.exceptions.ConnectionError:
+                # GitHub's edge occasionally resets the very first connection
+                # in a pool with no response at all - same flakiness observed
+                # on the release-asset download below. One retry clears it.
+                if attempt == 0:
+                    log("  [Update check] Connection reset (likely transient), retrying...")
+                    continue
+                raise
         if response.status_code != 200:
             log(f"  [Update check] GitHub returned HTTP {response.status_code}")
             return False, None, None, None, None
@@ -328,38 +340,58 @@ def download_installer(url, dest_path, on_progress=None, timeout=30, expected_sh
     file is hashed and compared before returning - a mismatch is treated
     the same as a failed download (file removed, returns False) rather
     than letting a tampered/corrupted installer through.
+
+    A connection-level failure (GitHub's release-asset redirect resets the
+    connection with no response at all every so often - confirmed by hand,
+    not specific to any one machine/network) is retried a few times, with a
+    short growing pause between attempts, before giving up.
     """
-    try:
-        response = requests.get(url, stream=True, timeout=timeout)
-        if response.status_code != 200:
-            return False
-
-        total = int(response.headers.get("Content-Length", 0))
-        downloaded = 0
-
-        with open(dest_path, "wb") as f:
-            for chunk in response.iter_content(chunk_size=262144):
-                if not chunk:
-                    continue
-                f.write(chunk)
-                downloaded += len(chunk)
-                if on_progress:
-                    on_progress(downloaded, total)
-
-        if expected_sha256 and compute_sha256(dest_path).lower() != expected_sha256.lower():
-            log("  [Update] Downloaded installer failed checksum verification - discarding it.")
-            os.remove(dest_path)
-            return False
-
-        return True
-
-    except Exception:
+    max_retries = 3
+    for attempt in range(max_retries + 1):
         try:
-            if os.path.exists(dest_path):
+            response = requests.get(url, stream=True, timeout=timeout)
+            if response.status_code != 200:
+                return False
+
+            total = int(response.headers.get("Content-Length", 0))
+            downloaded = 0
+
+            with open(dest_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=262144):
+                    if not chunk:
+                        continue
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if on_progress:
+                        on_progress(downloaded, total)
+
+            if expected_sha256 and compute_sha256(dest_path).lower() != expected_sha256.lower():
+                log("  [Update] Downloaded installer failed checksum verification - discarding it.")
                 os.remove(dest_path)
+                return False
+
+            return True
+
+        except requests.exceptions.ConnectionError:
+            try:
+                if os.path.exists(dest_path):
+                    os.remove(dest_path)
+            except Exception:
+                pass
+            if attempt < max_retries:
+                wait_seconds = attempt + 1
+                log(f"  [Update] Download connection reset (likely transient), retrying in {wait_seconds}s...")
+                time.sleep(wait_seconds)
+                continue
+            return False
+
         except Exception:
-            pass
-        return False
+            try:
+                if os.path.exists(dest_path):
+                    os.remove(dest_path)
+            except Exception:
+                pass
+            return False
 
 
 # --- Reporting a track (user -> developer, via Discord) ---
