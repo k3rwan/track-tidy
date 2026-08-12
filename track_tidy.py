@@ -40,11 +40,10 @@ Contents (in the order they appear below):
     14. Processing (Apply)                - process_files, process_folder, main
 """
 
-import ctypes
-from ctypes import wintypes
 import os
 import socket
 import hashlib
+import uuid
 import struct
 import shutil
 import re
@@ -57,6 +56,8 @@ import unicodedata
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 import requests
+import keyring
+import platformdirs
 from mutagen import File as MutagenFile
 from mutagen.mp3 import MP3
 from mutagen.wave import WAVE
@@ -102,89 +103,78 @@ def user_config_dir():
     """
     A per-user folder that's always writable, regardless of where the app itself
     is installed (e.g. Program Files, which needs admin rights to write into).
+    Resolves to %APPDATA%\\Track-Tidy on Windows, ~/Library/Application
+    Support/Track-Tidy on macOS, ~/.config/Track-Tidy on Linux.
     """
-    appdata = os.getenv("APPDATA") or os.path.expanduser("~")
-    config_dir = os.path.join(appdata, "Track-Tidy")
+    config_dir = platformdirs.user_config_dir("Track-Tidy", appauthor=False, roaming=True)
     os.makedirs(config_dir, exist_ok=True)
     return config_dir
 
 
-# --- SoundCloud credentials (read from separate files, next to the app) ---
+# --- SoundCloud/Spotify credentials (via the OS's native credential store -
+# Windows Credential Manager, macOS Keychain, Secret Service on Linux) ---
 
-CLIENT_ID_FILE = os.path.join(user_config_dir(), "clientID.txt")
-CLIENT_SECRET_FILE = os.path.join(user_config_dir(), "clientSecret.txt")
+KEYRING_SERVICE = "Track-Tidy"
+
+CLIENT_ID_KEY = "soundcloud_client_id"
+CLIENT_SECRET_KEY = "soundcloud_client_secret"
+SPOTIFY_CLIENT_ID_KEY = "spotify_client_id"
+SPOTIFY_CLIENT_SECRET_KEY = "spotify_client_secret"
+
+# Old plaintext file locations (pre-keyring) - read once at startup as a
+# migration path, then deleted. Not used for anything else.
+_LEGACY_CREDENTIAL_FILES = {
+    CLIENT_ID_KEY: os.path.join(user_config_dir(), "clientID.txt"),
+    CLIENT_SECRET_KEY: os.path.join(user_config_dir(), "clientSecret.txt"),
+    SPOTIFY_CLIENT_ID_KEY: os.path.join(user_config_dir(), "spotifyClientID.txt"),
+    SPOTIFY_CLIENT_SECRET_KEY: os.path.join(user_config_dir(), "spotifyClientSecret.txt"),
+}
 
 
-class _DataBlob(ctypes.Structure):
-    _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+def write_credential(key, value):
+    """Saves a credential via the OS's native credential store instead of
+    a file on disk."""
+    keyring.set_password(KEYRING_SERVICE, key, value)
 
 
-def _dpapi_protect(data):
-    """Encrypts bytes with Windows DPAPI, tied to the current Windows user
-    account - only a process running as this same user can decrypt it back."""
-    buffer = ctypes.create_string_buffer(data, len(data))
-    blob_in = _DataBlob(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_char)))
-    blob_out = _DataBlob()
-    if not ctypes.windll.crypt32.CryptProtectData(
-        ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
-    ):
-        raise ctypes.WinError()
+def read_credential(key):
+    """Returns a saved credential, or None if there isn't one. Migrates a
+    legacy PLAINTEXT credential file (from before this was ever
+    encrypted) into the keyring on first read, then removes the file.
+    Does NOT migrate the DPAPI-encrypted files an older Windows-only
+    version of this app wrote (that decryption code needed ctypes.windll,
+    which doesn't exist cross-platform) - those are simply left in place,
+    unused, and read_credential returns None for them like any other
+    missing credential. In practice this means: upgrading from that
+    specific older version asks you to re-enter SoundCloud/Spotify
+    credentials once; upgrading from anything older (plaintext) or newer
+    (already keyring-based) is seamless."""
     try:
-        return ctypes.string_at(blob_out.pbData, blob_out.cbData)
-    finally:
-        ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+        value = keyring.get_password(KEYRING_SERVICE, key)
+    except Exception as error:
+        print(f"  Could not read credential '{key}': {error}")
+        value = None
+
+    if not value:
+        legacy_path = _LEGACY_CREDENTIAL_FILES.get(key)
+        if legacy_path and os.path.exists(legacy_path):
+            try:
+                with open(legacy_path, "r", encoding="utf-8") as f:
+                    legacy_value = f.read().strip()
+                if legacy_value:
+                    write_credential(key, legacy_value)
+                    value = legacy_value
+                os.remove(legacy_path)
+            except Exception as error:
+                print(f"  Could not migrate legacy credential file '{legacy_path}': {error}")
+
+    return value.strip() if value else None
 
 
-def _dpapi_unprotect(data):
-    buffer = ctypes.create_string_buffer(data, len(data))
-    blob_in = _DataBlob(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_char)))
-    blob_out = _DataBlob()
-    if not ctypes.windll.crypt32.CryptUnprotectData(
-        ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
-    ):
-        raise ctypes.WinError()
-    try:
-        return ctypes.string_at(blob_out.pbData, blob_out.cbData)
-    finally:
-        ctypes.windll.kernel32.LocalFree(blob_out.pbData)
-
-
-def write_credential(file_path, value):
-    """Saves a credential DPAPI-encrypted at rest instead of as plaintext."""
-    encrypted = _dpapi_protect(value.encode("utf-8"))
-    with open(file_path, "wb") as f:
-        f.write(encrypted)
-
-
-def read_credential(file_path):
-    if not os.path.exists(file_path):
-        print(f"  Missing credential file: {file_path}")
-        return None
-    with open(file_path, "rb") as f:
-        raw = f.read()
-    try:
-        return _dpapi_unprotect(raw).decode("utf-8").strip()
-    except Exception:
-        # Not a DPAPI blob - a credential file saved before this was added.
-        # Fall back to reading it as plaintext directly (it gets
-        # re-encrypted the next time it's saved from Settings).
-        try:
-            return raw.decode("utf-8").strip()
-        except Exception:
-            return None
-
-
-SOUNDCLOUD_CLIENT_ID = read_credential(CLIENT_ID_FILE)
-SOUNDCLOUD_CLIENT_SECRET = read_credential(CLIENT_SECRET_FILE)
-
-
-# --- Spotify credentials (read from separate files, next to the app) ---
-
-SPOTIFY_CLIENT_ID_FILE = os.path.join(user_config_dir(), "spotifyClientID.txt")
-SPOTIFY_CLIENT_SECRET_FILE = os.path.join(user_config_dir(), "spotifyClientSecret.txt")
-
-SPOTIFY_CLIENT_ID = read_credential(SPOTIFY_CLIENT_ID_FILE)
-SPOTIFY_CLIENT_SECRET = read_credential(SPOTIFY_CLIENT_SECRET_FILE)
+SOUNDCLOUD_CLIENT_ID = read_credential(CLIENT_ID_KEY)
+SOUNDCLOUD_CLIENT_SECRET = read_credential(CLIENT_SECRET_KEY)
+SPOTIFY_CLIENT_ID = read_credential(SPOTIFY_CLIENT_ID_KEY)
+SPOTIFY_CLIENT_SECRET = read_credential(SPOTIFY_CLIENT_SECRET_KEY)
 
 
 def load_id_txt_credentials():
@@ -277,11 +267,12 @@ def check_for_update(log=safe_print, timeout=5):
         latest_tag = data.get("tag_name", "")
         release_url = data.get("html_url") or f"https://github.com/{GITHUB_REPO}/releases/latest"
 
+        installer_extension = ".dmg" if sys.platform == "darwin" else ".exe"
         assets = data.get("assets", [])
         installer_url = None
         installer_name = None
         for asset in assets:
-            if asset.get("name", "").lower().endswith(".exe"):
+            if asset.get("name", "").lower().endswith(installer_extension):
                 installer_url = asset.get("browser_download_url")
                 installer_name = asset.get("name", "")
                 break
@@ -524,6 +515,7 @@ def log_history_entry(old_file, new_file, old_artist, old_title, new_artist, new
     folder entirely.
     """
     entry = {
+        "id": str(uuid.uuid4()),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "folder": folder,
         "old_file": old_file,
@@ -543,29 +535,63 @@ def log_history_entry(old_file, new_file, old_artist, old_title, new_artist, new
         print(f"  Could not write history entry: {error}")
 
 
-def restore_history_entry(entry, log=safe_print):
+def _find_file_by_name(folder, basename):
+    """Walks folder looking for a file with the exact same name - a
+    lightweight auto-locate attempt for restore_history_entry when the file
+    isn't where it was originally processed (e.g. moved to a subfolder
+    since). Bounded to the entry's own logged folder tree, not a full-drive
+    search. Returns the first match's full path, or None."""
+    if not folder or not os.path.isdir(folder):
+        return None
+    for root, _dirs, files in os.walk(folder):
+        if basename in files:
+            return os.path.join(root, basename)
+    return None
+
+
+def restore_history_entry(entry, log=safe_print, override_path=None):
     """
     Restores a file's artist/title/cover to what they were before a previous
     run changed them (a history.jsonl entry from load_history_entries()).
 
     Locates the file via the entry's own logged folder + its current
     (new_file) relative path - NOT the global MUSIC_FOLDER, since the user
-    may have scanned a different folder since this entry was logged.
+    may have scanned a different folder since this entry was logged. If it's
+    not there anymore, tries a bounded search of that same folder tree for a
+    file with the same name (it may have just moved to a subfolder) before
+    giving up. override_path (an absolute path) skips both of those and
+    uses that location directly - for when the caller already asked the
+    user to locate the file manually.
 
     The file itself keeps its current format/extension (a WAV->MP3
     conversion isn't reversible - the original file is gone), but is renamed
     to match the restored artist/title if both are known.
 
-    Returns the file's new relative path (unchanged if it wasn't renamed).
-    Raises FileNotFoundError if the file can't be located, or ValueError if
-    this entry predates the "folder" field and can't be resolved at all.
+    Returns the file's new absolute path (unchanged if it wasn't renamed) -
+    absolute rather than relative-to-folder, since override_path/the
+    auto-locate search above can both put the file somewhere other than
+    the originally logged folder. Raises FileNotFoundError if the file
+    can't be located, or ValueError if this entry predates the "folder"
+    field and can't be resolved at all.
     """
-    folder = entry.get("folder")
-    if not folder:
-        raise ValueError("This entry has no folder recorded (logged by an older version) - can't locate the file.")
+    if override_path:
+        full_path = override_path
+        folder = os.path.dirname(full_path)
+        current_relative = os.path.basename(full_path)
+    else:
+        folder = entry.get("folder")
+        if not folder:
+            raise ValueError("This entry has no folder recorded (logged by an older version) - can't locate the file.")
 
-    current_relative = entry.get("new_file")
-    full_path = os.path.join(folder, current_relative)
+        current_relative = entry.get("new_file")
+        full_path = os.path.join(folder, current_relative)
+
+        if not os.path.exists(full_path):
+            found = _find_file_by_name(folder, os.path.basename(current_relative))
+            if found:
+                log(f"  Not at its logged location - found it at: '{found}'")
+                full_path = found
+
     if not os.path.exists(full_path):
         raise FileNotFoundError(f"File not found: {full_path}")
 
@@ -579,21 +605,24 @@ def restore_history_entry(entry, log=safe_print):
         force_remove_if_missing=True,  # no old cover logged -> remove whatever cover is there now
         update_title=bool(old_title), update_artist=bool(old_artist), update_cover=True,
     )
-    log(f"  Restored tags on: '{current_relative}'")
+    log(f"  Restored tags on: '{full_path}'")
 
     if old_artist and old_title:
-        folder_part = os.path.dirname(current_relative)
-        extension = os.path.splitext(current_relative)[1]
+        # Derived from full_path's actual current directory, not the
+        # originally-logged one - matters when the file was found via
+        # override_path or the auto-locate search above, since either can
+        # put it somewhere other than "folder".
+        actual_folder = os.path.dirname(full_path)
+        extension = os.path.splitext(full_path)[1]
         new_base_name = sanitize_filename(build_display_name(old_artist, old_title)) + extension
-        new_name = os.path.join(folder_part, new_base_name) if folder_part else new_base_name
-        new_full_path = os.path.join(folder, new_name)
+        new_full_path = os.path.join(actual_folder, new_base_name)
 
         if new_full_path != full_path:
             os.rename(full_path, new_full_path)
-            log(f"  Restored and renamed to: '{new_name}'")
-            return new_name
+            log(f"  Restored and renamed to: '{new_full_path}'")
+            return new_full_path
 
-    return current_relative
+    return full_path
 
 
 def load_history_entries():
@@ -622,11 +651,52 @@ def load_history_entries():
     return entries
 
 
-def clear_history_entries():
-    """Deletes the entire processing history log. Does nothing (no error)
-    if there's no history file yet."""
-    if os.path.exists(HISTORY_FILE):
-        os.remove(HISTORY_FILE)
+def _history_entry_key(entry):
+    """Entries logged from now on carry a real unique "id" (uuid4). Older
+    entries (logged before that field existed) fall back to a composite key
+    - timestamp alone isn't reliably unique on its own, since two files
+    processed in the same run can log within the same microsecond."""
+    entry_id = entry.get("id")
+    if entry_id:
+        return entry_id
+    return (entry.get("timestamp"), entry.get("old_file"), entry.get("new_file"))
+
+
+def delete_history_entries(entries_to_delete):
+    """Removes specific entries from the processing history log, rewriting
+    the file without them. Never touches the actual audio files - only
+    the log."""
+    if not os.path.exists(HISTORY_FILE):
+        return
+    keys_to_delete = {_history_entry_key(entry) for entry in entries_to_delete}
+    remaining = [e for e in load_history_entries() if _history_entry_key(e) not in keys_to_delete]
+    try:
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            for entry in remaining:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as error:
+        print(f"  Could not delete history entries: {error}")
+
+
+def mark_history_entries_restored(entries_to_mark):
+    """Flags specific entries as "restored" (rewriting the file with that
+    field set), so the history view can show they were later reverted -
+    the log entry itself is otherwise left untouched. Does nothing if the
+    history file doesn't exist."""
+    if not os.path.exists(HISTORY_FILE):
+        return
+    keys_to_mark = {_history_entry_key(entry) for entry in entries_to_mark}
+    updated = []
+    for entry in load_history_entries():
+        if _history_entry_key(entry) in keys_to_mark:
+            entry = dict(entry, restored=True)
+        updated.append(entry)
+    try:
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            for entry in updated:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as error:
+        print(f"  Could not mark history entries as restored: {error}")
 
 
 # --- Runtime config (set by the UI at startup / per scan) ---
@@ -2407,18 +2477,23 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
 
         info["final_path"] = file_name  # actual current path, useful for a later fix
 
-        log_history_entry(
-            old_file=info["file"],
-            new_file=file_name,
-            old_artist=info.get("current_artist"),
-            old_title=info.get("current_title"),
-            new_artist=artist if update_artist else info.get("current_artist"),
-            new_title=title if update_title else info.get("current_title"),
-            cover_updated=bool(update_cover and (cover_image or force_remove_if_missing)),
-            converted=converted_this_file,
-            folder=os.path.abspath(MUSIC_FOLDER) if MUSIC_FOLDER else None,
-            old_cover_bytes=info.get("current_cover_bytes") if info.get("has_cover") else None,
-        )
+        # Only log a history entry when tags actually changed (apply_changes
+        # was True) - an unchecked row still reaches this point (e.g. it
+        # just needed converting), but old==new for it, so logging it would
+        # just clutter the history with entries there's nothing to restore.
+        if update_title:
+            log_history_entry(
+                old_file=info["file"],
+                new_file=file_name,
+                old_artist=info.get("current_artist"),
+                old_title=info.get("current_title"),
+                new_artist=artist,
+                new_title=title,
+                cover_updated=bool(update_cover and (cover_image or force_remove_if_missing)),
+                converted=converted_this_file,
+                folder=os.path.abspath(MUSIC_FOLDER) if MUSIC_FOLDER else None,
+                old_cover_bytes=info.get("current_cover_bytes") if info.get("has_cover") else None,
+            )
 
         if update_cover and cover_image:
             log("  Tags updated (cover found and added).\n")
