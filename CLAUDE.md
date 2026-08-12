@@ -88,3 +88,59 @@ Instead:
 - Distribution split: `k3rwan/track-tidy` (private, source) and
   `k3rwan/track-tidy-releases` (public, installer-only, no source code) -
   colleagues download from the second one.
+
+## Cross-platform (Windows/macOS)
+
+Kevin is building this for DJs broadly, many of whom are on macOS, so the
+codebase was deliberately ported off Windows-only APIs (as of the
+"cross-platform" work session):
+
+- **Credentials**: SoundCloud/Spotify client ID/secret now go through the
+  `keyring` package (OS-native credential store: Windows Credential
+  Manager, macOS Keychain) instead of the old DPAPI-encrypted files.
+  `CLIENT_ID_FILE` etc. were renamed to `CLIENT_ID_KEY` etc. accordingly.
+  `read_credential()` migrates an old PLAINTEXT legacy file automatically;
+  it does NOT recover the DPAPI-encrypted files a prior version wrote
+  (that decryption needed `ctypes.windll`, which doesn't exist off
+  Windows) - upgrading from that specific version asks for SoundCloud/
+  Spotify credentials once more, then it's seamless going forward.
+- **Config dir**: `user_config_dir()` now uses `platformdirs` instead of
+  a hardcoded `%APPDATA%` read.
+- **OS integration**: `interface.py` has three small cross-platform
+  helpers - `open_with_default_app()`, `reveal_in_file_manager()`,
+  `play_short_sound()` - used everywhere instead of calling
+  `os.startfile`/`explorer /select,`/`winsound` directly. `winsound` is
+  now imported conditionally (`if sys.platform == "win32"`) since the
+  module doesn't exist at all on macOS - a bare top-level import would
+  have crashed the app immediately on launch there.
+- **Dark title bar** (`_set_titlebar_dark`, DWM API) is Windows-only and
+  now explicitly no-ops on other platforms - macOS already darkens its
+  own title bar based on the system appearance, no equivalent needed.
+- **Theming**: dark mode is built entirely on the `clam` ttk theme, which
+  is NOT OS-specific - it should render identically on macOS. Light mode
+  uses whichever theme is "native" per-OS (`vista`/`winnative` on
+  Windows, `aqua` on macOS) - this was never hardcoded to "vista"
+  specifically, so it should resolve correctly on macOS too. **Genuinely
+  unverified**: aqua is known for ignoring far more ttk style overrides
+  than Windows' native theme does - some light-mode-specific styling
+  (`ReadonlyWhite.TEntry`, `LIGHT_TABLE_SELECT_BG`) may not visually
+  apply the same way. Needs checking on real hardware.
+- **Auto-updater**: `check_for_update()` looks for a `.dmg` release asset
+  on macOS, `.exe` on Windows. The downloaded file is opened via
+  `open_with_default_app()` rather than launched as a silent installer -
+  on macOS this mounts the dmg in Finder (the normal macOS update flow:
+  the user drags the app to Applications themselves), it doesn't install
+  it automatically the way the Windows `.exe` does.
+- **Build**: `build_mac.sh` mirrors `build_all.bat` for macOS (PyInstaller
+  `--windowed` -> `.app`, then `hdiutil` -> `.dmg`). **Completely
+  unverified** - written without access to real Mac hardware to run it
+  on. Needs a real run (and a real `track-tidy_icon.icns`, which doesn't
+  exist yet - `track-tidy_icon.png`/`.ico` are the only icon assets in
+  the repo) before it can be trusted for an actual release.
+- **Not done / explicitly out of scope so far**: macOS code signing and
+  notarization (needs a paid Apple Developer account) - an unsigned/
+  unnotarized `.app` triggers Gatekeeper's "unidentified developer"
+  warning on first launch. A GitHub Actions macOS runner (real Apple
+  hardware, no physical Mac needed) was discussed as the practical way
+  to both build AND run the automated test suite on real macOS, but no
+  workflow file exists yet - ask before assuming that's set up.
