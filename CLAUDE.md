@@ -80,6 +80,20 @@ Instead:
     more than once. Mouse clicks at absolute screen coordinates are fine
     (they target whatever's physically there); prefer calling the
     relevant method directly over simulating clicks at all when possible.
+  - If a same-process test does `entry.focus_set()` +
+    `entry.event_generate("<KeyRelease>")` to drive a search/filter entry
+    (e.g. History window's search box), the synthetic event silently goes
+    nowhere (`dialog.focus_get()` stays on the root window, 0 bindings
+    fire) if `TaggerInterface.__init__`'s one-time startup animation is
+    still in flight - `_rewarm_theme()` chains 3 `after()` calls
+    (100ms/50ms/50ms) that end in `self.window.deiconify()`, and if that
+    fires *during* the test's own `root.update()` calls it silently
+    steals focus back to root. Pump the event loop for ~300-400ms right
+    after constructing `TaggerInterface` (before touching any dialog)
+    to let that chain finish, and `focus_set()`/`event_generate()` work
+    exactly as expected afterward. Confirmed as a pure test artifact, not
+    an app bug - real users take far longer than 200ms to open a dialog
+    after launch.
 - Never run real scans/processing against the user's actual `Desktop\music`
   library when testing - use isolated temp copies of `fart.wav` instead.
   (A prior session accidentally tagged 9 real library files this way.)
