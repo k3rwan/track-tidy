@@ -3072,11 +3072,30 @@ class TaggerInterface:
         status...) to the developer via Discord, so problem tracks (e.g. no
         cover found) can be collected and fixed later. Tagged with the
         Windows username, so reports from different people using the app
-        aren't all anonymous."""
+        aren't all anonymous. Shows exactly what's about to be sent first -
+        this leaves the machine (Windows username, file name, tags, cover
+        images) and the user should see that before it goes."""
         try:
             reporter_name = getpass.getuser()
         except Exception:
             reporter_name = ""
+
+        confirmed = messagebox.askyesno(
+            "Send report?",
+            "This sends the following to the developer (via Discord):\n\n"
+            f"- Your Windows username: {reporter_name or '(unknown)'}\n"
+            f"- File name: {info.get('file') or '(unknown)'}\n"
+            f"- Current title/artist: {info.get('current_title') or '(none)'} / "
+            f"{info.get('current_artist') or '(none)'}\n"
+            f"- Suggested title/artist: {info.get('detected_title') or '(none)'} / "
+            f"{info.get('detected_artist') or '(none)'}\n"
+            f"- Online cover match: {info.get('cover_source') or 'none'}\n"
+            "- The existing and/or suggested cover image, if any\n\n"
+            "Continue?",
+            parent=self.window,
+        )
+        if not confirmed:
+            return
 
         def _send():
             success = tagger.send_track_report(info, reporter_name=reporter_name)

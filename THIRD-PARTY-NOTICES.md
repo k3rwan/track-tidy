@@ -1,0 +1,33 @@
+# Third-party notices
+
+Track Tidy bundles the following third-party software. Full license texts
+for the copyleft entries are included alongside this file
+(`LICENSE-GPLv2-mutagen.txt`, `LICENSE-GPLv3-FFmpeg.txt`); permissive
+entries are summarized below with a pointer to the license name.
+
+## Copyleft (GPL)
+
+- **mutagen** 1.48.1 - GNU General Public License v2 or later
+  (GPL-2.0-or-later). Copyright (C) 2005 Michael Urman and contributors.
+  Full text: `LICENSE-GPLv2-mutagen.txt`.
+- **FFmpeg** (bundled as `ffmpeg.exe`, gyan.dev "full" build) - built with
+  `--enable-gpl --enable-version3`, therefore licensed under the GNU
+  General Public License v3 (GPLv3). Full text:
+  `LICENSE-GPLv3-FFmpeg.txt`. Track Tidy invokes it as a separate process
+  (not linked into the app), but it is distributed alongside the app in
+  the installer.
+
+Because mutagen is imported directly into the packaged application, this
+whole project is licensed under the GNU General Public License v2 or
+later - see the root [LICENSE](LICENSE) file. A matching source archive
+is attached to every GitHub release alongside the installer.
+
+## Permissive
+
+- **Pillow** 12.3.0 - MIT-CMU License
+- **requests** 2.34.2 - Apache License 2.0
+- **tkinterdnd2** 0.6.2 - MIT License
+- **urllib3** (requests dependency) - MIT License
+- **certifi** (requests dependency) - Mozilla Public License 2.0
+- **charset-normalizer** (requests dependency) - MIT License
+- **idna** (requests dependency) - BSD 3-Clause License
