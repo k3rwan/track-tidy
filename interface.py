@@ -2119,12 +2119,16 @@ class TaggerInterface:
             self._show_fix_no_cover_dialog(no_cover_infos)
 
     def _show_fix_no_cover_dialog(self, infos):
-        """Lets the user correct Artist/Title for each track that had no
-        cover match, and retry the search right there - each row is
-        independent, so some can be fixed while others are left for later."""
+        """Lets the user correct Artist/Title for each track and retry the
+        cover search right there - each row is independent, so some can be
+        fixed while others are left for later. Used both for tracks a scan
+        couldn't find a cover for, and for the right-click "Rescan" action
+        (rescanning blind with the same auto-detected Artist/Title tends to
+        just reproduce the same result, so this lets it be corrected
+        first)."""
         dialog = tk.Toplevel(self.window)
         self._style_toplevel(dialog)
-        dialog.title("Fix tracks with no cover")
+        dialog.title("Correct Artist/Title and search again")
         dialog.geometry("640x420")
         dialog.transient(self.window)
 
@@ -2961,56 +2965,6 @@ class TaggerInterface:
 
         self._restripe_rows()
 
-    def _rescan_selected(self, infos):
-        """Re-runs the online cover search for one or more rows (e.g. after
-        fixing SoundCloud credentials, or to retry a match without
-        rescanning the whole folder). Multiple rows share a single
-        scan_files() call - one SoundCloud token fetch/rate-limit cycle
-        instead of one per file - and each result is applied in place as
-        soon as it's ready."""
-        targets = [info for info in infos if not info.get("processed")]
-        skipped = len(infos) - len(targets)
-        if not targets:
-            if skipped:
-                self._append_to_journal("Can't rescan - already processed.")
-            return
-        if skipped:
-            self._append_to_journal(f"Skipping {skipped} already-processed file(s).")
-
-        # Tk widget calls must happen on the main thread - resolve this now,
-        # before handing off to the background thread below.
-        self._sync_mentions_to_remove()
-        file_names = [info["file"] for info in targets]
-
-        def _run():
-            def _on_file_scanned(scanned_info):
-                self.message_queue.put(("row_rescanned", scanned_info))
-
-            tagger.scan_files(
-                file_names,
-                on_file_scanned=_on_file_scanned,
-                log=self._append_to_journal,
-                on_new_mention=lambda mention: self.message_queue.put(("mention_added", mention)),
-                on_rate_limited=lambda: self.message_queue.put(("soundcloud_rate_limited", None)),
-            )
-
-        self._run_in_background(_run)
-
-    def _apply_rescan_result(self, new_info):
-        """Replaces a row's info in place (same position) after _rescan_selected()."""
-        try:
-            index = next(i for i, info in enumerate(self.scanned_plan) if info["file"] == new_info["file"])
-        except StopIteration:
-            return  # row was removed from the list while the rescan was running
-
-        new_info["original_order"] = self.scanned_plan[index].get("original_order")
-        self.scanned_plan[index] = new_info
-
-        if self.table.exists(new_info["file"]):
-            self._refresh_row(new_info)
-
-        self._append_to_journal(f"Rescanned '{new_info['file']}'.")
-
     def _show_context_menu(self, event):
         """Right-click on a row: shows a small context menu (e.g. open file location)."""
         item_id = self.table.identify_row(event.y)
@@ -3038,7 +2992,7 @@ class TaggerInterface:
             )
         rescan_label = "Rescan this file" if len(selected_infos) <= 1 else f"Rescan selected ({len(selected_infos)})"
         menu.add_command(label="Info", command=lambda: self._show_track_info(info))
-        menu.add_command(label=rescan_label, command=lambda: self._rescan_selected(selected_infos))
+        menu.add_command(label=rescan_label, command=lambda: self._show_fix_no_cover_dialog(selected_infos))
         menu.add_command(label="Open file location", command=lambda: self._open_file_location(info))
         menu.add_separator()
         menu.add_command(label="Move up", command=lambda: self._move_row(info, -1))
@@ -3311,9 +3265,6 @@ class TaggerInterface:
                 elif message_type == "update_download_done":
                     success, dest_path = content
                     self._finish_in_app_update(success, dest_path)
-
-                elif message_type == "row_rescanned":
-                    self._apply_rescan_result(content)
 
                 elif message_type == "report_sent":
                     success = content
