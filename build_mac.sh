@@ -49,8 +49,8 @@ echo "Activating build environment (venv_build)..."
 source venv_build/bin/activate
 
 echo
-echo "Installing/updating PyInstaller..."
-pip install pyinstaller tkinterdnd2 --quiet
+echo "Installing/updating dependencies..."
+pip install -r requirements.txt pyinstaller --quiet
 
 echo
 echo "Building the app (this can take a minute)..."
@@ -70,6 +70,7 @@ pyinstaller --windowed --noconfirm \
   --add-data "fart.wav:." \
   --add-data "success.wav:." \
   --collect-all tkinterdnd2 \
+  --collect-all keyring \
   interface.py
 
 if [ ! -d "dist/Track-Tidy.app" ]; then
