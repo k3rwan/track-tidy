@@ -40,8 +40,11 @@ Contents (in the order they appear below):
     14. Processing (Apply)                - process_files, process_folder, main
 """
 
+import ctypes
+from ctypes import wintypes
 import os
 import socket
+import hashlib
 import struct
 import shutil
 import re
@@ -112,12 +115,63 @@ CLIENT_ID_FILE = os.path.join(user_config_dir(), "clientID.txt")
 CLIENT_SECRET_FILE = os.path.join(user_config_dir(), "clientSecret.txt")
 
 
+class _DataBlob(ctypes.Structure):
+    _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+
+def _dpapi_protect(data):
+    """Encrypts bytes with Windows DPAPI, tied to the current Windows user
+    account - only a process running as this same user can decrypt it back."""
+    buffer = ctypes.create_string_buffer(data, len(data))
+    blob_in = _DataBlob(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_char)))
+    blob_out = _DataBlob()
+    if not ctypes.windll.crypt32.CryptProtectData(
+        ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
+    ):
+        raise ctypes.WinError()
+    try:
+        return ctypes.string_at(blob_out.pbData, blob_out.cbData)
+    finally:
+        ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+
+
+def _dpapi_unprotect(data):
+    buffer = ctypes.create_string_buffer(data, len(data))
+    blob_in = _DataBlob(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_char)))
+    blob_out = _DataBlob()
+    if not ctypes.windll.crypt32.CryptUnprotectData(
+        ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
+    ):
+        raise ctypes.WinError()
+    try:
+        return ctypes.string_at(blob_out.pbData, blob_out.cbData)
+    finally:
+        ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+
+
+def write_credential(file_path, value):
+    """Saves a credential DPAPI-encrypted at rest instead of as plaintext."""
+    encrypted = _dpapi_protect(value.encode("utf-8"))
+    with open(file_path, "wb") as f:
+        f.write(encrypted)
+
+
 def read_credential(file_path):
     if not os.path.exists(file_path):
         print(f"  Missing credential file: {file_path}")
         return None
-    with open(file_path, "r", encoding="utf-8") as f:
-        return f.read().strip()
+    with open(file_path, "rb") as f:
+        raw = f.read()
+    try:
+        return _dpapi_unprotect(raw).decode("utf-8").strip()
+    except Exception:
+        # Not a DPAPI blob - a credential file saved before this was added.
+        # Fall back to reading it as plaintext directly (it gets
+        # re-encrypted the next time it's saved from Settings).
+        try:
+            return raw.decode("utf-8").strip()
+        except Exception:
+            return None
 
 
 SOUNDCLOUD_CLIENT_ID = read_credential(CLIENT_ID_FILE)
@@ -202,9 +256,13 @@ def check_for_update(log=safe_print, timeout=5):
     """
     Checks GitHub for the latest release of GITHUB_REPO and compares it to
     APP_VERSION. Returns (is_newer, latest_version, release_url,
-    installer_download_url) - or (False, None, None, None) on any failure
-    (offline, GitHub down, rate-limited...), since this check should never
-    block or crash the app over a network hiccup.
+    installer_download_url, expected_sha256) - or (False, None, None, None,
+    None) on any failure (offline, GitHub down, rate-limited...), since this
+    check should never block or crash the app over a network hiccup.
+    expected_sha256 is None whenever the release has no matching
+    "<installer name>.sha256" asset (e.g. every release before this was
+    added) - download_installer skips verification in that case rather than
+    treating an old release as untrusted.
     """
     try:
         response = requests.get(
@@ -213,27 +271,61 @@ def check_for_update(log=safe_print, timeout=5):
         )
         if response.status_code != 200:
             log(f"  [Update check] GitHub returned HTTP {response.status_code}")
-            return False, None, None, None
+            return False, None, None, None, None
 
         data = response.json()
         latest_tag = data.get("tag_name", "")
         release_url = data.get("html_url") or f"https://github.com/{GITHUB_REPO}/releases/latest"
 
+        assets = data.get("assets", [])
         installer_url = None
-        for asset in data.get("assets", []):
+        installer_name = None
+        for asset in assets:
             if asset.get("name", "").lower().endswith(".exe"):
                 installer_url = asset.get("browser_download_url")
+                installer_name = asset.get("name", "")
                 break
 
+        expected_sha256 = None
+        if installer_name:
+            checksum_asset_name = (installer_name + ".sha256").lower()
+            for asset in assets:
+                if asset.get("name", "").lower() == checksum_asset_name:
+                    expected_sha256 = _fetch_expected_sha256(asset.get("browser_download_url"), timeout, log)
+                    break
+
         is_newer = parse_version(latest_tag) > parse_version(APP_VERSION)
-        return is_newer, latest_tag, release_url, installer_url
+        return is_newer, latest_tag, release_url, installer_url, expected_sha256
 
     except Exception as error:
         log(f"  [Update check] Failed: {error}")
-        return False, None, None, None
+        return False, None, None, None, None
 
 
-def download_installer(url, dest_path, on_progress=None, timeout=30):
+def _fetch_expected_sha256(checksum_url, timeout, log):
+    """Downloads a small "<installer>.sha256" asset and pulls out the hex
+    digest - tolerates both a bare hash and the classic `sha256sum` output
+    format ("<hash>  <filename>")."""
+    try:
+        response = requests.get(checksum_url, timeout=timeout)
+        if response.status_code != 200:
+            return None
+        first_token = response.text.strip().split()[0].lower()
+        return first_token if re.fullmatch(r"[0-9a-f]{64}", first_token) else None
+    except Exception as error:
+        log(f"  [Update check] Could not read checksum: {error}")
+        return None
+
+
+def compute_sha256(file_path, chunk_size=262144):
+    digest = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def download_installer(url, dest_path, on_progress=None, timeout=30, expected_sha256=None, log=safe_print):
     """
     Streams the installer at `url` to `dest_path`, so the app can launch it
     directly instead of the user having to open a browser and download it
@@ -241,6 +333,10 @@ def download_installer(url, dest_path, on_progress=None, timeout=30):
     chunk if given (total_bytes is 0 if the server didn't report a
     Content-Length). Returns True on success, False on any failure (never
     raises) - a partial download is removed rather than left behind.
+    When expected_sha256 is given (see check_for_update), the downloaded
+    file is hashed and compared before returning - a mismatch is treated
+    the same as a failed download (file removed, returns False) rather
+    than letting a tampered/corrupted installer through.
     """
     try:
         response = requests.get(url, stream=True, timeout=timeout)
@@ -259,6 +355,11 @@ def download_installer(url, dest_path, on_progress=None, timeout=30):
                 if on_progress:
                     on_progress(downloaded, total)
 
+        if expected_sha256 and compute_sha256(dest_path).lower() != expected_sha256.lower():
+            log("  [Update] Downloaded installer failed checksum verification - discarding it.")
+            os.remove(dest_path)
+            return False
+
         return True
 
     except Exception:
@@ -272,7 +373,22 @@ def download_installer(url, dest_path, on_progress=None, timeout=30):
 
 # --- Reporting a track (user -> developer, via Discord) ---
 
-DISCORD_REPORT_WEBHOOK_URL = "https://discord.com/api/webhooks/1536761165206782033/qPcjNi9XPi5aqWYLQ_IbrI9UoxHydX1SN5IAbTTEH975_dg6vSfrsrqR81DLUtQrE8Yj"
+# base64, not encryption - a Discord webhook URL is a bearer token with no
+# other auth, and this app ships the source compiled into the .exe, so it
+# can't be kept truly secret from someone determined to extract it. This
+# just keeps it from showing up in a plain `strings` scan of the binary.
+_DISCORD_REPORT_WEBHOOK_URL_B64 = (
+    "aHR0cHM6Ly9kaXNjb3JkLmNvbS9hcGkvd2ViaG9va3MvMTUzNjc2MTE2NTIwNjc4MjAzMy9x"
+    "UGNqTmk5WFBpNWFxV1lMUV9JYnJJOVVveEh5ZFgxU041SUFiVFRFSDk3NV9kZzZ2U2Zyc3Jx"
+    "UjgxRExVdFFyRThZag=="
+)
+DISCORD_REPORT_WEBHOOK_URL = base64.b64decode(_DISCORD_REPORT_WEBHOOK_URL_B64).decode("ascii")
+
+# Client-side cooldown between track reports - if the webhook URL is ever
+# extracted, this at least stops a single client from flooding the Discord
+# channel via _report_track's normal call path.
+REPORT_COOLDOWN_SECONDS = 15
+_last_report_time = 0
 
 
 def send_track_report(info, reporter_name=None, timeout=10):
@@ -284,8 +400,18 @@ def send_track_report(info, reporter_name=None, timeout=10):
     online-suggested cover (as the main image) when available, so a missing/
     wrong cover is visible at a glance instead of just implied by text.
     Returns True on success, False on any failure (never raises - a failed
-    report shouldn't disrupt the user).
+    report shouldn't disrupt the user). Also False if called again within
+    REPORT_COOLDOWN_SECONDS of the last report (see the module comment
+    above - the webhook URL can't be kept truly secret from this app's own
+    binary, so this bounds how fast a single client can flood the channel
+    if it's ever extracted).
     """
+    global _last_report_time
+    now = time.time()
+    if now - _last_report_time < REPORT_COOLDOWN_SECONDS:
+        return False
+    _last_report_time = now
+
     fields = [
         {"name": "Reported by", "value": reporter_name or "(unknown)", "inline": False},
         {"name": "File", "value": info.get("file") or "(unknown)", "inline": False},

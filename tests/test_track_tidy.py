@@ -4,6 +4,7 @@ history log (isolated to a temp file - no network, no GUI).
 Run with: python -m unittest discover -s tests
 """
 
+import hashlib
 import os
 import sys
 import json
@@ -770,6 +771,125 @@ class SettingsPersistenceTests(unittest.TestCase):
         tagger.save_setting("theme", "dark")
         tagger.save_setting("other_key", "value")
         self.assertEqual(tagger.load_settings(), {"theme": "dark", "other_key": "value"})
+
+
+class CredentialEncryptionTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._path = os.path.join(self._tmp_dir.name, "clientSecret.txt")
+
+    def tearDown(self):
+        self._tmp_dir.cleanup()
+
+    def test_write_then_read_roundtrip(self):
+        tagger.write_credential(self._path, "super-secret-value")
+        self.assertEqual(tagger.read_credential(self._path), "super-secret-value")
+
+    def test_saved_file_is_not_plaintext_on_disk(self):
+        tagger.write_credential(self._path, "super-secret-value")
+        with open(self._path, "rb") as f:
+            raw = f.read()
+        self.assertNotIn(b"super-secret-value", raw)
+
+    def test_read_credential_falls_back_to_plaintext_for_pre_encryption_files(self):
+        with open(self._path, "w", encoding="utf-8") as f:
+            f.write("old-plaintext-secret")
+        self.assertEqual(tagger.read_credential(self._path), "old-plaintext-secret")
+
+    def test_read_credential_missing_file_returns_none(self):
+        self.assertIsNone(tagger.read_credential(self._path))
+
+
+class UpdateChecksumTests(unittest.TestCase):
+    """check_for_update looks for a "<installer>.sha256" release asset, and
+    download_installer verifies the download against it before letting the
+    caller treat it as trustworthy."""
+
+    class FakeResponse:
+        def __init__(self, status_code, payload=None, text="", content=b""):
+            self.status_code = status_code
+            self._payload = payload or {}
+            self.text = text
+            self._content = content
+            self.headers = {"Content-Length": str(len(content))}
+
+        def json(self):
+            return self._payload
+
+        def iter_content(self, chunk_size=262144):
+            yield self._content
+
+    def setUp(self):
+        self.original_get = tagger.requests.get
+        self._tmp_dir = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        tagger.requests.get = self.original_get
+        self._tmp_dir.cleanup()
+
+    def test_check_for_update_returns_sha256_when_asset_present(self):
+        release_data = {
+            "tag_name": "v99.0",
+            "html_url": "https://example.com/release",
+            "assets": [
+                {"name": "Track-Tidy-Setup-v99.0.exe", "browser_download_url": "https://example.com/installer.exe"},
+                {"name": "Track-Tidy-Setup-v99.0.exe.sha256", "browser_download_url": "https://example.com/installer.exe.sha256"},
+            ],
+        }
+        expected_hash = "a" * 64
+
+        def fake_get(url, timeout=None):
+            if url.endswith(".sha256"):
+                return self.FakeResponse(200, text=f"{expected_hash}  Track-Tidy-Setup-v99.0.exe")
+            return self.FakeResponse(200, payload=release_data)
+
+        tagger.requests.get = fake_get
+        is_newer, latest_tag, release_url, installer_url, expected_sha256 = tagger.check_for_update()
+
+        self.assertTrue(is_newer)
+        self.assertEqual(expected_sha256, expected_hash)
+
+    def test_check_for_update_sha256_none_when_no_checksum_asset(self):
+        release_data = {
+            "tag_name": "v99.0",
+            "html_url": "https://example.com/release",
+            "assets": [
+                {"name": "Track-Tidy-Setup-v99.0.exe", "browser_download_url": "https://example.com/installer.exe"},
+            ],
+        }
+        tagger.requests.get = lambda url, timeout=None: self.FakeResponse(200, payload=release_data)
+        result = tagger.check_for_update()
+
+        self.assertIsNone(result[4])
+
+    def test_compute_sha256_matches_known_hash(self):
+        path = os.path.join(self._tmp_dir.name, "file.bin")
+        with open(path, "wb") as f:
+            f.write(b"hello world")
+        self.assertEqual(tagger.compute_sha256(path), hashlib.sha256(b"hello world").hexdigest())
+
+    def test_download_installer_accepts_matching_checksum(self):
+        content = b"fake-installer-bytes"
+        expected_hash = hashlib.sha256(content).hexdigest()
+        tagger.requests.get = lambda url, stream=None, timeout=None: self.FakeResponse(200, content=content)
+        dest_path = os.path.join(self._tmp_dir.name, "installer.exe")
+
+        success = tagger.download_installer("https://example.com/installer.exe", dest_path, expected_sha256=expected_hash)
+
+        self.assertTrue(success)
+        self.assertTrue(os.path.exists(dest_path))
+
+    def test_download_installer_rejects_mismatched_checksum(self):
+        content = b"fake-installer-bytes"
+        tagger.requests.get = lambda url, stream=None, timeout=None: self.FakeResponse(200, content=content)
+        dest_path = os.path.join(self._tmp_dir.name, "installer.exe")
+
+        success = tagger.download_installer(
+            "https://example.com/installer.exe", dest_path, expected_sha256="0" * 64, log=lambda text: None,
+        )
+
+        self.assertFalse(success)
+        self.assertFalse(os.path.exists(dest_path))
 
 
 class VersionParsingTests(unittest.TestCase):
