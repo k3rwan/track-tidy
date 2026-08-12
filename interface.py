@@ -21,13 +21,15 @@ import subprocess
 import tempfile
 import threading
 import queue
-import winsound
 import webbrowser
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox
 from tkinter import font as tkfont
 from PIL import Image, ImageTk, ImageDraw
+
+if sys.platform == "win32":
+    import winsound
 
 # When launched via pythonw.exe (no console), sys.stdout/stderr are None.
 # Any leftover print() call would then crash with AttributeError. Redirect
@@ -38,6 +40,42 @@ if sys.stderr is None:
     sys.stderr = open(os.devnull, "w")
 
 import track_tidy as tagger
+
+
+# --- Cross-platform OS integration (Windows / macOS) ---
+
+def open_with_default_app(path):
+    """Opens a file with whatever app the OS has associated with it (used
+    for playing an audio file, opening the bundled license notices...)."""
+    if sys.platform == "win32":
+        os.startfile(path)
+    else:
+        subprocess.run(["open", path])
+
+
+def reveal_in_file_manager(path):
+    """Opens the OS's file manager with this file pre-selected."""
+    if sys.platform == "win32":
+        # Deliberately NOT list-form: subprocess.list2cmdline() would quote
+        # the whole "/select,<path>" argument as one unit
+        # ("/select,C:\my folder\file.mp3"), but explorer's own /select,
+        # parser specifically expects the comma OUTSIDE the quotes and
+        # only the path itself quoted (/select,"C:\my folder\file.mp3") -
+        # list form silently breaks this. Safe as a raw string on Windows
+        # without shell=True (the whole string is passed straight to
+        # CreateProcess as-is), and full_path can't contain '"' (not a
+        # legal character in a Windows path).
+        subprocess.run(f'explorer /select,"{path}"')
+    else:
+        subprocess.run(["open", "-R", path])
+
+
+def play_short_sound(path):
+    """Plays a short local sound file (the Apply-complete chime)."""
+    if sys.platform == "win32":
+        winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+    else:
+        subprocess.run(["afplay", path])
 
 
 def resource_path(filename):
@@ -206,6 +244,7 @@ class TaggerInterface:
         self.window.resizable(False, False)  # prevents fullscreen / resizing
 
         self.message_queue = queue.Queue()
+        self._is_online = True  # optimistic default until the first real check lands
         self.processing_in_progress = False
         self.cancel_requested = threading.Event()
         self.scanned_plan = []
@@ -217,6 +256,9 @@ class TaggerInterface:
         self._tooltip_window = None
         self._tooltip_key = None
         self._pending_double_click_after_id = None
+        self._removal_undo_stack = []  # list of [(original_index, info), ...] per "Remove from list" action
+        self._drag_row_id = None  # row being dragged to reorder, if any
+        self._drag_moved = False
         self._table_font = tkfont.nametofont("TkDefaultFont")
         self.soundcloud_rate_limit_warned = False
         self.mention_counts = {}  # raw mention text -> number of times seen
@@ -355,6 +397,8 @@ class TaggerInterface:
         if self._tagger_resize_pending and self.notebook.index("current") == 0:
             self._tagger_resize_pending = False
             self._adjust_window_height()
+        if self.notebook.index("current") == 2:  # Settings - recheck right away rather than
+            self._check_internet_connection()      # waiting for the next background 10s poll
 
     def _style_toplevel(self, dialog):
         """Applies the current theme's background (and title bar) to a dialog
@@ -392,17 +436,24 @@ class TaggerInterface:
         y = max(0, min(y, dialog.winfo_screenheight() - dialog.winfo_height()))
         dialog.geometry(f"+{x}+{y}")
 
+    def _make_themed_menu(self, parent):
+        """A tk.Menu with the current theme's colors applied - tk.Menu is
+        plain Tk, not ttk, so it doesn't pick up theme colors on its own
+        the way ttk widgets do."""
+        menu = tk.Menu(parent, tearoff=0)
+        if self.theme_colors:
+            menu.configure(
+                bg=self.theme_colors["menu_bg"], fg=self.theme_colors["menu_fg"],
+                activebackground=self.theme_colors["select_bg"], activeforeground=self.theme_colors["select_fg"],
+            )
+        return menu
+
     def _bind_entry_context_menu(self, entry, readonly=False):
         """Adds a right-click Cut/Copy/Paste/Select All menu to an Entry -
         unlike native Windows edit controls, Tk Entry widgets don't get one
         for free."""
         def show_menu(event):
-            menu = tk.Menu(entry, tearoff=0)
-            if self.theme_colors:
-                menu.configure(
-                    bg=self.theme_colors["menu_bg"], fg=self.theme_colors["menu_fg"],
-                    activebackground=self.theme_colors["select_bg"], activeforeground=self.theme_colors["select_fg"],
-                )
+            menu = self._make_themed_menu(entry)
             if not readonly:
                 menu.add_command(label="Cut", command=lambda: entry.event_generate("<<Cut>>"))
             menu.add_command(label="Copy", command=lambda: entry.event_generate("<<Copy>>"))
@@ -413,6 +464,27 @@ class TaggerInterface:
             menu.tk_popup(event.x_root, event.y_root)
 
         entry.bind("<Button-3>", show_menu)
+
+    def _build_folder_icon_photo(self, dark, size=16):
+        """Small flat folder glyph shown to the left of the parent-folder
+        path - drawn as a raster image (like the checkbox indicator)
+        rather than a Unicode folder emoji, so it's a plain solid color
+        instead of an uncontrollable colored glyph that wouldn't match the
+        theme. A single connected polygon (tab + body as one outline), not
+        two separate rectangles - at this size two adjacent-but-separate
+        shapes rendered as a visible seam instead of reading as one folder.
+        Recolored per theme and rebuilt in _apply_theme, like the checkbox
+        indicator - it was previously built once with a fixed color and
+        never updated on a light/dark switch."""
+        color = "#c1c1c1" if dark else "#707070"
+        image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        points = [
+            (size * 0.06, size * 0.25), (size * 0.06, size * 0.81), (size * 0.94, size * 0.81),
+            (size * 0.94, size * 0.34), (size * 0.42, size * 0.34), (size * 0.34, size * 0.25),
+        ]
+        draw.polygon(points, fill=color)
+        return ImageTk.PhotoImage(image)
 
     def _build_checkbox_indicator_photo(self, box_bg, box_border, checked, size=13):
         """
@@ -696,6 +768,9 @@ class TaggerInterface:
             if not getattr(entry, "placeholder_active", False):
                 entry.configure(foreground=entry.normal_color)
 
+        self._folder_icon_photo = self._build_folder_icon_photo(dark)
+        self.folder_icon_label.configure(image=self._folder_icon_photo)
+
         self.theme_colors = colors
         self._set_titlebar_dark(self.window, dark)
         # Deliberately NOT re-locking the window height here: even the ~2px
@@ -707,9 +782,13 @@ class TaggerInterface:
     def _set_titlebar_dark(self, window, dark):
         """
         Best-effort: darkens a window's native title bar to match the theme
-        (Windows 10 1809+ / 11 only). Silently does nothing if unsupported -
-        the app is still fully usable, just with a light title bar.
+        (Windows 10 1809+ / 11 only - a no-op on macOS, which already
+        darkens its own title bar automatically based on the system
+        appearance). Silently does nothing if unsupported - the app is
+        still fully usable, just with a light title bar.
         """
+        if sys.platform != "win32":
+            return
         try:
             import ctypes
             hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
@@ -768,14 +847,35 @@ class TaggerInterface:
     def _check_internet_connection(self, is_startup_check=False):
         """Checks connectivity in the background, updates the status
         indicator, and (only for the initial startup check) warns once via
-        a popup if there's no connection. Re-checks itself every 30s so the
-        indicator stays accurate for the life of the run."""
+        a popup if there's no connection. Re-checks itself every 10s so the
+        indicator (and the Tagger tab's buttons - see
+        _refresh_tagger_buttons_for_connectivity) stay accurate for the
+        life of the run."""
         def _run_check():
             is_online = tagger.check_internet_connection()
             self.message_queue.put(("internet_status", (is_online, is_startup_check)))
 
         self._run_in_background(_run_check)
-        self.window.after(30000, self._check_internet_connection)
+        self.window.after(10000, self._check_internet_connection)
+
+    def _refresh_tagger_buttons_for_connectivity(self):
+        """Scan/Apply/Reset need internet for cover search, so they're
+        disabled while offline - Browse is exempt (still useful to pick a
+        folder while offline). Skipped entirely while a scan/apply run is
+        active: browse_button is only ever disabled by _set_buttons_enabled
+        for that, never by connectivity, so its state doubles as "is
+        something already running" without a separate flag to track."""
+        if str(self.browse_button.cget("state")) == "disabled":
+            return
+        if not self._is_online:
+            self.scan_button.configure(state="disabled")
+            self.reset_button.configure(state="disabled")
+            self.apply_button.configure(state="disabled")
+            return
+        if self.folder_variable.get().strip():
+            self.scan_button.configure(state="normal")
+            self.reset_button.configure(state="normal")
+            self.apply_button.configure(state="normal")
 
     def _check_for_update_manual(self):
         """Same check as on startup, but always reports back (up to date /
@@ -840,7 +940,11 @@ class TaggerInterface:
             self.message_queue.put(("update_download_progress", (downloaded, total)))
 
         def _run():
-            dest_path = os.path.join(tempfile.gettempdir(), f"Track-Tidy-Setup-{latest_version}.exe")
+            # Extension follows the actual asset (.exe on Windows, .dmg on
+            # macOS - see check_for_update) rather than being assumed, so
+            # this doesn't silently mislabel the downloaded file.
+            extension = os.path.splitext(installer_url)[1] or (".dmg" if sys.platform == "darwin" else ".exe")
+            dest_path = os.path.join(tempfile.gettempdir(), f"Track-Tidy-Setup-{latest_version}{extension}")
             success = tagger.download_installer(
                 installer_url, dest_path, on_progress=on_progress,
                 expected_sha256=expected_sha256, log=self._append_to_journal,
@@ -864,7 +968,11 @@ class TaggerInterface:
             return
 
         try:
-            subprocess.Popen([dest_path])
+            # On Windows this runs the installer directly (same as
+            # double-clicking it). On macOS a .dmg isn't a silent
+            # installer - "open" mounts it in Finder, the normal macOS
+            # flow, and the user drags the app to Applications themselves.
+            open_with_default_app(dest_path)
         except Exception as error:
             messagebox.showerror("Update failed", f"Could not launch the installer: {error}", parent=self.window)
             return
@@ -1004,12 +1112,22 @@ class TaggerInterface:
         folder_frame.pack(fill="x", padx=10, pady=(10, 2))
 
         self.folder_variable = tk.StringVar(value=os.path.abspath(tagger.MUSIC_FOLDER) if tagger.MUSIC_FOLDER else "")
+
+        folder_entry_row = ttk.Frame(folder_frame)
+        folder_entry_row.pack(fill="x", padx=10, pady=(10, 5))
+
+        # Image is set in _apply_theme (needs to know light/dark, and is
+        # rebuilt every time the theme changes, same as the checkbox
+        # indicator images).
+        self.folder_icon_label = ttk.Label(folder_entry_row)
+        self.folder_icon_label.pack(side="left", padx=(0, 6))
+
         # "ReadonlyWhite.TEntry"'s actual colors are (re)configured by _apply_theme,
         # since they depend on the light/dark choice and ttk styles are per-theme.
         folder_entry = ttk.Entry(
-            folder_frame, textvariable=self.folder_variable, state="readonly", style="ReadonlyWhite.TEntry"
+            folder_entry_row, textvariable=self.folder_variable, state="readonly", style="ReadonlyWhite.TEntry"
         )
-        folder_entry.pack(fill="x", padx=10, pady=(10, 5))
+        folder_entry.pack(side="left", fill="x", expand=True)
         self._bind_entry_context_menu(folder_entry, readonly=True)
 
         folder_buttons_frame = ttk.Frame(folder_frame)
@@ -1034,11 +1152,14 @@ class TaggerInterface:
         self.advanced_toggle.pack(anchor="w", padx=10, pady=(0, 2))
         self.advanced_toggle.bind("<Button-1>", lambda event: self._toggle_advanced_section())
 
-        self.advanced_frame = ttk.LabelFrame(tagger_tab, text="")
+        # Plain Frame, not LabelFrame - an empty-title LabelFrame still
+        # reserves space for its (invisible) label line at the top, which
+        # was most of the excess gap above "Suggested"/"To remove".
+        self.advanced_frame = ttk.Frame(tagger_tab)
         # not shown by default (pack() is called/undone in _toggle_advanced_section)
 
         columns_frame = ttk.Frame(self.advanced_frame)
-        columns_frame.pack(fill="x", padx=10, pady=(10, 5))
+        columns_frame.pack(fill="x", padx=10, pady=(2, 5))
 
         suggested_column = ttk.Frame(columns_frame)
         suggested_column.pack(side="left", fill="both", expand=True, padx=(0, 5))
@@ -1066,10 +1187,12 @@ class TaggerInterface:
         ttk.Checkbutton(
             self.advanced_frame, text="Only show tracks with no cover match",
             variable=self.no_cover_filter_var, command=self._apply_table_filter,
-        ).pack(anchor="w", padx=10, pady=(0, 10))
+        ).pack(anchor="w", padx=10, pady=(0, 6))
 
         # --- Scan results table ---
-        table_frame = ttk.LabelFrame(tagger_tab, text="")
+        # Plain Frame, not LabelFrame - same reasoning as advanced_frame
+        # above, this was most of the excess gap above the table headers.
+        table_frame = ttk.Frame(tagger_tab)
         table_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
         search_frame = ttk.Frame(table_frame)
@@ -1139,11 +1262,15 @@ class TaggerInterface:
         vertical_scrollbar.pack(side="left", fill="y")
 
         self.table.bind("<Button-1>", self._toggle_cell, add="+")
+        self.table.bind("<Button-1>", self._on_row_drag_start, add="+")
+        self.table.bind("<B1-Motion>", self._on_row_drag_motion, add="+")
+        self.table.bind("<ButtonRelease-1>", self._on_row_drag_release, add="+")
         self.table.bind("<Double-1>", self._toggle_cell_double_click, add="+")
         self.table.bind("<Triple-1>", self._toggle_cell_triple_click, add="+")
         self.table.bind("<Button-3>", self._show_context_menu)
         self.table.bind("<Delete>", self._delete_selected_rows)
         self.table.bind("<Control-a>", self._select_all_rows)
+        self.table.bind("<Control-z>", self._undo_last_removal)
         self.table.bind("<Motion>", self._on_table_hover, add="+")
         self.table.bind("<Leave>", self._on_table_leave, add="+")
 
@@ -1377,8 +1504,8 @@ class TaggerInterface:
         client_secret = self.sc_client_secret_entry.get().strip()
 
         try:
-            tagger.write_credential(tagger.CLIENT_ID_FILE, client_id)
-            tagger.write_credential(tagger.CLIENT_SECRET_FILE, client_secret)
+            tagger.write_credential(tagger.CLIENT_ID_KEY, client_id)
+            tagger.write_credential(tagger.CLIENT_SECRET_KEY, client_secret)
 
             tagger.SOUNDCLOUD_CLIENT_ID = client_id or None
             tagger.SOUNDCLOUD_CLIENT_SECRET = client_secret or None
@@ -1454,8 +1581,8 @@ class TaggerInterface:
         client_secret = self.sp_client_secret_entry.get().strip()
 
         try:
-            tagger.write_credential(tagger.SPOTIFY_CLIENT_ID_FILE, client_id)
-            tagger.write_credential(tagger.SPOTIFY_CLIENT_SECRET_FILE, client_secret)
+            tagger.write_credential(tagger.SPOTIFY_CLIENT_ID_KEY, client_id)
+            tagger.write_credential(tagger.SPOTIFY_CLIENT_SECRET_KEY, client_secret)
 
             tagger.SPOTIFY_CLIENT_ID = client_id or None
             tagger.SPOTIFY_CLIENT_SECRET = client_secret or None
@@ -1482,7 +1609,7 @@ class TaggerInterface:
             )
             return
         try:
-            os.startfile(path)
+            open_with_default_app(path)
         except Exception as error:
             self._append_to_journal(f"Could not open license notices: {error}")
 
@@ -1568,12 +1695,20 @@ class TaggerInterface:
     # --- Folder / mention actions ---
 
     def _choose_folder(self):
+        """Windows' native folder-browser dialog (which askdirectory uses)
+        never shows files, only folders - a Tk/Windows limitation, not
+        something this app can turn on. As the next best thing, log how
+        many audio files are actually in the chosen folder right away,
+        instead of only finding out once Scan is clicked."""
         folder = filedialog.askdirectory(title="Choose the audio files folder")
         if folder:
             self.folder_variable.set(folder)
-            self.scan_button.configure(state="normal")
-            self.reset_button.configure(state="normal")
-            self.apply_button.configure(state="normal")
+            self._refresh_tagger_buttons_for_connectivity()
+
+            tagger.MUSIC_FOLDER = folder
+            file_count = len(tagger.list_audio_files())
+            unit = "audio file" if file_count == 1 else "audio files"
+            self._append_to_journal(f"Selected folder contains {file_count} {unit}.")
 
     def _add_mention(self, event=None):
         """Manual entries go straight into the 'To remove' list (press Enter to confirm)."""
@@ -1894,10 +2029,10 @@ class TaggerInterface:
         self._restripe_rows()
 
     def _show_no_files_dialog(self):
-        """Custom error dialog that plays a fart sound instead of the default Windows error beep."""
+        """Custom error dialog that plays a fart sound instead of the default OS error beep."""
         sound_path = resource_path("fart.wav")
         try:
-            winsound.PlaySound(sound_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+            play_short_sound(sound_path)
         except Exception:
             pass  # if the sound file is missing, just show the dialog silently
 
@@ -1953,14 +2088,12 @@ class TaggerInterface:
 
         return itunes_count, spotify_count, soundcloud_count, kept_existing_count, no_cover_count
 
-    def _show_scan_summary_dialog(self, on_close=None):
+    def _show_scan_summary_dialog(self, no_cover_infos=None):
         """Cover-source breakdown shown right after a scan finds new files -
         this is the earliest point every track's cover_source is known.
-        on_close (if given) fires once this dialog is dismissed - grab_set()
-        alone doesn't block the caller, so anything meant to come AFTER this
-        dialog (e.g. the "fix no-cover tracks?" prompt) must be chained
-        through here rather than just called right after, or both would
-        appear at once instead of one after the other."""
+        A single dialog: "OK" alone, or "OK" plus a second button straight
+        into fixing Artist/Title for no-cover tracks when there are any -
+        not a separate yes/no confirmation chained after this one."""
         itunes_count, spotify_count, soundcloud_count, kept_existing_count, no_cover_count = (
             self._compute_cover_summary()
         )
@@ -1988,12 +2121,24 @@ class TaggerInterface:
         )
         ttk.Label(dialog, text=summary_text, justify="left", foreground="#555555").pack(padx=20, pady=(0, 15))
 
+        button_row = ttk.Frame(dialog)
+        button_row.pack(pady=(0, 15))
+
         def close():
             dialog.destroy()
-            if on_close:
-                on_close()
 
-        ttk.Button(dialog, text="OK", command=close).pack(pady=(0, 15))
+        ttk.Button(button_row, text="OK", command=close).pack(side="left", padx=(0, 5) if no_cover_infos else 0)
+
+        if no_cover_infos:
+            count = len(no_cover_infos)
+            unit = "track" if count == 1 else "tracks"
+
+            def fix_no_cover():
+                dialog.destroy()
+                self._show_fix_no_cover_dialog(no_cover_infos)
+
+            ttk.Button(button_row, text=f"Fix {count} {unit}...", command=fix_no_cover).pack(side="left")
+
         dialog.protocol("WM_DELETE_WINDOW", close)
 
         self._center_dialog(dialog)
@@ -2004,7 +2149,7 @@ class TaggerInterface:
         one just confirms the run finished and how many files were converted."""
         sound_path = resource_path("success.wav")
         try:
-            winsound.PlaySound(sound_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+            play_short_sound(sound_path)
         except Exception:
             pass  # if the sound file is missing, just show the dialog silently
 
@@ -2065,11 +2210,8 @@ class TaggerInterface:
             if no_cover_infos:
                 self._append_to_journal(f"{len(no_cover_infos)} track(s) currently have no cover match.")
 
-            if number_new > 0:
-                on_summary_closed = (
-                    (lambda: self._offer_fix_no_cover_tracks(no_cover_infos)) if no_cover_infos else None
-                )
-                self._show_scan_summary_dialog(on_close=on_summary_closed)
+            if number_new > 0 and not self.cancel_requested.is_set():
+                self._show_scan_summary_dialog(no_cover_infos=no_cover_infos)
 
         self._check_for_duplicates()
 
@@ -2105,18 +2247,6 @@ class TaggerInterface:
             self.scanned_plan = [info for info in self.scanned_plan if info["file"] != dot_file]
 
     # --- Fix Artist/Title and search again (tracks with no cover match) ---
-
-    def _offer_fix_no_cover_tracks(self, no_cover_infos):
-        count = len(no_cover_infos)
-        unit = "track" if count == 1 else "tracks"
-        confirmed = messagebox.askyesno(
-            "No cover found",
-            f"{count} {unit} had no cover match.\n\n"
-            "Would you like to review and correct their Artist/Title now, then search again?",
-            parent=self.window,
-        )
-        if confirmed:
-            self._show_fix_no_cover_dialog(no_cover_infos)
 
     def _show_fix_no_cover_dialog(self, infos):
         """Lets the user correct Artist/Title for each track and retry the
@@ -2292,7 +2422,13 @@ class TaggerInterface:
             if displayed_artist is None:
                 displayed_artist = info["detected_artist"] if info["detected_artist"] else "(empty)"
             displayed_format = f"MP3 {PROCESSED_CHECK}" if (needs_conversion and info["convert"]) else info["format"]
-            return (CHECKED_BOX, displayed_title, displayed_artist, displayed_format)
+            # Reflects what actually happened to THIS row, not "processed
+            # means checked" - a row that was unchecked (kept as-is) still
+            # ends up "processed" once the run reaches it, and showing it
+            # checked made every row look selected after Apply even when
+            # most weren't.
+            apply_box = PROCESSED_CHECK if info.get("apply_changes") else EMPTY_BOX
+            return (apply_box, displayed_title, displayed_artist, displayed_format)
 
         apply = info["apply_changes"]
 
@@ -2323,21 +2459,29 @@ class TaggerInterface:
 
     # --- Table interactions (sort, toggle, reorder) ---
 
-    def _toggle_all(self):
+    def _set_all_checked_state(self, checked):
         """Checks or unchecks 'apply_changes' for all *visible* rows not yet
         processed - rows currently hidden by a filter (e.g. "Only show
         tracks with no cover match") are left untouched, since the user
         never saw them to make that choice."""
-        self.all_checked_state = not self.all_checked_state
+        self.all_checked_state = checked
         visible_files = set(self.table.get_children())
 
         for info in self.scanned_plan:
             if not info.get("processed") and info["file"] in visible_files:
-                info["apply_changes"] = self.all_checked_state
+                info["apply_changes"] = checked
                 self._refresh_row(info)
 
-        self.table.heading("apply", text=CHECKED_BOX if self.all_checked_state else EMPTY_BOX)
+        self.table.heading("apply", text=CHECKED_BOX if checked else EMPTY_BOX)
         self._update_apply_button_label()
+
+    def _toggle_all(self):
+        """The "apply" and "format" header checkboxes are kept in sync -
+        a track that isn't going to be touched at all shouldn't still have
+        a pending conversion queued, and vice versa."""
+        new_state = not self.all_checked_state
+        self._set_all_checked_state(new_state)
+        self._set_all_convert_state(new_state)
 
     def _sort_by(self, field):
         """
@@ -2369,16 +2513,22 @@ class TaggerInterface:
         self.table.heading("title", text="Title" + title_arrow)
         self.table.heading("artist", text="Artist" + artist_arrow)
 
-    def _toggle_all_convert(self):
-        """Toggles 'convert' for all non-MP3 files not yet processed."""
-        self.all_convert_state = not self.all_convert_state
+    def _set_all_convert_state(self, checked):
+        """Sets 'convert' for all non-MP3 files not yet processed."""
+        self.all_convert_state = checked
 
         for info in self.scanned_plan:
             if not info.get("processed") and info["format"] != "MP3":
-                info["convert"] = self.all_convert_state
+                info["convert"] = checked
                 self.table.item(info["file"], values=self._build_row_values(info))
 
-        self.table.heading("format", text=CHECKED_BOX if self.all_convert_state else EMPTY_BOX)
+        self.table.heading("format", text=CHECKED_BOX if checked else EMPTY_BOX)
+
+    def _toggle_all_convert(self):
+        """See _toggle_all - the two header checkboxes stay in sync."""
+        new_state = not self.all_convert_state
+        self._set_all_convert_state(new_state)
+        self._set_all_checked_state(new_state)
 
     def _reorder_table_rows(self):
         """Reorders the table rows to match the current order of self.scanned_plan."""
@@ -2388,7 +2538,11 @@ class TaggerInterface:
             self.table.item(info["file"], tags=(tag,))
 
     def _toggle_cell(self, event):
-        """Single click on '✓' or 'Format' only: toggles the value."""
+        """Single click on '✓' or 'Format' only: toggles the value. Cover
+        zoom ("#0") is exempt from the "locked once processed" rule below -
+        it writes straight to the file on disk and isn't part of the
+        apply/checked state, so there's no reason it should stop working
+        just because the row's already been processed."""
         item_id = self.table.identify_row(event.y)
         column_id = self.table.identify_column(event.x)  # "#0", "#1", "#2"...
 
@@ -2399,12 +2553,14 @@ class TaggerInterface:
         if not info:
             return
 
+        if column_id == "#0":
+            self._show_cover_zoom(info)
+            return
+
         if info.get("processed"):
             return  # checkbox and format are locked once the file has been processed
 
-        if column_id == "#0":
-            self._show_cover_zoom(info)
-        elif column_id == f"#{COLUMNS.index('apply') + 1}":
+        if column_id == f"#{COLUMNS.index('apply') + 1}":
             info["apply_changes"] = not info["apply_changes"]
             self._refresh_row(info)  # the image also changes based on current/suggested
             self._update_apply_button_label()
@@ -2535,11 +2691,11 @@ class TaggerInterface:
         its old file/artist/title on one (selectable) line, with the applied
         (new) file/artist/title indented right below it as a child row -
         children exist to show what changed, but only the old-info parent row
-        can be selected, since Restore always acts on the OLD info."""
+        can be selected, since Restore/Delete always act on the OLD info."""
         dialog = tk.Toplevel(self.window)
         self._style_toplevel(dialog)
         dialog.title("Processing history")
-        dialog.geometry("840x440")
+        dialog.geometry("840x660")
         dialog.transient(self.window)
 
         columns = ("file", "artist", "title", "cover", "converted")
@@ -2552,12 +2708,26 @@ class TaggerInterface:
         table_frame = ttk.Frame(dialog)
         table_frame.pack(fill="both", expand=True, padx=10, pady=(10, 5))
 
-        tree = ttk.Treeview(table_frame, columns=columns, show="tree headings", height=15, selectmode="extended")
+        tree = ttk.Treeview(
+            table_frame, columns=columns, show="tree headings", height=10, selectmode="extended",
+            style="Table.Treeview",
+        )
         tree.heading("#0", text="When")
         tree.column("#0", width=140, anchor="w")
         for col in columns:
             tree.heading(col, text=headings[col])
             tree.column(col, width=widths[col], anchor="w")
+
+        if self.theme_colors:
+            tree.tag_configure(
+                "odd_row", background=self.theme_colors["tree_odd_row"], foreground=self.theme_colors["tree_fg"],
+            )
+            tree.tag_configure(
+                "even_row", background=self.theme_colors["tree_bg"], foreground=self.theme_colors["tree_fg"],
+            )
+        else:
+            tree.tag_configure("odd_row", background="#e9e9e9", foreground="black")
+            tree.tag_configure("even_row", background="white", foreground="black")
 
         scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=scrollbar.set)
@@ -2570,7 +2740,7 @@ class TaggerInterface:
         history_filter_entry.pack(fill="x", expand=True)
         self._bind_entry_context_menu(history_filter_entry)
 
-        empty_label = ttk.Label(dialog, text="No files have been processed yet.", padding=20)
+        EMPTY_ROW_ID = "__history_empty_row__"
         entries_by_parent = {}
 
         def matches_query(entry, query):
@@ -2592,35 +2762,38 @@ class TaggerInterface:
             all_entries = list(reversed(tagger.load_history_entries()))
             entries = [e for e in all_entries if matches_query(e, query)] if query else all_entries
 
-            empty_label.pack_forget()
             if not entries:
-                empty_label.configure(
-                    text="No matching entries." if query else "No files have been processed yet."
+                tree.insert(
+                    "", "end", iid=EMPTY_ROW_ID,
+                    text="No matching entries." if query else "No files have been processed yet.",
+                    values=("", "", "", "", ""),
                 )
-                empty_label.pack()
                 return
 
-            for entry in entries:
+            for index, entry in enumerate(entries):
                 timestamp = entry.get("timestamp", "")
                 try:
                     date_display = datetime.fromisoformat(timestamp).astimezone().strftime("%Y-%m-%d %H:%M")
                 except ValueError:
                     date_display = timestamp
 
+                tag = "even_row" if index % 2 == 0 else "odd_row"
                 parent_id = tree.insert(
                     "", "end", text=date_display,
                     values=(
                         entry.get("old_file", ""), entry.get("old_artist") or "-", entry.get("old_title") or "-",
                         "", "",
                     ),
+                    tags=(tag,),
                 )
                 tree.insert(
-                    parent_id, "end", text="↳ Applied",
+                    parent_id, "end", text="↳ Restored" if entry.get("restored") else "↳ Applied",
                     values=(
                         entry.get("new_file", ""), entry.get("new_artist") or "-", entry.get("new_title") or "-",
                         "Yes" if entry.get("cover_updated") else "No",
                         "Yes" if entry.get("converted") else "No",
                     ),
+                    tags=(tag,),
                 )
                 tree.item(parent_id, open=True)
                 entries_by_parent[parent_id] = entry
@@ -2636,8 +2809,8 @@ class TaggerInterface:
 
         def enforce_parent_only_selection(event=None):
             """Clicking (or ctrl/shift-clicking) a child 'Applied' row selects
-            its parent instead - Restore always acts on the OLD info, so only
-            old-info rows are meant to be selectable."""
+            its parent instead - Restore/Delete always act on the OLD info,
+            so only old-info rows are meant to be selectable."""
             current = tree.selection()
             corrected, seen = [], set()
             for item_id in current:
@@ -2673,13 +2846,40 @@ class TaggerInterface:
             if not messagebox.askyesno("Restore previous version(s)", prompt, parent=dialog):
                 return
 
-            successes, failures = 0, []
+            successes, failures, restored_entries = 0, [], []
             for entry in entries:
+                display_name = entry.get("new_file") or entry.get("old_file") or "the file"
                 try:
                     tagger.restore_history_entry(entry, log=self._append_to_journal)
                     successes += 1
+                    restored_entries.append(entry)
+                except FileNotFoundError:
+                    # restore_history_entry already tried a bounded search
+                    # of the original folder tree - ask the user to locate
+                    # it manually rather than just failing outright.
+                    if messagebox.askyesno(
+                        "File not found",
+                        f"'{display_name}' wasn't found where it was originally processed - "
+                        "it may have moved or been renamed.\n\nLocate it manually?",
+                        parent=dialog,
+                    ):
+                        chosen = filedialog.askopenfilename(title=f"Locate '{display_name}'", parent=dialog)
+                        if chosen:
+                            try:
+                                tagger.restore_history_entry(entry, log=self._append_to_journal, override_path=chosen)
+                                successes += 1
+                                restored_entries.append(entry)
+                                continue
+                            except Exception as error:
+                                failures.append((display_name, str(error)))
+                                continue
+                    failures.append((display_name, "File not found"))
                 except Exception as error:
-                    failures.append((entry.get("new_file", "?"), str(error)))
+                    failures.append((display_name, str(error)))
+
+            if restored_entries:
+                tagger.mark_history_entries_restored(restored_entries)
+                populate()
 
             if failures:
                 detail = "\n".join(f"- {name}: {error}" for name, error in failures[:5])
@@ -2696,27 +2896,45 @@ class TaggerInterface:
                     parent=dialog,
                 )
 
-        def reset_history():
-            if not tagger.load_history_entries():
-                messagebox.showinfo("Nothing to reset", "The processing history is already empty.", parent=dialog)
+        def delete_selected():
+            selection = tree.selection()  # already parent-only, enforced above
+            entries = [entries_by_parent[item_id] for item_id in selection if item_id in entries_by_parent]
+            if not entries:
+                messagebox.showinfo("Delete", "Select one or more entries first.", parent=dialog)
                 return
+
+            unit = "entry" if len(entries) == 1 else "entries"
             if not messagebox.askyesno(
-                "Reset history",
-                "Permanently delete the entire processing history?\n\n"
-                "This only removes the log - it doesn't touch any audio file. "
+                f"Delete {len(entries)} {unit}?",
+                f"Delete {len(entries)} {unit} from the processing history?\n\n"
+                "This only removes the log entry - it doesn't touch the audio file itself. "
                 "This cannot be undone.",
                 parent=dialog,
             ):
                 return
-            tagger.clear_history_entries()
+
+            tagger.delete_history_entries(entries)
             populate()
+
+        def show_context_menu(event):
+            row_id = tree.identify_row(event.y)
+            if not row_id:
+                return
+            target = row_id if row_id in entries_by_parent else tree.parent(row_id)
+            if target and target not in tree.selection():
+                tree.selection_set(target)
+
+            menu = self._make_themed_menu(dialog)
+            menu.add_command(label="Delete", command=delete_selected)
+            menu.tk_popup(event.x_root, event.y_root)
+
+        tree.bind("<Button-3>", show_context_menu)
 
         populate()
 
         button_frame = ttk.Frame(dialog)
         button_frame.pack(fill="x", padx=10, pady=(0, 10))
         ttk.Button(button_frame, text="Restore selected", command=restore_selected).pack(side="left")
-        ttk.Button(button_frame, text="Reset", command=reset_history).pack(side="left", padx=(5, 0))
 
         self._center_dialog(dialog)
 
@@ -2910,7 +3128,7 @@ class TaggerInterface:
             self._append_to_journal(f"Can't play, file not found: '{full_path}'")
             return
         try:
-            os.startfile(full_path)
+            open_with_default_app(full_path)
         except Exception as error:
             self._append_to_journal(f"Error opening file: {error}")
 
@@ -2924,7 +3142,9 @@ class TaggerInterface:
         return "break"
 
     def _delete_selected_rows(self, event=None):
-        """Removes the selected row(s) from the list only - never touches the actual file on disk."""
+        """Removes the selected row(s) from the list only - never touches
+        the actual file on disk. Ctrl+Z (_undo_last_removal) brings them
+        back at their original position."""
         selected_items = self.table.selection()
         if not selected_items:
             return
@@ -2937,10 +3157,41 @@ class TaggerInterface:
             self._thumbnail_pil_images.pop(item_id, None)
 
         selected_set = set(selected_items)
+        removed = [
+            (index, info) for index, info in enumerate(self.scanned_plan) if info["file"] in selected_set
+        ]
+        self._removal_undo_stack.append(removed)
         self.scanned_plan = [info for info in self.scanned_plan if info["file"] not in selected_set]
 
         self._restripe_rows()
         self._update_apply_button_label()
+
+    def _undo_last_removal(self, event=None):
+        """Ctrl+Z: brings back the most recently removed row(s) (via Delete
+        or "Remove from list"), each at its original position in the list."""
+        if not self._removal_undo_stack:
+            return
+        removed = self._removal_undo_stack.pop()
+
+        for index, info in sorted(removed, key=lambda pair: pair[0]):
+            self.scanned_plan.insert(min(index, len(self.scanned_plan)), info)
+            image_tk = self._create_thumbnail(info)
+            self.tk_images[info["file"]] = image_tk
+            self.table.insert(
+                "", "end", iid=info["file"],
+                image=image_tk if image_tk else "",
+                values=self._build_row_values(info),
+            )
+
+        visible_files = set(self.table.get_children())
+        for info in self.scanned_plan:
+            if info["file"] in visible_files:
+                self.table.move(info["file"], "", "end")
+
+        self._restripe_rows()
+        self._update_apply_button_label()
+        unit = "row" if len(removed) == 1 else "rows"
+        self._append_to_journal(f"Restored {len(removed)} removed {unit}.")
 
     def _move_row(self, info, direction):
         """Moves a row up (direction=-1) or down (direction=+1) in scanned_plan,
@@ -2965,6 +3216,51 @@ class TaggerInterface:
 
         self._restripe_rows()
 
+    def _on_row_drag_start(self, event):
+        """Button-1 press: remembers which row a drag (if any) would start
+        from. A plain click that never moves to a different row just
+        behaves as before (_toggle_cell etc.) - this only ever does
+        something once _on_row_drag_motion sees real movement."""
+        row_id = self.table.identify_row(event.y)
+        info = next((i for i in self.scanned_plan if i["file"] == row_id), None) if row_id else None
+        self._drag_row_id = row_id if info else None
+        self._drag_moved = False
+
+    def _on_row_drag_motion(self, event):
+        """Dragging a row onto another one reorders it there immediately -
+        scanned_plan is the source of truth for order, so it's updated
+        first and the table's visible rows are just re-synced to match
+        (same approach as _move_row), skipping detached/filtered-out rows."""
+        drag_row_id = getattr(self, "_drag_row_id", None)
+        if not drag_row_id or not self.table.exists(drag_row_id):
+            return
+
+        target_row_id = self.table.identify_row(event.y)
+        if not target_row_id or target_row_id == drag_row_id:
+            return
+        if target_row_id in (NO_COVER_SUMMARY_ROW_ID, SEARCH_RESULT_SUMMARY_ROW_ID):
+            return
+
+        drag_info = next((i for i in self.scanned_plan if i["file"] == drag_row_id), None)
+        target_info = next((i for i in self.scanned_plan if i["file"] == target_row_id), None)
+        if not drag_info or not target_info:
+            return
+
+        self.scanned_plan.remove(drag_info)
+        self.scanned_plan.insert(self.scanned_plan.index(target_info), drag_info)
+        self._drag_moved = True
+
+        visible_files = set(self.table.get_children())
+        for info in self.scanned_plan:
+            if info["file"] in visible_files:
+                self.table.move(info["file"], "", "end")
+
+        self._restripe_rows()
+
+    def _on_row_drag_release(self, event):
+        self._drag_row_id = None
+        self._drag_moved = False
+
     def _show_context_menu(self, event):
         """Right-click on a row: shows a small context menu (e.g. open file location)."""
         item_id = self.table.identify_row(event.y)
@@ -2984,12 +3280,7 @@ class TaggerInterface:
         selected_ids = self.table.selection()
         selected_infos = [i for i in self.scanned_plan if i["file"] in selected_ids] or [info]
 
-        menu = tk.Menu(self.window, tearoff=0)
-        if self.theme_colors:
-            menu.configure(
-                bg=self.theme_colors["menu_bg"], fg=self.theme_colors["menu_fg"],
-                activebackground=self.theme_colors["select_bg"], activeforeground=self.theme_colors["select_fg"],
-            )
+        menu = self._make_themed_menu(self.window)
         rescan_label = "Rescan this file" if len(selected_infos) <= 1 else f"Rescan selected ({len(selected_infos)})"
         menu.add_command(label="Info", command=lambda: self._show_track_info(info))
         menu.add_command(label=rescan_label, command=lambda: self._show_fix_no_cover_dialog(selected_infos))
@@ -3017,7 +3308,7 @@ class TaggerInterface:
             return
 
         try:
-            subprocess.run(["explorer", f"/select,{full_path}"])
+            reveal_in_file_manager(full_path)
         except Exception as error:
             self._append_to_journal(f"Error opening file location: {error}")
 
@@ -3211,12 +3502,13 @@ class TaggerInterface:
                             parent=self.window,
                         )
                         try:
-                            os.startfile(folder)
+                            open_with_default_app(folder)
                         except Exception:
                             pass
 
                 elif message_type == "internet_status":
                     is_online, is_startup_check = content
+                    self._is_online = is_online
                     if is_online:
                         self.internet_status_label.configure(text="● Online", foreground="#2ecc71")
                     else:
@@ -3229,6 +3521,7 @@ class TaggerInterface:
                                 "connection is restored.",
                                 parent=self.window,
                             )
+                    self._refresh_tagger_buttons_for_connectivity()
 
                 elif message_type == "fix_row_search_result":
                     self._apply_fix_row_search_result(content)
@@ -3308,7 +3601,17 @@ class TaggerInterface:
             messagebox.showwarning("No scan", "Please scan the files first before processing them.", parent=self.window)
             return
 
-        to_process = [i for i in self.scanned_plan if not i.get("processed")]
+        # Only rows with something actually pending (checked for apply, or
+        # marked to convert) - a fully-untouched row (unchecked, no
+        # conversion queued) must stay untouched and selectable for a LATER
+        # Apply run. process_files() marks every row it's given as
+        # "processed" (locked) unconditionally, whether or not its tags
+        # actually changed, so previously every unchecked row got swept up
+        # and permanently locked out just because Apply ran at all.
+        to_process = [
+            i for i in self.scanned_plan
+            if not i.get("processed") and (i.get("apply_changes") or i.get("convert"))
+        ]
         fixes = [i for i in self.scanned_plan if i.get("processed") and i.get("fix_pending")]
 
         if not to_process and not fixes:

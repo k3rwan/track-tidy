@@ -2,3 +2,5 @@ mutagen==1.48.1
 requests==2.34.2
 pillow==12.3.0
 tkinterdnd2==0.6.2
+keyring==25.7.0
+platformdirs==4.11.2

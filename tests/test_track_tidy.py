@@ -13,6 +13,8 @@ import time
 import threading
 import unittest
 import tempfile
+import keyring
+import keyring.backend
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import track_tidy as tagger
@@ -689,18 +691,23 @@ class HistoryLogTests(unittest.TestCase):
         entries = tagger.load_history_entries()
         self.assertEqual([e["old_file"] for e in entries], ["Good.wav", "AlsoGood.wav"])
 
-    def test_clear_history_entries_removes_the_file(self):
+    def test_delete_history_entries_removes_only_matching_timestamps(self):
         tagger.log_history_entry(
             old_file="A.wav", new_file="A.mp3", old_artist="A", old_title="A",
             new_artist="A", new_title="A", cover_updated=False, converted=True,
         )
-        self.assertTrue(os.path.exists(tagger.HISTORY_FILE))
-        tagger.clear_history_entries()
-        self.assertFalse(os.path.exists(tagger.HISTORY_FILE))
-        self.assertEqual(tagger.load_history_entries(), [])
+        tagger.log_history_entry(
+            old_file="B.wav", new_file="B.mp3", old_artist="B", old_title="B",
+            new_artist="B", new_title="B", cover_updated=True, converted=False,
+        )
+        entries = tagger.load_history_entries()
+        tagger.delete_history_entries([entries[0]])
 
-    def test_clear_history_entries_missing_file_does_not_raise(self):
-        tagger.clear_history_entries()  # no file exists yet - must not raise
+        remaining = tagger.load_history_entries()
+        self.assertEqual([e["old_file"] for e in remaining], ["B.wav"])
+
+    def test_delete_history_entries_missing_file_does_not_raise(self):
+        tagger.delete_history_entries([{"timestamp": "2024-01-01T00:00:00"}])  # no file yet
 
 
 class RestoreHistoryEntryTests(unittest.TestCase):
@@ -727,9 +734,9 @@ class RestoreHistoryEntryTests(unittest.TestCase):
             "old_artist": "Old Artist", "old_title": "Old Title",
             "old_cover_b64": None,
         }
-        new_relative = tagger.restore_history_entry(entry, log=lambda *_: None)
-        restored_path = os.path.join(self._tmp_dir.name, new_relative)
+        restored_path = tagger.restore_history_entry(entry, log=lambda *_: None)
 
+        self.assertTrue(os.path.isabs(restored_path))
         self.assertTrue(os.path.exists(restored_path))
         _, artist, title, cover = tagger.read_current_info(restored_path)
         self.assertEqual(artist, "Old Artist")
@@ -748,6 +755,36 @@ class RestoreHistoryEntryTests(unittest.TestCase):
         entry = {"folder": None, "new_file": "x.mp3", "old_artist": "X", "old_title": "Y"}
         with self.assertRaises(ValueError):
             tagger.restore_history_entry(entry, log=lambda *_: None)
+
+    def test_auto_locates_file_moved_to_a_subfolder(self):
+        subfolder = os.path.join(self._tmp_dir.name, "moved here")
+        os.makedirs(subfolder)
+        moved_path = os.path.join(subfolder, "Current Artist - Current Title.wav")
+        shutil.move(self.file_path, moved_path)
+
+        entry = {
+            "folder": self._tmp_dir.name,
+            "new_file": "Current Artist - Current Title.wav",
+            "old_artist": "Old Artist", "old_title": "Old Title", "old_cover_b64": None,
+        }
+        restored_path = tagger.restore_history_entry(entry, log=lambda *_: None)
+        self.assertTrue(os.path.exists(restored_path))
+        self.assertEqual(os.path.dirname(restored_path), subfolder)
+
+    def test_override_path_restores_at_a_completely_different_location(self):
+        elsewhere = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, elsewhere, ignore_errors=True)
+        moved_path = os.path.join(elsewhere, "Current Artist - Current Title.wav")
+        shutil.move(self.file_path, moved_path)
+
+        entry = {
+            "folder": self._tmp_dir.name,  # the ORIGINAL folder - deliberately stale
+            "new_file": "Current Artist - Current Title.wav",
+            "old_artist": "Old Artist", "old_title": "Old Title", "old_cover_b64": None,
+        }
+        restored_path = tagger.restore_history_entry(entry, log=lambda *_: None, override_path=moved_path)
+        self.assertTrue(os.path.exists(restored_path))
+        self.assertEqual(os.path.dirname(restored_path), elsewhere)
 
 
 class SettingsPersistenceTests(unittest.TestCase):
@@ -773,31 +810,55 @@ class SettingsPersistenceTests(unittest.TestCase):
         self.assertEqual(tagger.load_settings(), {"theme": "dark", "other_key": "value"})
 
 
+class _FakeKeyringBackend(keyring.backend.KeyringBackend):
+    """In-memory stand-in for the real OS credential store (Windows
+    Credential Manager / macOS Keychain / ...), so tests never touch
+    Kevin's actual saved credentials."""
+    priority = 1
+
+    def __init__(self):
+        self._store = {}
+
+    def set_password(self, service, username, password):
+        self._store[(service, username)] = password
+
+    def get_password(self, service, username):
+        return self._store.get((service, username))
+
+    def delete_password(self, service, username):
+        self._store.pop((service, username), None)
+
+
 class CredentialEncryptionTests(unittest.TestCase):
     def setUp(self):
+        self._original_keyring = keyring.get_keyring()
+        keyring.set_keyring(_FakeKeyringBackend())
         self._tmp_dir = tempfile.TemporaryDirectory()
-        self._path = os.path.join(self._tmp_dir.name, "clientSecret.txt")
+        self._key = "test_credential_key"
+        self._legacy_path = os.path.join(self._tmp_dir.name, "legacy.txt")
+        self._original_legacy_files = tagger._LEGACY_CREDENTIAL_FILES
+        tagger._LEGACY_CREDENTIAL_FILES = {self._key: self._legacy_path}
 
     def tearDown(self):
+        keyring.set_keyring(self._original_keyring)
+        tagger._LEGACY_CREDENTIAL_FILES = self._original_legacy_files
         self._tmp_dir.cleanup()
 
     def test_write_then_read_roundtrip(self):
-        tagger.write_credential(self._path, "super-secret-value")
-        self.assertEqual(tagger.read_credential(self._path), "super-secret-value")
+        tagger.write_credential(self._key, "super-secret-value")
+        self.assertEqual(tagger.read_credential(self._key), "super-secret-value")
 
-    def test_saved_file_is_not_plaintext_on_disk(self):
-        tagger.write_credential(self._path, "super-secret-value")
-        with open(self._path, "rb") as f:
-            raw = f.read()
-        self.assertNotIn(b"super-secret-value", raw)
+    def test_read_credential_missing_returns_none(self):
+        self.assertIsNone(tagger.read_credential(self._key))
 
-    def test_read_credential_falls_back_to_plaintext_for_pre_encryption_files(self):
-        with open(self._path, "w", encoding="utf-8") as f:
+    def test_read_credential_migrates_legacy_plaintext_file(self):
+        with open(self._legacy_path, "w", encoding="utf-8") as f:
             f.write("old-plaintext-secret")
-        self.assertEqual(tagger.read_credential(self._path), "old-plaintext-secret")
 
-    def test_read_credential_missing_file_returns_none(self):
-        self.assertIsNone(tagger.read_credential(self._path))
+        self.assertEqual(tagger.read_credential(self._key), "old-plaintext-secret")
+        self.assertFalse(os.path.exists(self._legacy_path), "legacy file should be removed after migrating")
+        # Now saved for real - reading again works with no legacy file left.
+        self.assertEqual(tagger.read_credential(self._key), "old-plaintext-secret")
 
 
 class NewInstallNotificationTests(unittest.TestCase):
