@@ -154,6 +154,10 @@ def setup_placeholder(entry, placeholder, on_change=None):
 class TaggerInterface:
     def __init__(self, window):
         self.window = window
+        # Hidden until the theme warm-up finishes (see the call site further
+        # down) - otherwise the light/dark flicker during warm-up would be
+        # visible for a moment on every launch.
+        self.window.withdraw()
         self.base_title = "Track Tidy"
         self.window.title(self.base_title)
         icon_path = resource_path("track-tidy_icon.ico")
@@ -204,11 +208,31 @@ class TaggerInterface:
         self._setup_drag_and_drop()
         self._adjust_window_height()
         self._apply_theme(self.theme_var.get())
+        # Warm-up pass: the very first paint (before the window is ever
+        # actually mapped) computes native-theme widget metrics a few
+        # pixels too small - re-applying the theme once the window is
+        # really up fixes it, but doing this synchronously here is too
+        # early (mainloop() hasn't started yet), so it's deferred.
+        self.window.after(100, self._rewarm_theme)
         self._start_message_loop()
         self._check_cover_source_credentials_on_startup()
         self._check_for_update_on_startup()
 
     # --- Theme & dialog helpers ---
+
+    def _rewarm_theme(self, step=0):
+        """See the comment at the __init__ call site: fixes the native
+        theme's widget metrics being subtly wrong on the very first paint.
+        Each step is a separate event-loop turn (via after()) rather than
+        back-to-back calls - ttk/Windows only recomputes native-theme
+        metrics correctly with a real idle turn between theme switches."""
+        steps = ("light", "dark", self.theme_var.get())
+        self._apply_theme(steps[step])
+        if step + 1 < len(steps):
+            self.window.after(50, lambda: self._rewarm_theme(step + 1))
+        else:
+            self._adjust_window_height()
+            self.window.deiconify()
 
     def _on_theme_changed(self):
         choice = self.theme_var.get()
