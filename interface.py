@@ -2551,24 +2551,23 @@ class TaggerInterface:
 
     def _show_history_window(self):
         """Settings -> 'View processing history': every file ever actually
-        processed (tagger.HISTORY_FILE), most recent first. One flat row
-        per entry, with a "Before"/"After" column pair showing what
-        changed - previously this was an expand/collapse parent+child pair,
-        which needed clicking to see the change and, as a side effect, hit
-        a clam limitation where the expand-arrow indicator has no
-        configurable color at all (wrong in dark mode no matter what)."""
+        processed (tagger.HISTORY_FILE), most recent first. Each entry shows
+        its old file/artist/title on one (selectable) line, with the applied
+        (new) file/artist/title indented right below it as a child row -
+        children exist to show what changed, but only the old-info parent row
+        can be selected, since Restore/Delete always act on the OLD info."""
         dialog = tk.Toplevel(self.window)
         self._style_toplevel(dialog)
         dialog.title("Processing history")
-        dialog.geometry("900x440")
+        dialog.geometry("840x440")
         dialog.transient(self.window)
 
-        columns = ("file", "before", "after", "cover", "converted")
+        columns = ("file", "artist", "title", "cover", "converted")
         headings = {
-            "file": "File", "before": "Before", "after": "After",
-            "cover": "Cover updated", "converted": "Converted",
+            "file": "File", "artist": "Artist", "title": "Title",
+            "cover": "Cover", "converted": "Converted",
         }
-        widths = {"file": 220, "before": 200, "after": 200, "cover": 90, "converted": 80}
+        widths = {"file": 200, "artist": 140, "title": 160, "cover": 55, "converted": 70}
 
         table_frame = ttk.Frame(dialog)
         table_frame.pack(fill="both", expand=True, padx=10, pady=(10, 5))
@@ -2595,7 +2594,7 @@ class TaggerInterface:
         self._bind_entry_context_menu(history_filter_entry)
 
         empty_label = ttk.Label(dialog, text="No files have been processed yet.", padding=20)
-        entries_by_row = {}
+        entries_by_parent = {}
 
         def matches_query(entry, query):
             haystack = " ".join(str(entry.get(key) or "") for key in (
@@ -2606,7 +2605,7 @@ class TaggerInterface:
         def populate():
             for row in tree.get_children():
                 tree.delete(row)
-            entries_by_row.clear()
+            entries_by_parent.clear()
 
             if getattr(history_filter_entry, "placeholder_active", False):
                 query = ""
@@ -2631,22 +2630,23 @@ class TaggerInterface:
                 except ValueError:
                     date_display = timestamp
 
-                before = tagger.build_display_name(
-                    entry.get("old_artist") or "", entry.get("old_title") or ""
-                ) or "-"
-                after = tagger.build_display_name(
-                    entry.get("new_artist") or "", entry.get("new_title") or ""
-                ) or "-"
-
-                row_id = tree.insert(
+                parent_id = tree.insert(
                     "", "end", text=date_display,
                     values=(
-                        entry.get("new_file") or entry.get("old_file", ""), before, after,
+                        entry.get("old_file", ""), entry.get("old_artist") or "-", entry.get("old_title") or "-",
+                        "", "",
+                    ),
+                )
+                tree.insert(
+                    parent_id, "end", text="↳ Applied",
+                    values=(
+                        entry.get("new_file", ""), entry.get("new_artist") or "-", entry.get("new_title") or "-",
                         "Yes" if entry.get("cover_updated") else "No",
                         "Yes" if entry.get("converted") else "No",
                     ),
                 )
-                entries_by_row[row_id] = entry
+                tree.item(parent_id, open=True)
+                entries_by_parent[parent_id] = entry
 
         def schedule_history_filter(event=None):
             """Debounces the search filter the same way the main table's does."""
@@ -2657,15 +2657,30 @@ class TaggerInterface:
         history_filter_entry.bind("<KeyRelease>", schedule_history_filter)
         setup_placeholder(history_filter_entry, "Search history...", on_change=populate)
 
+        def enforce_parent_only_selection(event=None):
+            """Clicking (or ctrl/shift-clicking) a child 'Applied' row selects
+            its parent instead - Restore/Delete always act on the OLD info,
+            so only old-info rows are meant to be selectable."""
+            current = tree.selection()
+            corrected, seen = [], set()
+            for item_id in current:
+                target = item_id if item_id in entries_by_parent else tree.parent(item_id)
+                if target and target not in seen:
+                    seen.add(target)
+                    corrected.append(target)
+            if tuple(corrected) != current:
+                tree.selection_set(corrected)
+
         def select_all(event=None):
-            tree.selection_set(list(entries_by_row.keys()))
+            tree.selection_set(list(entries_by_parent.keys()))
             return "break"
 
+        tree.bind("<<TreeviewSelect>>", enforce_parent_only_selection)
         tree.bind("<Control-a>", select_all)
 
         def restore_selected():
-            selection = tree.selection()
-            entries = [entries_by_row[item_id] for item_id in selection if item_id in entries_by_row]
+            selection = tree.selection()  # already parent-only, enforced above
+            entries = [entries_by_parent[item_id] for item_id in selection if item_id in entries_by_parent]
             if not entries:
                 messagebox.showinfo("Restore", "Select one or more entries first.", parent=dialog)
                 return
@@ -2703,6 +2718,45 @@ class TaggerInterface:
                     f"{successes} file(s) restored." if successes > 1 else "The file's previous tags and cover have been restored.",
                     parent=dialog,
                 )
+
+        def delete_selected():
+            selection = tree.selection()  # already parent-only, enforced above
+            entries = [entries_by_parent[item_id] for item_id in selection if item_id in entries_by_parent]
+            if not entries:
+                messagebox.showinfo("Delete", "Select one or more entries first.", parent=dialog)
+                return
+
+            unit = "entry" if len(entries) == 1 else "entries"
+            if not messagebox.askyesno(
+                f"Delete {len(entries)} {unit}?",
+                f"Delete {len(entries)} {unit} from the processing history?\n\n"
+                "This only removes the log entry - it doesn't touch the audio file itself. "
+                "This cannot be undone.",
+                parent=dialog,
+            ):
+                return
+
+            tagger.delete_history_entries(entries)
+            populate()
+
+        def show_context_menu(event):
+            row_id = tree.identify_row(event.y)
+            if not row_id:
+                return
+            target = row_id if row_id in entries_by_parent else tree.parent(row_id)
+            if target and target not in tree.selection():
+                tree.selection_set(target)
+
+            menu = tk.Menu(dialog, tearoff=0)
+            if self.theme_colors:
+                menu.configure(
+                    bg=self.theme_colors["menu_bg"], fg=self.theme_colors["menu_fg"],
+                    activebackground=self.theme_colors["select_bg"], activeforeground=self.theme_colors["select_fg"],
+                )
+            menu.add_command(label="Delete", command=delete_selected)
+            menu.tk_popup(event.x_root, event.y_root)
+
+        tree.bind("<Button-3>", show_context_menu)
 
         def reset_history():
             if not tagger.load_history_entries():

@@ -702,6 +702,24 @@ class HistoryLogTests(unittest.TestCase):
     def test_clear_history_entries_missing_file_does_not_raise(self):
         tagger.clear_history_entries()  # no file exists yet - must not raise
 
+    def test_delete_history_entries_removes_only_matching_timestamps(self):
+        tagger.log_history_entry(
+            old_file="A.wav", new_file="A.mp3", old_artist="A", old_title="A",
+            new_artist="A", new_title="A", cover_updated=False, converted=True,
+        )
+        tagger.log_history_entry(
+            old_file="B.wav", new_file="B.mp3", old_artist="B", old_title="B",
+            new_artist="B", new_title="B", cover_updated=True, converted=False,
+        )
+        entries = tagger.load_history_entries()
+        tagger.delete_history_entries([entries[0]])
+
+        remaining = tagger.load_history_entries()
+        self.assertEqual([e["old_file"] for e in remaining], ["B.wav"])
+
+    def test_delete_history_entries_missing_file_does_not_raise(self):
+        tagger.delete_history_entries([{"timestamp": "2024-01-01T00:00:00"}])  # no file yet
+
 
 class RestoreHistoryEntryTests(unittest.TestCase):
     """Uses a real temp copy of fart.wav - restore_history_entry does real
