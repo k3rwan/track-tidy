@@ -38,7 +38,22 @@ Still flag before doing, even for the PR workflow:
 
 ## Workflow pattern established in this project
 
-- One small, focused PR per change (branch -> commit -> push -> PR -> merge).
+**Batched PR/merge (as of 2026-08-12):** to economize Claude Code usage,
+day-to-day changes no longer get their own branch+PR+merge cycle each.
+Instead:
+- All work happens directly on one long-lived local branch called `wip`
+  (created off `main`). Each change is just a commit on `wip`, pushed to
+  origin - no PR opened, no merge, no switching back to `main` in between.
+- Skip the elaborate per-change verification ceremony (custom Tk smoke-test
+  scripts, exhaustive test-plan writeups) for small/cosmetic changes - run
+  the existing test suite and reason through correctness instead. Reserve
+  real functional verification for changes touching actual logic
+  (security, parsing, network, data integrity).
+- When Kevin says "release": open ONE PR from `wip` covering everything
+  accumulated since the last release, merge it into `main`, delete `wip`,
+  create a fresh `wip` off the new `main` for the next batch - THEN run
+  the normal release pipeline (version bump, CHANGELOG, build, tag,
+  `gh release create`) from `main`, per the existing approval rule below.
 - Test before committing: `python -m unittest discover -s tests` (run from
   the project root with the venv's Python).
 - For GUI changes, actually launch the app and screenshot it rather than
