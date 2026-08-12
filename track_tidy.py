@@ -12,7 +12,8 @@ Contents (in the order they appear below):
                                             user_config_dir); SoundCloud and
                                             Spotify credentials;
                                             USE_ITUNES/USE_SPOTIFY/
-                                            USE_SOUNDCLOUD; APP_VERSION,
+                                            USE_SOUNDCLOUD; the internet
+                                            connectivity check; APP_VERSION,
                                             the update check, and
                                             downloading the installer;
                                             track reporting (Discord
@@ -40,6 +41,7 @@ Contents (in the order they appear below):
 """
 
 import os
+import socket
 import struct
 import shutil
 import re
@@ -154,6 +156,23 @@ _id_txt_client_id, _id_txt_client_secret = load_id_txt_credentials()
 if _id_txt_client_id and _id_txt_client_secret:
     SOUNDCLOUD_CLIENT_ID = _id_txt_client_id
     SOUNDCLOUD_CLIENT_SECRET = _id_txt_client_secret
+
+
+# --- Internet connectivity check ---
+
+def check_internet_connection(timeout=2.5):
+    """
+    Quick, dependency-free connectivity check - opens a raw TCP connection
+    to a well-known, always-up host (Google's public DNS) rather than doing
+    a full HTTP request, so it stays fast and doesn't depend on any of the
+    services this app actually talks to (iTunes/Spotify/SoundCloud/GitHub)
+    being reachable specifically.
+    """
+    try:
+        socket.create_connection(("8.8.8.8", 53), timeout=timeout).close()
+        return True
+    except OSError:
+        return False
 
 
 # --- App version & update check ---
