@@ -1953,14 +1953,12 @@ class TaggerInterface:
 
         return itunes_count, spotify_count, soundcloud_count, kept_existing_count, no_cover_count
 
-    def _show_scan_summary_dialog(self, on_close=None):
+    def _show_scan_summary_dialog(self, no_cover_infos=None):
         """Cover-source breakdown shown right after a scan finds new files -
         this is the earliest point every track's cover_source is known.
-        on_close (if given) fires once this dialog is dismissed - grab_set()
-        alone doesn't block the caller, so anything meant to come AFTER this
-        dialog (e.g. the "fix no-cover tracks?" prompt) must be chained
-        through here rather than just called right after, or both would
-        appear at once instead of one after the other."""
+        A single dialog: "OK" alone, or "OK" plus a second button straight
+        into fixing Artist/Title for no-cover tracks when there are any -
+        not a separate yes/no confirmation chained after this one."""
         itunes_count, spotify_count, soundcloud_count, kept_existing_count, no_cover_count = (
             self._compute_cover_summary()
         )
@@ -1988,12 +1986,24 @@ class TaggerInterface:
         )
         ttk.Label(dialog, text=summary_text, justify="left", foreground="#555555").pack(padx=20, pady=(0, 15))
 
+        button_row = ttk.Frame(dialog)
+        button_row.pack(pady=(0, 15))
+
         def close():
             dialog.destroy()
-            if on_close:
-                on_close()
 
-        ttk.Button(dialog, text="OK", command=close).pack(pady=(0, 15))
+        ttk.Button(button_row, text="OK", command=close).pack(side="left", padx=(0, 5) if no_cover_infos else 0)
+
+        if no_cover_infos:
+            count = len(no_cover_infos)
+            unit = "track" if count == 1 else "tracks"
+
+            def fix_no_cover():
+                dialog.destroy()
+                self._show_fix_no_cover_dialog(no_cover_infos)
+
+            ttk.Button(button_row, text=f"Fix {count} no-cover {unit}...", command=fix_no_cover).pack(side="left")
+
         dialog.protocol("WM_DELETE_WINDOW", close)
 
         self._center_dialog(dialog)
@@ -2066,10 +2076,7 @@ class TaggerInterface:
                 self._append_to_journal(f"{len(no_cover_infos)} track(s) currently have no cover match.")
 
             if number_new > 0:
-                on_summary_closed = (
-                    (lambda: self._offer_fix_no_cover_tracks(no_cover_infos)) if no_cover_infos else None
-                )
-                self._show_scan_summary_dialog(on_close=on_summary_closed)
+                self._show_scan_summary_dialog(no_cover_infos=no_cover_infos)
 
         self._check_for_duplicates()
 
@@ -2105,18 +2112,6 @@ class TaggerInterface:
             self.scanned_plan = [info for info in self.scanned_plan if info["file"] != dot_file]
 
     # --- Fix Artist/Title and search again (tracks with no cover match) ---
-
-    def _offer_fix_no_cover_tracks(self, no_cover_infos):
-        count = len(no_cover_infos)
-        unit = "track" if count == 1 else "tracks"
-        confirmed = messagebox.askyesno(
-            "No cover found",
-            f"{count} {unit} had no cover match.\n\n"
-            "Would you like to review and correct their Artist/Title now, then search again?",
-            parent=self.window,
-        )
-        if confirmed:
-            self._show_fix_no_cover_dialog(no_cover_infos)
 
     def _show_fix_no_cover_dialog(self, infos):
         """Lets the user correct Artist/Title for each track and retry the
