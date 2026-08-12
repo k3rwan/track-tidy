@@ -26,7 +26,7 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox
 from tkinter import font as tkfont
-from PIL import Image, ImageTk, ImageDraw
+from PIL import Image, ImageTk, ImageDraw, ImageFont
 
 # When launched via pythonw.exe (no console), sys.stdout/stderr are None.
 # Any leftover print() call would then crash with AttributeError. Redirect
@@ -411,6 +411,48 @@ class TaggerInterface:
 
         entry.bind("<Button-3>", show_menu)
 
+    def _build_checkbox_indicator_photo(self, box_bg, box_border, checked, size=16):
+        """
+        Draws one checkbox indicator state (empty box, or filled box with a
+        comma-shaped mark) as a small raster image - clam's own indicator
+        element can't draw a comma, only its own hardcoded tick, so the
+        indicator is fully custom-drawn here instead.
+        """
+        image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        fill = INDICATOR_CHECKED_BG if checked else box_bg
+        draw.rectangle([0, 0, size - 1, size - 1], fill=fill, outline=box_border, width=1)
+        if checked:
+            try:
+                font = ImageFont.truetype("segoeuib.ttf", int(size * 1.6))
+            except OSError:
+                font = ImageFont.load_default()
+            draw.text((size / 2, size / 2 - size * 0.12), ",", font=font, fill="#ffffff", anchor="mm")
+        return ImageTk.PhotoImage(image)
+
+    def _ensure_checkbox_indicator_images(self, style, dark):
+        """
+        Registers the "Light.Checkbutton.indicator" / "Dark.Checkbutton.indicator"
+        image elements the first time either theme is applied - element_create
+        can't be re-called for a name that already exists, so this only ever
+        builds each theme's pair of images once, then _apply_theme just picks
+        which name the TCheckbutton layout points at.
+        """
+        if not hasattr(self, "_checkbox_indicator_photos"):
+            self._checkbox_indicator_photos = {}
+        theme_key = "dark" if dark else "light"
+        element_name = f"{'Dark' if dark else 'Light'}.Checkbutton.indicator"
+        if element_name in style.element_names():
+            return
+        box_bg, box_border = (
+            (DARK_COLORS["entry_bg"], DARK_COLORS["border"]) if dark
+            else (LIGHT_INDICATOR_COLORS["indicator_bg"], LIGHT_INDICATOR_COLORS["indicator_border"])
+        )
+        unchecked_photo = self._build_checkbox_indicator_photo(box_bg, box_border, checked=False)
+        checked_photo = self._build_checkbox_indicator_photo(box_bg, box_border, checked=True)
+        self._checkbox_indicator_photos[theme_key] = (unchecked_photo, checked_photo)
+        style.element_create(element_name, "image", unchecked_photo, ("selected", checked_photo))
+
     def _apply_theme(self, choice):
         dark = choice == "dark"
         colors = DARK_COLORS if dark else None
@@ -425,22 +467,25 @@ class TaggerInterface:
             font=(self._table_font.actual("family"), self._table_font.actual("size")),
         )
 
-        # Same reasoning as Table.Treeview above, but for Checkbutton/
-        # Radiobutton: pull clam's own indicator element into whichever
-        # theme is active (native "vista" included) so light and dark
-        # render the identical indicator shape, just recolored. Guarded by
-        # element_names() - re-creating an element that already exists in
-        # the current theme raises a TclError, but once created it's
-        # visible from every theme, so this only actually runs once.
-        for element_name, source_element in (
-            ("Uniform.Checkbutton.indicator", "Checkbutton.indicator"),
-            ("Uniform.Radiobutton.indicator", "Radiobutton.indicator"),
-        ):
-            if element_name not in style.element_names():
-                style.element_create(element_name, "from", "clam", source_element)
+        # Same reasoning as Table.Treeview above, but for Radiobutton: pull
+        # clam's own indicator element into whichever theme is active
+        # (native "vista" included) so light and dark render the identical
+        # dot shape, just recolored. Guarded by element_names() -
+        # re-creating an element that already exists in the current theme
+        # raises a TclError, but once created it's visible from every
+        # theme, so this only actually runs once.
+        if "Uniform.Radiobutton.indicator" not in style.element_names():
+            style.element_create("Uniform.Radiobutton.indicator", "from", "clam", "Radiobutton.indicator")
+        # Checkbutton's "checked" mark is custom-drawn (a comma, not clam's
+        # own tick) - clam's indicator element has no option to change the
+        # mark shape itself, only its colors, so this uses a small raster
+        # image per theme instead of clam's element. Built once per theme
+        # and cached (element_create can't be re-called for a name that
+        # already exists), then just swapped by name below.
+        self._ensure_checkbox_indicator_images(style, dark)
         style.layout("TCheckbutton", [
             ("Checkbutton.padding", {"sticky": "nswe", "children": [
-                ("Uniform.Checkbutton.indicator", {"side": "left", "sticky": ""}),
+                (f"{'Dark' if dark else 'Light'}.Checkbutton.indicator", {"side": "left", "sticky": ""}),
                 ("Checkbutton.focus", {"side": "left", "sticky": "", "children": [
                     ("Checkbutton.label", {"sticky": "nswe"}),
                 ]}),
@@ -458,16 +503,15 @@ class TaggerInterface:
             indicator_bg, indicator_border = colors["entry_bg"], colors["border"]
         else:
             indicator_bg, indicator_border = LIGHT_INDICATOR_COLORS["indicator_bg"], LIGHT_INDICATOR_COLORS["indicator_border"]
-        for indicator_style in ("TCheckbutton", "TRadiobutton"):
-            style.configure(
-                indicator_style,
-                indicatorbackground=indicator_bg, indicatorforeground="#ffffff",
-                upperbordercolor=indicator_border, lowerbordercolor=indicator_border,
-            )
-            style.map(
-                indicator_style,
-                indicatorbackground=[("selected", INDICATOR_CHECKED_BG), ("!selected", indicator_bg)],
-            )
+        style.configure(
+            "TRadiobutton",
+            indicatorbackground=indicator_bg, indicatorforeground="#ffffff",
+            upperbordercolor=indicator_border, lowerbordercolor=indicator_border,
+        )
+        style.map(
+            "TRadiobutton",
+            indicatorbackground=[("selected", INDICATOR_CHECKED_BG), ("!selected", indicator_bg)],
+        )
 
         # Same cross-theme trick again, for the scrollbar: native's own
         # trough/thumb/arrow elements have zero stylable options too
