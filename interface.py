@@ -1732,9 +1732,14 @@ class TaggerInterface:
 
         return itunes_count, spotify_count, soundcloud_count, kept_existing_count, no_cover_count
 
-    def _show_scan_summary_dialog(self):
+    def _show_scan_summary_dialog(self, on_close=None):
         """Cover-source breakdown shown right after a scan finds new files -
-        this is the earliest point every track's cover_source is known."""
+        this is the earliest point every track's cover_source is known.
+        on_close (if given) fires once this dialog is dismissed - grab_set()
+        alone doesn't block the caller, so anything meant to come AFTER this
+        dialog (e.g. the "fix no-cover tracks?" prompt) must be chained
+        through here rather than just called right after, or both would
+        appear at once instead of one after the other."""
         itunes_count, spotify_count, soundcloud_count, kept_existing_count, no_cover_count = (
             self._compute_cover_summary()
         )
@@ -1762,7 +1767,13 @@ class TaggerInterface:
         )
         ttk.Label(dialog, text=summary_text, justify="left", foreground="#555555").pack(padx=20, pady=(0, 15))
 
-        ttk.Button(dialog, text="OK", command=dialog.destroy).pack(pady=(0, 15))
+        def close():
+            dialog.destroy()
+            if on_close:
+                on_close()
+
+        ttk.Button(dialog, text="OK", command=close).pack(pady=(0, 15))
+        dialog.protocol("WM_DELETE_WINDOW", close)
 
         self._center_dialog(dialog)
 
@@ -1834,9 +1845,10 @@ class TaggerInterface:
                 self._append_to_journal(f"{len(no_cover_infos)} track(s) currently have no cover match.")
 
             if number_new > 0:
-                self._show_scan_summary_dialog()
-                if no_cover_infos:
-                    self._offer_fix_no_cover_tracks(no_cover_infos)
+                on_summary_closed = (
+                    (lambda: self._offer_fix_no_cover_tracks(no_cover_infos)) if no_cover_infos else None
+                )
+                self._show_scan_summary_dialog(on_close=on_summary_closed)
 
         self._check_for_duplicates()
 
