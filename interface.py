@@ -411,7 +411,7 @@ class TaggerInterface:
 
         entry.bind("<Button-3>", show_menu)
 
-    def _build_checkbox_indicator_photo(self, box_bg, box_border, checked, size=16):
+    def _build_checkbox_indicator_photo(self, box_bg, box_border, checked, size=13):
         """
         Draws one checkbox indicator state (empty box, or filled box with a
         checkmark) as a small raster image - clam's own indicator element
