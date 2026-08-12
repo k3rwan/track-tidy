@@ -349,10 +349,6 @@ class TaggerInterface:
         else:
             self._tagger_resize_pending = True
 
-    def _save_reporter_name(self):
-        name = "" if getattr(self.reporter_name_entry, "placeholder_active", False) else self.reporter_name_entry.get().strip()
-        tagger.save_setting("reporter_name", name)
-
     def _on_tab_changed(self, event=None):
         if self._tagger_resize_pending and self.notebook.index("current") == 0:
             self._tagger_resize_pending = False
@@ -1241,21 +1237,6 @@ class TaggerInterface:
             behavior_frame, text="Show log section", variable=self.show_log_var,
             command=self._on_show_log_changed,
         ).pack(anchor="w", padx=10, pady=(0, 10))
-        ttk.Label(behavior_frame, text="Your name (shown when you report a track):").pack(
-            anchor="w", padx=10,
-        )
-        self.reporter_name_entry = ttk.Entry(behavior_frame)
-        self.reporter_name_entry.pack(fill="x", padx=10, pady=(0, 10))
-        self._bind_entry_context_menu(self.reporter_name_entry)
-        setup_placeholder(self.reporter_name_entry, "Optional - defaults to your Windows username")
-        saved_reporter_name = tagger.load_settings().get("reporter_name", "")
-        if saved_reporter_name:
-            self.reporter_name_entry.placeholder_active = False
-            self.reporter_name_entry.delete(0, "end")
-            self.reporter_name_entry.insert(0, saved_reporter_name)
-            self.reporter_name_entry.configure(foreground=self.reporter_name_entry.normal_color)
-        self.reporter_name_entry.bind("<FocusOut>", lambda _event: self._save_reporter_name(), add="+")
-
         update_history_row = ttk.Frame(soundcloud_tab)
         update_history_row.pack(fill="x", padx=10, pady=(0, 10))
         self.check_update_button = ttk.Button(
@@ -3039,16 +3020,13 @@ class TaggerInterface:
     def _report_track(self, info):
         """Sends this row's info (file name, current/suggested tags, cover
         status...) to the developer via Discord, so problem tracks (e.g. no
-        cover found) can be collected and fixed later. Tagged with whoever's
-        reporting it - the name saved in Settings, or the Windows username
-        as a zero-setup fallback - so reports from different people using
-        the app aren't all anonymous."""
-        reporter_name = tagger.load_settings().get("reporter_name", "").strip()
-        if not reporter_name:
-            try:
-                reporter_name = getpass.getuser()
-            except Exception:
-                reporter_name = ""
+        cover found) can be collected and fixed later. Tagged with the
+        Windows username, so reports from different people using the app
+        aren't all anonymous."""
+        try:
+            reporter_name = getpass.getuser()
+        except Exception:
+            reporter_name = ""
 
         def _send():
             success = tagger.send_track_report(info, reporter_name=reporter_name)
