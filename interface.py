@@ -21,13 +21,15 @@ import subprocess
 import tempfile
 import threading
 import queue
-import winsound
 import webbrowser
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox
 from tkinter import font as tkfont
 from PIL import Image, ImageTk, ImageDraw
+
+if sys.platform == "win32":
+    import winsound
 
 # When launched via pythonw.exe (no console), sys.stdout/stderr are None.
 # Any leftover print() call would then crash with AttributeError. Redirect
@@ -38,6 +40,42 @@ if sys.stderr is None:
     sys.stderr = open(os.devnull, "w")
 
 import track_tidy as tagger
+
+
+# --- Cross-platform OS integration (Windows / macOS) ---
+
+def open_with_default_app(path):
+    """Opens a file with whatever app the OS has associated with it (used
+    for playing an audio file, opening the bundled license notices...)."""
+    if sys.platform == "win32":
+        os.startfile(path)
+    else:
+        subprocess.run(["open", path])
+
+
+def reveal_in_file_manager(path):
+    """Opens the OS's file manager with this file pre-selected."""
+    if sys.platform == "win32":
+        # Deliberately NOT list-form: subprocess.list2cmdline() would quote
+        # the whole "/select,<path>" argument as one unit
+        # ("/select,C:\my folder\file.mp3"), but explorer's own /select,
+        # parser specifically expects the comma OUTSIDE the quotes and
+        # only the path itself quoted (/select,"C:\my folder\file.mp3") -
+        # list form silently breaks this. Safe as a raw string on Windows
+        # without shell=True (the whole string is passed straight to
+        # CreateProcess as-is), and full_path can't contain '"' (not a
+        # legal character in a Windows path).
+        subprocess.run(f'explorer /select,"{path}"')
+    else:
+        subprocess.run(["open", "-R", path])
+
+
+def play_short_sound(path):
+    """Plays a short local sound file (the Apply-complete chime)."""
+    if sys.platform == "win32":
+        winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+    else:
+        subprocess.run(["afplay", path])
 
 
 def resource_path(filename):
@@ -737,9 +775,13 @@ class TaggerInterface:
     def _set_titlebar_dark(self, window, dark):
         """
         Best-effort: darkens a window's native title bar to match the theme
-        (Windows 10 1809+ / 11 only). Silently does nothing if unsupported -
-        the app is still fully usable, just with a light title bar.
+        (Windows 10 1809+ / 11 only - a no-op on macOS, which already
+        darkens its own title bar automatically based on the system
+        appearance). Silently does nothing if unsupported - the app is
+        still fully usable, just with a light title bar.
         """
+        if sys.platform != "win32":
+            return
         try:
             import ctypes
             hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
@@ -891,7 +933,11 @@ class TaggerInterface:
             self.message_queue.put(("update_download_progress", (downloaded, total)))
 
         def _run():
-            dest_path = os.path.join(tempfile.gettempdir(), f"Track-Tidy-Setup-{latest_version}.exe")
+            # Extension follows the actual asset (.exe on Windows, .dmg on
+            # macOS - see check_for_update) rather than being assumed, so
+            # this doesn't silently mislabel the downloaded file.
+            extension = os.path.splitext(installer_url)[1] or (".dmg" if sys.platform == "darwin" else ".exe")
+            dest_path = os.path.join(tempfile.gettempdir(), f"Track-Tidy-Setup-{latest_version}{extension}")
             success = tagger.download_installer(
                 installer_url, dest_path, on_progress=on_progress,
                 expected_sha256=expected_sha256, log=self._append_to_journal,
@@ -915,7 +961,11 @@ class TaggerInterface:
             return
 
         try:
-            subprocess.Popen([dest_path])
+            # On Windows this runs the installer directly (same as
+            # double-clicking it). On macOS a .dmg isn't a silent
+            # installer - "open" mounts it in Finder, the normal macOS
+            # flow, and the user drags the app to Applications themselves.
+            open_with_default_app(dest_path)
         except Exception as error:
             messagebox.showerror("Update failed", f"Could not launch the installer: {error}", parent=self.window)
             return
@@ -1447,8 +1497,8 @@ class TaggerInterface:
         client_secret = self.sc_client_secret_entry.get().strip()
 
         try:
-            tagger.write_credential(tagger.CLIENT_ID_FILE, client_id)
-            tagger.write_credential(tagger.CLIENT_SECRET_FILE, client_secret)
+            tagger.write_credential(tagger.CLIENT_ID_KEY, client_id)
+            tagger.write_credential(tagger.CLIENT_SECRET_KEY, client_secret)
 
             tagger.SOUNDCLOUD_CLIENT_ID = client_id or None
             tagger.SOUNDCLOUD_CLIENT_SECRET = client_secret or None
@@ -1524,8 +1574,8 @@ class TaggerInterface:
         client_secret = self.sp_client_secret_entry.get().strip()
 
         try:
-            tagger.write_credential(tagger.SPOTIFY_CLIENT_ID_FILE, client_id)
-            tagger.write_credential(tagger.SPOTIFY_CLIENT_SECRET_FILE, client_secret)
+            tagger.write_credential(tagger.SPOTIFY_CLIENT_ID_KEY, client_id)
+            tagger.write_credential(tagger.SPOTIFY_CLIENT_SECRET_KEY, client_secret)
 
             tagger.SPOTIFY_CLIENT_ID = client_id or None
             tagger.SPOTIFY_CLIENT_SECRET = client_secret or None
@@ -1552,7 +1602,7 @@ class TaggerInterface:
             )
             return
         try:
-            os.startfile(path)
+            open_with_default_app(path)
         except Exception as error:
             self._append_to_journal(f"Could not open license notices: {error}")
 
@@ -1972,10 +2022,10 @@ class TaggerInterface:
         self._restripe_rows()
 
     def _show_no_files_dialog(self):
-        """Custom error dialog that plays a fart sound instead of the default Windows error beep."""
+        """Custom error dialog that plays a fart sound instead of the default OS error beep."""
         sound_path = resource_path("fart.wav")
         try:
-            winsound.PlaySound(sound_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+            play_short_sound(sound_path)
         except Exception:
             pass  # if the sound file is missing, just show the dialog silently
 
@@ -2092,7 +2142,7 @@ class TaggerInterface:
         one just confirms the run finished and how many files were converted."""
         sound_path = resource_path("success.wav")
         try:
-            winsound.PlaySound(sound_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+            play_short_sound(sound_path)
         except Exception:
             pass  # if the sound file is missing, just show the dialog silently
 
@@ -3076,7 +3126,7 @@ class TaggerInterface:
             self._append_to_journal(f"Can't play, file not found: '{full_path}'")
             return
         try:
-            os.startfile(full_path)
+            open_with_default_app(full_path)
         except Exception as error:
             self._append_to_journal(f"Error opening file: {error}")
 
@@ -3261,16 +3311,7 @@ class TaggerInterface:
             return
 
         try:
-            # Deliberately NOT list-form: subprocess.list2cmdline() would
-            # quote the whole "/select,<path>" argument as one unit
-            # ("/select,C:\my folder\file.mp3"), but explorer's own
-            # /select, parser specifically expects the comma OUTSIDE the
-            # quotes and only the path itself quoted (/select,"C:\my
-            # folder\file.mp3") - list form silently broke this. Safe as a
-            # raw string on Windows without shell=True (the whole string is
-            # passed straight to CreateProcess as-is), and full_path can't
-            # contain '"' (not a legal character in a Windows path).
-            subprocess.run(f'explorer /select,"{full_path}"')
+            reveal_in_file_manager(full_path)
         except Exception as error:
             self._append_to_journal(f"Error opening file location: {error}")
 
@@ -3464,7 +3505,7 @@ class TaggerInterface:
                             parent=self.window,
                         )
                         try:
-                            os.startfile(folder)
+                            open_with_default_app(folder)
                         except Exception:
                             pass
 
