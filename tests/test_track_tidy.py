@@ -745,9 +745,9 @@ class RestoreHistoryEntryTests(unittest.TestCase):
             "old_artist": "Old Artist", "old_title": "Old Title",
             "old_cover_b64": None,
         }
-        new_relative = tagger.restore_history_entry(entry, log=lambda *_: None)
-        restored_path = os.path.join(self._tmp_dir.name, new_relative)
+        restored_path = tagger.restore_history_entry(entry, log=lambda *_: None)
 
+        self.assertTrue(os.path.isabs(restored_path))
         self.assertTrue(os.path.exists(restored_path))
         _, artist, title, cover = tagger.read_current_info(restored_path)
         self.assertEqual(artist, "Old Artist")
@@ -766,6 +766,36 @@ class RestoreHistoryEntryTests(unittest.TestCase):
         entry = {"folder": None, "new_file": "x.mp3", "old_artist": "X", "old_title": "Y"}
         with self.assertRaises(ValueError):
             tagger.restore_history_entry(entry, log=lambda *_: None)
+
+    def test_auto_locates_file_moved_to_a_subfolder(self):
+        subfolder = os.path.join(self._tmp_dir.name, "moved here")
+        os.makedirs(subfolder)
+        moved_path = os.path.join(subfolder, "Current Artist - Current Title.wav")
+        shutil.move(self.file_path, moved_path)
+
+        entry = {
+            "folder": self._tmp_dir.name,
+            "new_file": "Current Artist - Current Title.wav",
+            "old_artist": "Old Artist", "old_title": "Old Title", "old_cover_b64": None,
+        }
+        restored_path = tagger.restore_history_entry(entry, log=lambda *_: None)
+        self.assertTrue(os.path.exists(restored_path))
+        self.assertEqual(os.path.dirname(restored_path), subfolder)
+
+    def test_override_path_restores_at_a_completely_different_location(self):
+        elsewhere = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, elsewhere, ignore_errors=True)
+        moved_path = os.path.join(elsewhere, "Current Artist - Current Title.wav")
+        shutil.move(self.file_path, moved_path)
+
+        entry = {
+            "folder": self._tmp_dir.name,  # the ORIGINAL folder - deliberately stale
+            "new_file": "Current Artist - Current Title.wav",
+            "old_artist": "Old Artist", "old_title": "Old Title", "old_cover_b64": None,
+        }
+        restored_path = tagger.restore_history_entry(entry, log=lambda *_: None, override_path=moved_path)
+        self.assertTrue(os.path.exists(restored_path))
+        self.assertEqual(os.path.dirname(restored_path), elsewhere)
 
 
 class SettingsPersistenceTests(unittest.TestCase):
