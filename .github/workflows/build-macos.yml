@@ -1,0 +1,52 @@
+name: Build macOS app
+
+# Manual trigger only, on purpose: this is the FIRST time build_mac.sh has
+# ever run on real macOS (it was written on Windows with no Mac available
+# to test it on - see CLAUDE.md's "Cross-platform" section). Run it by hand
+# from the Actions tab (or `gh workflow run build-macos.yml`), inspect the
+# test results and the downloaded .dmg, and only wire this to run
+# automatically on release tags once a build has actually been verified.
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-13
+            arch: intel
+          - os: macos-14
+            arch: apple-silicon
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Create build venv and install dependencies
+        run: |
+          python3 -m venv venv_build
+          source venv_build/bin/activate
+          pip install -r requirements.txt pyinstaller
+
+      - name: Run the test suite
+        run: |
+          source venv_build/bin/activate
+          python -m unittest discover -s tests
+
+      - name: Build .app and .dmg
+        run: |
+          source venv_build/bin/activate
+          chmod +x build_mac.sh
+          ./build_mac.sh
+
+      - name: Upload .dmg
+        uses: actions/upload-artifact@v4
+        with:
+          name: Track-Tidy-macOS-${{ matrix.arch }}-v${{ github.run_number }}
+          path: installer_output/*.dmg
+          if-no-files-found: error
