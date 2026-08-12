@@ -3,6 +3,24 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.11]
+
+### Added
+- The installer now shows a mandatory license-acceptance page (GPL)
+  before installing, instead of the license only being discoverable
+  after the fact.
+- On first launch, the app notifies the developer via Discord with
+  your Windows username (once per Windows account) - disclosed in
+  Settings' legal notice text.
+
+### Changed
+- "Report track..." sends immediately again, with no confirmation
+  popup (reverted from v0.10).
+
+### Fixed
+- Fixed a "vv0.10"-style double "v" in the update-download dialog text
+  and temp filename.
+
 ## [0.10]
 
 ### Added
