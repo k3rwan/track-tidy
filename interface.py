@@ -218,6 +218,8 @@ class TaggerInterface:
         self._tooltip_key = None
         self._pending_double_click_after_id = None
         self._removal_undo_stack = []  # list of [(original_index, info), ...] per "Remove from list" action
+        self._drag_row_id = None  # row being dragged to reorder, if any
+        self._drag_moved = False
         self._table_font = tkfont.nametofont("TkDefaultFont")
         self.soundcloud_rate_limit_warned = False
         self.mention_counts = {}  # raw mention text -> number of times seen
@@ -1158,6 +1160,9 @@ class TaggerInterface:
         vertical_scrollbar.pack(side="left", fill="y")
 
         self.table.bind("<Button-1>", self._toggle_cell, add="+")
+        self.table.bind("<Button-1>", self._on_row_drag_start, add="+")
+        self.table.bind("<B1-Motion>", self._on_row_drag_motion, add="+")
+        self.table.bind("<ButtonRelease-1>", self._on_row_drag_release, add="+")
         self.table.bind("<Double-1>", self._toggle_cell_double_click, add="+")
         self.table.bind("<Triple-1>", self._toggle_cell_triple_click, add="+")
         self.table.bind("<Button-3>", self._show_context_menu)
@@ -2546,23 +2551,24 @@ class TaggerInterface:
 
     def _show_history_window(self):
         """Settings -> 'View processing history': every file ever actually
-        processed (tagger.HISTORY_FILE), most recent first. Each entry shows
-        its old file/artist/title on one (selectable) line, with the applied
-        (new) file/artist/title indented right below it as a child row -
-        children exist to show what changed, but only the old-info parent row
-        can be selected, since Restore always acts on the OLD info."""
+        processed (tagger.HISTORY_FILE), most recent first. One flat row
+        per entry, with a "Before"/"After" column pair showing what
+        changed - previously this was an expand/collapse parent+child pair,
+        which needed clicking to see the change and, as a side effect, hit
+        a clam limitation where the expand-arrow indicator has no
+        configurable color at all (wrong in dark mode no matter what)."""
         dialog = tk.Toplevel(self.window)
         self._style_toplevel(dialog)
         dialog.title("Processing history")
-        dialog.geometry("840x440")
+        dialog.geometry("900x440")
         dialog.transient(self.window)
 
-        columns = ("file", "artist", "title", "cover", "converted")
+        columns = ("file", "before", "after", "cover", "converted")
         headings = {
-            "file": "File", "artist": "Artist", "title": "Title",
-            "cover": "Cover", "converted": "Converted",
+            "file": "File", "before": "Before", "after": "After",
+            "cover": "Cover updated", "converted": "Converted",
         }
-        widths = {"file": 200, "artist": 140, "title": 160, "cover": 55, "converted": 70}
+        widths = {"file": 220, "before": 200, "after": 200, "cover": 90, "converted": 80}
 
         table_frame = ttk.Frame(dialog)
         table_frame.pack(fill="both", expand=True, padx=10, pady=(10, 5))
@@ -2589,7 +2595,7 @@ class TaggerInterface:
         self._bind_entry_context_menu(history_filter_entry)
 
         empty_label = ttk.Label(dialog, text="No files have been processed yet.", padding=20)
-        entries_by_parent = {}
+        entries_by_row = {}
 
         def matches_query(entry, query):
             haystack = " ".join(str(entry.get(key) or "") for key in (
@@ -2600,7 +2606,7 @@ class TaggerInterface:
         def populate():
             for row in tree.get_children():
                 tree.delete(row)
-            entries_by_parent.clear()
+            entries_by_row.clear()
 
             if getattr(history_filter_entry, "placeholder_active", False):
                 query = ""
@@ -2625,23 +2631,22 @@ class TaggerInterface:
                 except ValueError:
                     date_display = timestamp
 
-                parent_id = tree.insert(
+                before = tagger.build_display_name(
+                    entry.get("old_artist") or "", entry.get("old_title") or ""
+                ) or "-"
+                after = tagger.build_display_name(
+                    entry.get("new_artist") or "", entry.get("new_title") or ""
+                ) or "-"
+
+                row_id = tree.insert(
                     "", "end", text=date_display,
                     values=(
-                        entry.get("old_file", ""), entry.get("old_artist") or "-", entry.get("old_title") or "-",
-                        "", "",
-                    ),
-                )
-                tree.insert(
-                    parent_id, "end", text="↳ Applied",
-                    values=(
-                        entry.get("new_file", ""), entry.get("new_artist") or "-", entry.get("new_title") or "-",
+                        entry.get("new_file") or entry.get("old_file", ""), before, after,
                         "Yes" if entry.get("cover_updated") else "No",
                         "Yes" if entry.get("converted") else "No",
                     ),
                 )
-                tree.item(parent_id, open=True)
-                entries_by_parent[parent_id] = entry
+                entries_by_row[row_id] = entry
 
         def schedule_history_filter(event=None):
             """Debounces the search filter the same way the main table's does."""
@@ -2652,30 +2657,15 @@ class TaggerInterface:
         history_filter_entry.bind("<KeyRelease>", schedule_history_filter)
         setup_placeholder(history_filter_entry, "Search history...", on_change=populate)
 
-        def enforce_parent_only_selection(event=None):
-            """Clicking (or ctrl/shift-clicking) a child 'Applied' row selects
-            its parent instead - Restore always acts on the OLD info, so only
-            old-info rows are meant to be selectable."""
-            current = tree.selection()
-            corrected, seen = [], set()
-            for item_id in current:
-                target = item_id if item_id in entries_by_parent else tree.parent(item_id)
-                if target and target not in seen:
-                    seen.add(target)
-                    corrected.append(target)
-            if tuple(corrected) != current:
-                tree.selection_set(corrected)
-
         def select_all(event=None):
-            tree.selection_set(list(entries_by_parent.keys()))
+            tree.selection_set(list(entries_by_row.keys()))
             return "break"
 
-        tree.bind("<<TreeviewSelect>>", enforce_parent_only_selection)
         tree.bind("<Control-a>", select_all)
 
         def restore_selected():
-            selection = tree.selection()  # already parent-only, enforced above
-            entries = [entries_by_parent[item_id] for item_id in selection if item_id in entries_by_parent]
+            selection = tree.selection()
+            entries = [entries_by_row[item_id] for item_id in selection if item_id in entries_by_row]
             if not entries:
                 messagebox.showinfo("Restore", "Select one or more entries first.", parent=dialog)
                 return
@@ -3015,6 +3005,51 @@ class TaggerInterface:
                 self.table.move(other_info["file"], "", "end")
 
         self._restripe_rows()
+
+    def _on_row_drag_start(self, event):
+        """Button-1 press: remembers which row a drag (if any) would start
+        from. A plain click that never moves to a different row just
+        behaves as before (_toggle_cell etc.) - this only ever does
+        something once _on_row_drag_motion sees real movement."""
+        row_id = self.table.identify_row(event.y)
+        info = next((i for i in self.scanned_plan if i["file"] == row_id), None) if row_id else None
+        self._drag_row_id = row_id if info else None
+        self._drag_moved = False
+
+    def _on_row_drag_motion(self, event):
+        """Dragging a row onto another one reorders it there immediately -
+        scanned_plan is the source of truth for order, so it's updated
+        first and the table's visible rows are just re-synced to match
+        (same approach as _move_row), skipping detached/filtered-out rows."""
+        drag_row_id = getattr(self, "_drag_row_id", None)
+        if not drag_row_id or not self.table.exists(drag_row_id):
+            return
+
+        target_row_id = self.table.identify_row(event.y)
+        if not target_row_id or target_row_id == drag_row_id:
+            return
+        if target_row_id in (NO_COVER_SUMMARY_ROW_ID, SEARCH_RESULT_SUMMARY_ROW_ID):
+            return
+
+        drag_info = next((i for i in self.scanned_plan if i["file"] == drag_row_id), None)
+        target_info = next((i for i in self.scanned_plan if i["file"] == target_row_id), None)
+        if not drag_info or not target_info:
+            return
+
+        self.scanned_plan.remove(drag_info)
+        self.scanned_plan.insert(self.scanned_plan.index(target_info), drag_info)
+        self._drag_moved = True
+
+        visible_files = set(self.table.get_children())
+        for info in self.scanned_plan:
+            if info["file"] in visible_files:
+                self.table.move(info["file"], "", "end")
+
+        self._restripe_rows()
+
+    def _on_row_drag_release(self, event):
+        self._drag_row_id = None
+        self._drag_moved = False
 
     def _show_context_menu(self, event):
         """Right-click on a row: shows a small context menu (e.g. open file location)."""
