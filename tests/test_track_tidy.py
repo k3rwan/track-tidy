@@ -227,6 +227,67 @@ class ITunesQueryTests(unittest.TestCase):
         self.assertEqual(tagger.extract_feature_names_from_groups(["Extended Mix"]), set())
 
 
+class ITunesRetryTests(unittest.TestCase):
+    """A transient HTTP 403 from iTunes' search endpoint (observed in
+    practice - looks like a short-lived rate-limit/bot-detection block, not
+    a real refusal) should be retried, not treated as a final failure."""
+
+    def setUp(self):
+        self.original_get = tagger.requests.get
+        self.original_sleep = tagger.time.sleep
+        tagger.time.sleep = lambda seconds: None
+
+    def tearDown(self):
+        tagger.requests.get = self.original_get
+        tagger.time.sleep = self.original_sleep
+
+    class FakeResponse:
+        def __init__(self, status_code, payload=None, content=b""):
+            self.status_code = status_code
+            self._payload = payload or {}
+            self.content = content
+            self.text = ""
+
+        def json(self):
+            return self._payload
+
+    def test_retries_after_transient_403(self):
+        calls = {"search": 0}
+
+        def fake_get(url, params=None, timeout=None):
+            if "itunes.apple.com" in url:
+                calls["search"] += 1
+                if calls["search"] == 1:
+                    return self.FakeResponse(403)
+                return self.FakeResponse(200, {"results": [
+                    {
+                        "artistName": "PEATY, Jawora", "trackName": "One Time",
+                        "artworkUrl100": "https://example.com/cover100x100.jpg",
+                    },
+                ]})
+            return self.FakeResponse(200, content=b"fake-image-bytes")
+
+        tagger.requests.get = fake_get
+        result = tagger.search_cover_itunes("PEATY, Jawora", "One Time")
+
+        self.assertEqual(calls["search"], 2)
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], b"fake-image-bytes")
+
+    def test_gives_up_after_persistent_403(self):
+        calls = {"search": 0}
+
+        def fake_get(url, params=None, timeout=None):
+            calls["search"] += 1
+            return self.FakeResponse(403)
+
+        tagger.requests.get = fake_get
+        result = tagger.search_cover_itunes("PEATY, Jawora", "One Time")
+
+        self.assertIsNone(result)
+        self.assertEqual(calls["search"], 3)  # initial attempt + 2 retries (max_retries=2)
+
+
 class SearchOneSourceTests(unittest.TestCase):
     """_search_one_source() applies one provider's own query strategy - no
     network involved, so the providers are swapped out with fakes."""
