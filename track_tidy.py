@@ -52,6 +52,7 @@ import base64
 import subprocess
 import unicodedata
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
 import requests
 from mutagen import File as MutagenFile
 from mutagen.mp3 import MP3
@@ -1156,11 +1157,14 @@ def search_cover_manual_with_tokens(artist, title, log=safe_print):
     return search_cover_manual(artist, title, soundcloud_token, spotify_token, log=log)
 
 
-def scan_one_file(file_name, soundcloud_token, spotify_token=None, log=safe_print, on_new_mention=None):
+def _prepare_scan(file_name, log=safe_print, on_new_mention=None):
     """
-    Analyzes a single file (path relative to MUSIC_FOLDER): current tags,
-    info detected from the name, and online cover search.
-    Returns the corresponding info dict.
+    Local-only part of analyzing a file (no network): reads tags, resolves
+    artist/title, and detects mentions. Returns a dict with everything
+    needed to both run the cover search and build the final info dict -
+    split out from scan_one_file() so scan_files() can prepare every file
+    up front (cheap, sequential) and then search iTunes for all of them
+    concurrently (see ITUNES_SCAN_MAX_WORKERS below).
     """
     full_path = os.path.join(MUSIC_FOLDER, file_name)
 
@@ -1177,8 +1181,6 @@ def scan_one_file(file_name, soundcloud_token, spotify_token=None, log=safe_prin
     detected_artist, detected_title, tags_already_present = resolve_artist_title(
         file_name, current_artist, current_title
     )
-    search_source_artist = detected_artist
-    search_source_title = detected_title
 
     # Suggest every other parenthesized mention found in the CLEANED title
     # (i.e. what actually gets displayed), so already-handled mentions like
@@ -1187,44 +1189,73 @@ def scan_one_file(file_name, soundcloud_token, spotify_token=None, log=safe_prin
         for mention in detect_parenthetical_mentions(detected_title):
             on_new_mention(mention)
 
-    found_cover_image = None
-    cover_source = None
-    if search_source_artist and search_source_title:
-        found_cover_image, cover_source, returned_artist, returned_title = search_cover_manual(
-            search_source_artist, search_source_title, soundcloud_token, spotify_token, log,
-        )
+    search_title = remix_qualified_title = None
+    if detected_artist and detected_title:
+        search_title = strip_parentheses(detected_title)
+        has_parenthetical = search_title != detected_title
+        remix_qualified_title = strip_trailing_noise_words(detected_title) if has_parenthetical else search_title
 
-        if found_cover_image:
-            # Only try to fix a swap on the FILENAME-derived guess - the file's
-            # own existing tags are trusted as-is and never rewritten this way.
-            if not tags_already_present:
-                corrected_artist, corrected_title = fix_swapped_artist_title(
-                    detected_artist, detected_title, returned_artist, returned_title
+    return {
+        "file_name": file_name,
+        "has_cover": has_cover,
+        "current_artist": current_artist,
+        "current_title": current_title,
+        "current_cover_bytes": current_cover_bytes,
+        "needs_conversion": needs_conversion,
+        "detected_artist": detected_artist,
+        "detected_title": detected_title,
+        "tags_already_present": tags_already_present,
+        "search_title": search_title,
+        "remix_qualified_title": remix_qualified_title,
+    }
+
+
+def _finish_scan(prepared, match_result, cover_source, log=safe_print):
+    """
+    Builds the final info dict for a file, given the (match_result,
+    cover_source) pair its cover search ended up with - shared by
+    scan_one_file() and scan_files()'s parallel-iTunes path.
+    """
+    file_name = prepared["file_name"]
+    detected_artist = prepared["detected_artist"]
+    detected_title = prepared["detected_title"]
+    found_cover_image = None
+
+    if match_result:
+        found_cover_image, returned_artist, returned_title = match_result
+
+        # Only try to fix a swap on the FILENAME-derived guess - the file's
+        # own existing tags are trusted as-is and never rewritten this way.
+        if not prepared["tags_already_present"]:
+            corrected_artist, corrected_title = fix_swapped_artist_title(
+                detected_artist, detected_title, returned_artist, returned_title
+            )
+            if corrected_artist != detected_artist:
+                log(
+                    f"  Artist/title looked swapped -> corrected to "
+                    f"'{corrected_artist} - {corrected_title}'"
                 )
-                if corrected_artist != detected_artist:
-                    log(
-                        f"  Artist/title looked swapped -> corrected to "
-                        f"'{corrected_artist} - {corrected_title}'"
-                    )
-                    detected_artist, detected_title = corrected_artist, corrected_title
+                detected_artist, detected_title = corrected_artist, corrected_title
+    else:
+        cover_source = None
 
     return {
         "file": file_name,
         "format": os.path.splitext(file_name)[1].lstrip(".").upper(),
         "detected_artist": detected_artist,
         "detected_title": detected_title,
-        "current_artist": current_artist,
-        "current_title": current_title,
-        "has_cover": has_cover,
+        "current_artist": prepared["current_artist"],
+        "current_title": prepared["current_title"],
+        "has_cover": prepared["has_cover"],
         "mention_detected": contains_mention_to_remove(file_name),
-        "convert": needs_conversion,
+        "convert": prepared["needs_conversion"],
         # If the file's own tags are already complete, don't default to
         # overwriting them with a filename-derived guess that could be worse
         # (e.g. a truncated/garbled filename from some export tool).
         "apply_changes": bool(detected_title),
         "found_cover_image": found_cover_image,
         "cover_source": cover_source,
-        "current_cover_bytes": current_cover_bytes,
+        "current_cover_bytes": prepared["current_cover_bytes"],
         "title_override": None,
         "artist_override": None,
         "processed": False,
@@ -1232,8 +1263,34 @@ def scan_one_file(file_name, soundcloud_token, spotify_token=None, log=safe_prin
     }
 
 
+def scan_one_file(file_name, soundcloud_token, spotify_token=None, log=safe_print, on_new_mention=None):
+    """
+    Analyzes a single file (path relative to MUSIC_FOLDER): current tags,
+    info detected from the name, and online cover search.
+    Returns the corresponding info dict.
+    """
+    prepared = _prepare_scan(file_name, log=log, on_new_mention=on_new_mention)
+
+    match_result = None
+    cover_source = None
+    if prepared["detected_artist"] and prepared["search_title"]:
+        found_cover_image, cover_source, returned_artist, returned_title = search_cover_manual(
+            prepared["detected_artist"], prepared["detected_title"], soundcloud_token, spotify_token, log,
+        )
+        if found_cover_image:
+            match_result = (found_cover_image, returned_artist, returned_title)
+
+    return _finish_scan(prepared, match_result, cover_source, log)
+
+
 SOUNDCLOUD_RATE_LIMITED = False  # set for the current run once a 429 is hit
 SOUNDCLOUD_UNAVAILABLE = False  # set for the current run when no credentials are configured at all
+
+# Bounded on purpose: iTunes' undocumented search endpoint already returns
+# the occasional transient 403 under plain sequential use (see
+# search_cover_itunes's own retry logic) - too much concurrency risks
+# tripping that more often, not less.
+ITUNES_SCAN_MAX_WORKERS = 4
 
 
 def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=None, on_rate_limited=None,
@@ -1245,6 +1302,12 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
     to allow a progressive display instead of waiting for the whole thing to finish.
     should_cancel() is checked before each file - if it returns True, the scan
     stops early and returns whatever was scanned so far.
+
+    iTunes searches (if enabled) run concurrently across files, up to
+    ITUNES_SCAN_MAX_WORKERS at once - iTunes needs no auth/shared token and
+    every request is fully independent, unlike Spotify (shared token) and
+    SoundCloud (shared rate-limit state), which stay sequential exactly as
+    before.
     """
     global SOUNDCLOUD_RATE_LIMITED, SOUNDCLOUD_UNAVAILABLE
     SOUNDCLOUD_RATE_LIMITED = False
@@ -1277,19 +1340,67 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
     # this run - no point for a scan that'll never call it.
     spotify_token = get_spotify_token(log=log) if USE_SPOTIFY else None
 
-    results = []
-
+    # Phase 1: prepare every file (local-only: tags, filename parsing) -
+    # fast, so should_cancel is checked cheaply between each one.
+    prepared_list = []
     for file_name in file_list:
         if should_cancel and should_cancel():
             log("  Scan cancelled.")
-            break
+            return []
+        prepared_list.append(_prepare_scan(file_name, log=log, on_new_mention=on_new_mention))
 
-        info = scan_one_file(
-            file_name, soundcloud_token, spotify_token=spotify_token, log=log, on_new_mention=on_new_mention
-        )
-        results.append(info)
-        if on_file_scanned:
-            on_file_scanned(info)
+    # Phase 2: search iTunes for every file concurrently (bounded), if enabled.
+    itunes_futures = {}
+    executor = ThreadPoolExecutor(max_workers=ITUNES_SCAN_MAX_WORKERS) if USE_ITUNES else None
+    if executor:
+        for prepared in prepared_list:
+            if prepared["detected_artist"] and prepared["search_title"]:
+                itunes_futures[prepared["file_name"]] = executor.submit(
+                    _search_one_source,
+                    "itunes", prepared["detected_artist"], prepared["search_title"],
+                    prepared["remix_qualified_title"], None, None, log,
+                )
+
+    # Phase 3: finish each file in its original order - reuse the iTunes
+    # result from phase 2 if there is one, otherwise (or if it found
+    # nothing) fall back to Spotify/SoundCloud sequentially, exactly as
+    # before.
+    results = []
+    try:
+        for prepared in prepared_list:
+            if should_cancel and should_cancel():
+                log("  Scan cancelled.")
+                break
+
+            file_name = prepared["file_name"]
+            match_result = None
+            cover_source = None
+
+            future = itunes_futures.get(file_name)
+            if future:
+                match_result, cover_source = future.result()
+
+            if not match_result and prepared["detected_artist"] and prepared["search_title"]:
+                for source, enabled in (
+                    ("spotify", USE_SPOTIFY),
+                    ("soundcloud", USE_SOUNDCLOUD and not SOUNDCLOUD_RATE_LIMITED and not SOUNDCLOUD_UNAVAILABLE),
+                ):
+                    if not enabled:
+                        continue
+                    match_result, cover_source = _search_one_source(
+                        source, prepared["detected_artist"], prepared["search_title"],
+                        prepared["remix_qualified_title"], spotify_token, soundcloud_token, log,
+                    )
+                    if match_result:
+                        break
+
+            info = _finish_scan(prepared, match_result, cover_source, log)
+            results.append(info)
+            if on_file_scanned:
+                on_file_scanned(info)
+    finally:
+        if executor:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     return results
 
