@@ -1265,14 +1265,23 @@ class TaggerInterface:
                 "Track Tidy is an independent, personal tool and is not affiliated with, "
                 "endorsed by, or sponsored by SoundCloud, Apple, or any other third-party "
                 "service it connects to. All trademarks are the property of their "
-                "respective owners."
+                "respective owners.\n"
+                "Licensed under the GNU General Public License v2 or later - includes "
+                "mutagen (GPL-2.0-or-later) and FFmpeg (GPLv3)."
             ),
             justify="left",
             wraplength=440,
             foreground="#888888",
             font=("TkDefaultFont", 8),
         )
-        legal_text_label.pack(anchor="w", padx=10, pady=(0, 10), side="bottom")
+        legal_text_label.pack(anchor="w", padx=10, pady=(0, 2), side="bottom")
+
+        self.legal_notices_link = ttk.Label(
+            soundcloud_tab, text="View license & third-party notices",
+            foreground="#1a73e8", cursor="hand2", font=("TkDefaultFont", 8),
+        )
+        self.legal_notices_link.pack(anchor="w", padx=10, pady=(0, 6), side="bottom")
+        self.legal_notices_link.bind("<Button-1>", self._open_legal_notices)
 
         ttk.Label(
             soundcloud_tab,
@@ -1433,6 +1442,24 @@ class TaggerInterface:
 
     def _open_spotify_registration(self):
         webbrowser.open("https://developer.spotify.com/dashboard")
+
+    def _open_legal_notices(self, event=None):
+        """Opens THIRD-PARTY-NOTICES.md, installed next to the app - only
+        present from v0.10 onward (see installer.iss), so this falls back
+        to a plain explanation on older installs rather than erroring."""
+        path = os.path.join(tagger.app_base_dir(), "THIRD-PARTY-NOTICES.md")
+        if not os.path.exists(path):
+            messagebox.showinfo(
+                "Not available in this version",
+                "THIRD-PARTY-NOTICES.md isn't bundled with this version of Track Tidy - "
+                "it's included starting with the next update.",
+                parent=self.window,
+            )
+            return
+        try:
+            os.startfile(path)
+        except Exception as error:
+            self._append_to_journal(f"Could not open license notices: {error}")
 
     def _show_spotify_credentials_dialog(self):
         dialog = tk.Toplevel(self.window)
