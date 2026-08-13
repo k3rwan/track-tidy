@@ -2685,8 +2685,19 @@ class TaggerInterface:
         # with software that doesn't read artwork from WAV (e.g. Rekordbox).
         target_format = (tagger._resolve_conversion_target(info["file"]) or "mp3").upper()
 
+        # AcoustID identifies a track from the audio itself, not the
+        # filename/tags - a real, if uncommon, way for it to be confidently
+        # (high score) wrong: two different tracks/remixes in similar
+        # genres (e.g. house/techno) can fingerprint close enough to
+        # collide. Flagged here so the user knows to double check it
+        # before trusting Apply - cleared once they've actually reviewed
+        # it (title_override no longer None, whether they kept it or
+        # corrected it).
+        acoustid_marker = " 🎧" if info.get("acoustid_identified") and info["title_override"] is None else ""
+
         if info.get("processed"):
             displayed_title = info["title_override"] or info["detected_title"] or "?"
+            displayed_title += acoustid_marker
             displayed_artist = info["artist_override"]
             if displayed_artist is None:
                 displayed_artist = info["detected_artist"] if info["detected_artist"] else "(empty)"
@@ -2704,7 +2715,7 @@ class TaggerInterface:
         if info["title_override"] is not None:
             displayed_title = info["title_override"]
         elif apply:
-            displayed_title = info["detected_title"] or "?"
+            displayed_title = (info["detected_title"] or "?") + acoustid_marker
         else:
             displayed_title = info["current_title"] or "(empty)"
 
