@@ -1638,6 +1638,7 @@ def _prepare_scan(file_name, log=safe_print, on_new_mention=None):
         "tags_already_present": tags_already_present,
         "search_title": search_title,
         "remix_qualified_title": remix_qualified_title,
+        "acoustid_identified": False,  # set to True in place by _try_acoustid_correction, if it runs
     }
 
 
@@ -1671,6 +1672,12 @@ def _try_acoustid_correction(prepared, log=safe_print):
     prepared["remix_qualified_title"] = (
         strip_trailing_noise_words(title) if has_parenthetical else prepared["search_title"]
     )
+    # Marks this result as NOT filename/tag-derived - the UI mustn't
+    # re-run resolve_artist_title() on it later (e.g. to pick up a "to
+    # remove" mentions-list change mid-scan, see _add_scan_row), since
+    # that would silently throw away the AcoustID identification and go
+    # right back to the original unusable filename/tags.
+    prepared["acoustid_identified"] = True
     return True
 
 
@@ -1689,8 +1696,10 @@ def _finish_scan(prepared, match_result, cover_source, log=safe_print):
         found_cover_image, returned_artist, returned_title = match_result
 
         # Only try to fix a swap on the FILENAME-derived guess - the file's
-        # own existing tags are trusted as-is and never rewritten this way.
-        if not prepared["tags_already_present"]:
+        # own existing tags are trusted as-is and never rewritten this way,
+        # and an AcoustID identification is already a confident, verified
+        # result, not a raw guess to second-guess against the search result.
+        if not prepared["tags_already_present"] and not prepared.get("acoustid_identified"):
             corrected_artist, corrected_title = fix_swapped_artist_title(
                 detected_artist, detected_title, returned_artist, returned_title
             )
@@ -1728,6 +1737,11 @@ def _finish_scan(prepared, match_result, cover_source, log=safe_print):
         "artist_override": None,
         "processed": False,
         "final_path": None,
+        # So the UI knows NOT to re-derive detected_artist/detected_title
+        # from the filename/tags later (see interface.py's _add_scan_row) -
+        # that would throw away a confident AcoustID identification and
+        # fall right back to the original unusable filename/tags.
+        "acoustid_identified": prepared.get("acoustid_identified", False),
     }
 
 
