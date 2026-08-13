@@ -2335,20 +2335,11 @@ class TaggerInterface:
         lines.append(f"No cover at all: {no_cover_count}")
         summary_text = "\n".join(lines)
 
-        if no_cover_count:
-            if not enabled_sources:
-                summary_text += (
-                    "\n\nNo cover source is enabled in Settings - enable iTunes, "
-                    "Spotify and/or SoundCloud to find covers automatically."
-                )
-            elif len(enabled_sources) < 3:
-                disabled_sources = [
-                    name for name in ("iTunes", "Spotify", "SoundCloud") if name not in enabled_sources
-                ]
-                summary_text += (
-                    f"\n\nOnly searched {', '.join(enabled_sources)} - {', '.join(disabled_sources)} "
-                    f"{'is' if len(disabled_sources) == 1 else 'are'} disabled in Settings."
-                )
+        if no_cover_count and not enabled_sources:
+            summary_text += (
+                "\n\nNo cover source is enabled in Settings - enable iTunes, "
+                "Spotify and/or SoundCloud to find covers automatically."
+            )
         if acoustid_count:
             # Not another bucket alongside the ones above (those already add
             # up to every scanned track) - these overlap with them, since
