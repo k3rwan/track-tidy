@@ -480,6 +480,18 @@ def send_track_report(info, reporter_name=None, timeout=10):
         return False
 
 
+# Windows usernames that never trigger the automatic "new install"/"scan
+# complete" Discord pings below - the developer's own machine, so their own
+# day-to-day testing doesn't spam the channel with self-notifications.
+# Case-insensitive. Doesn't apply to send_track_report() - that one's an
+# explicit user action ("Report this track"), not automatic telemetry.
+DISCORD_NOTIFICATION_EXCLUDED_USERS = {"kevin"}
+
+
+def _is_discord_notification_excluded(reporter_name):
+    return (reporter_name or "").strip().lower() in DISCORD_NOTIFICATION_EXCLUDED_USERS
+
+
 def send_new_install_notification(reporter_name=None, timeout=10):
     """
     Posts a one-time "new install" ping to the same Discord webhook as
@@ -487,13 +499,47 @@ def send_new_install_notification(reporter_name=None, timeout=10):
     using the app. Called once per Windows user account (see
     _check_new_install_notification_on_startup in interface.py, gated by a
     saved setting so it never fires twice on the same machine+account).
-    Returns True on success, False on any failure (never raises).
+    Returns True on success, False on any failure (never raises) - also
+    False without posting anything for an excluded account (see
+    DISCORD_NOTIFICATION_EXCLUDED_USERS).
     """
+    if _is_discord_notification_excluded(reporter_name):
+        return False
     embed = {
         "title": "New install",
         "color": 0x2ECC71,
         "fields": [
             {"name": "User", "value": reporter_name or "(unknown)", "inline": True},
+            {"name": "App version", "value": APP_VERSION, "inline": True},
+        ],
+    }
+    try:
+        response = requests.post(DISCORD_REPORT_WEBHOOK_URL, json={"embeds": [embed]}, timeout=timeout)
+        return response.status_code in (200, 204)
+    except Exception:
+        return False
+
+
+def send_scan_complete_notification(reporter_name=None, number_new=0, number_removed=0, total=0, timeout=10):
+    """
+    Posts a scan-complete ping to the same Discord webhook as
+    send_new_install_notification/send_track_report, so the developer
+    knows when a user actually uses the app day to day, not just installs
+    it. Called once per finished scan (see _finalize_scan in interface.py).
+    Returns True on success, False on any failure (never raises) - also
+    False without posting anything for an excluded account (see
+    DISCORD_NOTIFICATION_EXCLUDED_USERS).
+    """
+    if _is_discord_notification_excluded(reporter_name):
+        return False
+    embed = {
+        "title": "Scan complete",
+        "color": 0x3498DB,
+        "fields": [
+            {"name": "User", "value": reporter_name or "(unknown)", "inline": True},
+            {"name": "New files", "value": str(number_new), "inline": True},
+            {"name": "Removed files", "value": str(number_removed), "inline": True},
+            {"name": "Total files", "value": str(total), "inline": True},
             {"name": "App version", "value": APP_VERSION, "inline": True},
         ],
     }

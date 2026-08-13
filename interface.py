@@ -965,6 +965,25 @@ class TaggerInterface:
 
         self._run_in_background(_send)
 
+    def _notify_scan_complete(self, number_new, number_removed, total):
+        """Pings Discord once per finished scan, so the developer knows
+        when the app is actually being used day to day (not just
+        installed) - disclosed alongside the "new install" ping in
+        Settings' legal notice text. Excluded for the developer's own
+        Windows account (see tagger.DISCORD_NOTIFICATION_EXCLUDED_USERS),
+        so day-to-day testing doesn't spam the channel."""
+        try:
+            reporter_name = getpass.getuser()
+        except Exception:
+            reporter_name = ""
+
+        def _send():
+            tagger.send_scan_complete_notification(
+                reporter_name=reporter_name, number_new=number_new, number_removed=number_removed, total=total,
+            )
+
+        self._run_in_background(_send)
+
     def _check_internet_connection(self, is_startup_check=False):
         """Checks connectivity in the background, updates the status
         indicator, and (only for the initial startup check) warns once via
@@ -1568,7 +1587,9 @@ class TaggerInterface:
                 "mutagen (GPL-2.0-or-later) and FFmpeg (GPLv3).\n"
                 "The first time it's launched on a new Windows account, it sends your "
                 "Windows username to the developer (via Discord) so they know a new "
-                "person is using it - this happens once."
+                "person is using it - this happens once. It also notifies the developer "
+                "(Windows username + file counts, no track/file names) each time a scan "
+                "finishes."
             ),
             justify="left",
             foreground="#888888",
@@ -2455,8 +2476,10 @@ class TaggerInterface:
             if no_cover_infos:
                 self._append_to_journal(f"{len(no_cover_infos)} track(s) currently have no cover match.")
 
-            if number_new > 0 and not self.cancel_requested.is_set():
-                self._show_scan_summary_dialog(no_cover_infos=no_cover_infos)
+            if not self.cancel_requested.is_set():
+                self._notify_scan_complete(number_new, len(removed_files), len(self.scanned_plan))
+                if number_new > 0:
+                    self._show_scan_summary_dialog(no_cover_infos=no_cover_infos)
 
         self._check_for_duplicates()
 
