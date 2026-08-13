@@ -3440,6 +3440,11 @@ class TaggerInterface:
                 self._append_to_journal(
                     "Change pending — will be applied on the next click on 'Apply'."
                 )
+                # The progress bar still shows the PREVIOUS run's "Done" -
+                # misleading now that there's a new pending change waiting
+                # on the next Apply.
+                self.progress_canvas.pack_forget()
+                self._update_progress_bar(0, "")
 
             self.table.item(item_id, values=self._build_row_values(info))
 
