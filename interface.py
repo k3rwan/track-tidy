@@ -2903,6 +2903,44 @@ class TaggerInterface:
             base_folder = os.path.join(tagger.app_base_dir(), base_folder)
         return os.path.abspath(os.path.join(base_folder, relative_path))
 
+    def _apply_new_cover(self, info, new_bytes, parent=None):
+        """Writes a new cover (or None to remove it) straight to the file
+        on disk, immediately - independent of the Apply workflow. Updates
+        the row's info dict, table, and journal on success. Shared by the
+        cover zoom popup (_show_cover_zoom) and the right-click "Remove
+        cover" action (_remove_cover_with_confirmation). Returns True on
+        success, False on failure (an error dialog is already shown)."""
+        full_path = self._resolve_full_path(info)
+        if not os.path.exists(full_path):
+            messagebox.showerror(
+                "File not found", "Could not locate this file on disk anymore.", parent=parent or self.window,
+            )
+            return False
+        try:
+            tagger.write_tags(
+                full_path, artist="", title="", cover_image=new_bytes,
+                force_remove_if_missing=True, update_title=False, update_artist=False, update_cover=True,
+            )
+        except Exception as error:
+            messagebox.showerror("Error", f"Could not update the cover: {error}", parent=parent or self.window)
+            return False
+
+        info["current_cover_bytes"] = new_bytes
+        info["found_cover_image"] = new_bytes
+        info["has_cover"] = new_bytes is not None
+        info["cover_source"] = "Manual" if new_bytes else None
+        self._refresh_row(info)
+        self._append_to_journal(f"Cover {'updated' if new_bytes else 'removed'} for '{info['file']}'")
+        return True
+
+    def _remove_cover_with_confirmation(self, info):
+        """Right-click a cover thumbnail -> "Remove cover" - same action
+        as the "Remove cover" button inside the zoom popup (_show_cover_
+        zoom), just without opening it first."""
+        if not messagebox.askyesno("Remove cover", "Remove the cover from this file?", parent=self.window):
+            return
+        self._apply_new_cover(info, None)
+
     def _show_cover_zoom(self, info):
         """Click on the cover thumbnail: shows it full-size in a popup, with
         buttons to import a replacement or remove it - both write straight to
@@ -2949,28 +2987,8 @@ class TaggerInterface:
             self._center_dialog(dialog)
 
         def apply_new_cover(new_bytes):
-            full_path = self._resolve_full_path(info)
-            if not os.path.exists(full_path):
-                messagebox.showerror("File not found", "Could not locate this file on disk anymore.", parent=dialog)
-                return
-            try:
-                tagger.write_tags(
-                    full_path, artist="", title="", cover_image=new_bytes,
-                    force_remove_if_missing=True, update_title=False, update_artist=False, update_cover=True,
-                )
-            except Exception as error:
-                messagebox.showerror("Error", f"Could not update the cover: {error}", parent=dialog)
-                return
-
-            info["current_cover_bytes"] = new_bytes
-            info["found_cover_image"] = new_bytes
-            info["has_cover"] = new_bytes is not None
-            info["cover_source"] = "Manual" if new_bytes else None
-            self._refresh_row(info)
-            self._append_to_journal(
-                f"Cover {'updated' if new_bytes else 'removed'} for '{info['file']}'"
-            )
-            render()
+            if self._apply_new_cover(info, new_bytes, parent=dialog):
+                render()
 
         def import_cover():
             file_path = filedialog.askopenfilename(
@@ -3639,6 +3657,11 @@ class TaggerInterface:
         menu = self._make_themed_menu(self.window)
         rescan_label = "Rescan this track" if len(selected_infos) <= 1 else f"Rescan selected ({len(selected_infos)})"
         menu.add_command(label="Info", command=lambda: self._show_track_info(info))
+        if self.table.identify_column(event.x) == "#0":
+            cover_state = "normal" if tagger.effective_cover_bytes(info) else "disabled"
+            menu.add_command(
+                label="Remove cover", command=lambda: self._remove_cover_with_confirmation(info), state=cover_state,
+            )
         menu.add_command(label=rescan_label, command=lambda: self._show_fix_no_cover_dialog(selected_infos))
         menu.add_command(label="Open file location", command=lambda: self._open_file_location(info))
         menu.add_separator()
