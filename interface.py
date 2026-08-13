@@ -2278,13 +2278,31 @@ class TaggerInterface:
             padding=(20, 20, 20, 5),
         ).pack()
 
-        summary_text = (
-            f"Cover from iTunes: {itunes_count}\n"
-            f"Cover from Spotify: {spotify_count}\n"
-            f"Cover from SoundCloud: {soundcloud_count}\n"
-            f"Kept original cover: {kept_existing_count}\n"
-            f"No cover at all: {no_cover_count}"
-        )
+        # Only list sources that were actually enabled - a "Cover from
+        # Spotify: 0" line next to enabled sources reads as "Spotify was
+        # searched and came up empty", which is wrong when it wasn't
+        # searched at all (see enabled_cover_sources()).
+        source_counts = {"iTunes": itunes_count, "Spotify": spotify_count, "SoundCloud": soundcloud_count}
+        enabled_sources = tagger.enabled_cover_sources()
+        lines = [f"Cover from {name}: {source_counts[name]}" for name in enabled_sources]
+        lines.append(f"Kept original cover: {kept_existing_count}")
+        lines.append(f"No cover at all: {no_cover_count}")
+        summary_text = "\n".join(lines)
+
+        if no_cover_count:
+            if not enabled_sources:
+                summary_text += (
+                    "\n\nNo cover source is enabled in Settings - enable iTunes, "
+                    "Spotify and/or SoundCloud to find covers automatically."
+                )
+            elif len(enabled_sources) < 3:
+                disabled_sources = [
+                    name for name in ("iTunes", "Spotify", "SoundCloud") if name not in enabled_sources
+                ]
+                summary_text += (
+                    f"\n\nOnly searched {', '.join(enabled_sources)} - {', '.join(disabled_sources)} "
+                    f"{'is' if len(disabled_sources) == 1 else 'are'} disabled in Settings."
+                )
         if acoustid_count:
             # Not another bucket alongside the ones above (those already add
             # up to every scanned track) - these overlap with them, since
@@ -2439,6 +2457,17 @@ class TaggerInterface:
             dialog, text="Correct the Artist/Title below, then click Search to try again.",
             padding=(10, 10, 10, 5),
         ).pack(anchor="w")
+
+        enabled_sources = tagger.enabled_cover_sources()
+        if len(enabled_sources) < 3:
+            disabled_sources = [name for name in ("iTunes", "Spotify", "SoundCloud") if name not in enabled_sources]
+            note_text = (
+                "No cover source is enabled in Settings - searching again won't find anything."
+                if not enabled_sources
+                else f"Only searching {', '.join(enabled_sources)} - "
+                f"{', '.join(disabled_sources)} {'is' if len(disabled_sources) == 1 else 'are'} disabled in Settings."
+            )
+            ttk.Label(dialog, text=note_text, padding=(10, 0, 10, 5), foreground="#888888").pack(anchor="w")
 
         canvas_frame = ttk.Frame(dialog)
         canvas_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
