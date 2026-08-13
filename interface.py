@@ -2426,11 +2426,16 @@ class TaggerInterface:
             fields_row = ttk.Frame(row)
             fields_row.pack(fill="x", pady=(2, 0))
 
+            # The two entries are always pre-filled (never empty), so a
+            # placeholder wouldn't show - a plain label is the only way to
+            # actually tell them apart at a glance.
+            ttk.Label(fields_row, text="Artist:").pack(side="left", padx=(0, 3))
             artist_entry = ttk.Entry(fields_row, width=20)
             artist_entry.insert(0, info.get("artist_override") or info.get("detected_artist") or "")
             artist_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
             self._bind_entry_context_menu(artist_entry)
 
+            ttk.Label(fields_row, text="Title:").pack(side="left", padx=(0, 3))
             title_entry = ttk.Entry(fields_row, width=20)
             title_entry.insert(0, info.get("title_override") or info.get("detected_title") or "")
             title_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
@@ -3454,7 +3459,7 @@ class TaggerInterface:
         selected_infos = [i for i in self.scanned_plan if i["file"] in selected_ids] or [info]
 
         menu = self._make_themed_menu(self.window)
-        rescan_label = "Rescan this file" if len(selected_infos) <= 1 else f"Rescan selected ({len(selected_infos)})"
+        rescan_label = "Rescan this track" if len(selected_infos) <= 1 else f"Rescan selected ({len(selected_infos)})"
         menu.add_command(label="Info", command=lambda: self._show_track_info(info))
         menu.add_command(label=rescan_label, command=lambda: self._show_fix_no_cover_dialog(selected_infos))
         menu.add_command(label="Open file location", command=lambda: self._open_file_location(info))
