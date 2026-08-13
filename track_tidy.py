@@ -61,6 +61,7 @@ import platformdirs
 from mutagen import File as MutagenFile
 from mutagen.mp3 import MP3
 from mutagen.wave import WAVE
+from mutagen.aiff import AIFF
 from mutagen.id3 import TIT2, TPE1, APIC
 
 
@@ -759,13 +760,24 @@ USE_ITUNES = True
 USE_SPOTIFY = False
 USE_SOUNDCLOUD = True
 
-# Whether non-MP3, non-WAV files get converted to MP3 (320 kbps) automatically
-# (set by the UI). WAV is always tagged directly, on or off - it's the only
-# non-MP3 format mutagen can write ID3 tags/cover art to without converting
-# first (see open_audio_file/write_tags) - so when this is off, only the
-# other formats (FLAC, M4A, OGG, ...), which truly can't be tagged without
-# converting, are skipped during scanning.
+# Whether non-MP3, non-WAV, non-AIFF files get converted to MP3 (320 kbps)
+# automatically (set by the UI). WAV/AIFF are always tagged directly, on or
+# off - they're the only non-MP3 formats mutagen can write ID3 tags/cover
+# art to without converting first (see open_audio_file/write_tags) - so
+# when this is off, only the other formats (FLAC, M4A, OGG, ...), which
+# truly can't be tagged without converting, are skipped during scanning.
+# Takes priority over AUTO_CONVERT_WAV_TO_AIFF below when both apply to a
+# WAV file (see _resolve_conversion_target).
 AUTO_CONVERT_MP3 = False
+
+# Whether WAV files get converted to AIFF instead of being tagged as WAV
+# directly (set by the UI, on by default). Purely about cover art
+# compatibility, not sound quality (lossless PCM byte-order conversion,
+# see convert_wav_to_aiff) or tag support (both are taggable directly via
+# ID3) - some DJ software (confirmed: Rekordbox) doesn't read embedded
+# artwork from WAV files at all, only from AIFF/MP3/etc. No effect on
+# files that are already something other than WAV.
+AUTO_CONVERT_WAV_TO_AIFF = True
 
 
 # ============================================================================
@@ -1203,15 +1215,15 @@ def list_audio_files():
     of relative paths of the audio files found (without reading any tags).
     Fast: useful for detecting new files without rescanning everything.
 
-    Skips formats other than MP3/WAV when AUTO_CONVERT_MP3 is off - those are
-    the only two formats mutagen can tag directly (see open_audio_file), so
+    Skips formats other than MP3/WAV/AIFF when AUTO_CONVERT_MP3 is off - those
+    are the only formats mutagen can tag directly (see open_audio_file), so
     with auto-convert disabled there's nothing usable left to do with the
-    rest. WAV itself is always included either way.
+    rest. WAV/AIFF themselves are always included either way.
     """
     if not os.path.isdir(MUSIC_FOLDER):
         return []
 
-    extensions = SUPPORTED_EXTENSIONS if AUTO_CONVERT_MP3 else (".mp3", ".wav")
+    extensions = SUPPORTED_EXTENSIONS if AUTO_CONVERT_MP3 else (".mp3", ".wav", ".aiff")
 
     audio_files = []
     for current_folder, _, file_names in os.walk(MUSIC_FOLDER):
@@ -1506,12 +1518,11 @@ def _finish_scan(prepared, match_result, cover_source, log=safe_print):
         "current_title": prepared["current_title"],
         "has_cover": prepared["has_cover"],
         "mention_detected": contains_mention_to_remove(file_name),
-        # WAV can be tagged either way, so its default follows the user's
-        # global choice - other non-MP3 formats have no such choice (can't
-        # be tagged without converting at all), so they always default on.
-        "convert": (
-            AUTO_CONVERT_MP3 if file_name.lower().endswith(".wav") else prepared["needs_conversion"]
-        ),
+        # WAV/AIFF can be tagged either way, so their default follows the
+        # user's global choices (see _resolve_conversion_target) - other
+        # non-MP3 formats have no such choice (can't be tagged without
+        # converting at all), so they always default on.
+        "convert": _resolve_conversion_target(file_name) is not None,
         # If the file's own tags are already complete, don't default to
         # overwriting them with a filename-derived guess that could be worse
         # (e.g. a truncated/garbled filename from some export tool).
@@ -2333,6 +2344,60 @@ def convert_to_mp3(source_path):
         return None
 
 
+def convert_wav_to_aiff(source_path):
+    """
+    Converts a WAV file to AIFF using FFmpeg - purely a lossless PCM
+    byte-order swap (little-endian -> big-endian), not a re-encode, so
+    there's no quality loss. Exists only for cover-art compatibility with
+    software that doesn't read embedded artwork from WAV (confirmed:
+    Rekordbox) but does from AIFF. Removes the original file on success.
+    """
+    aiff_path = os.path.splitext(source_path)[0] + ".aiff"
+    try:
+        result = subprocess.run(
+            [find_ffmpeg(), "-i", source_path, "-y", aiff_path],
+            capture_output=True,
+            text=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode != 0:
+            print(f"  FFmpeg error during conversion: {result.stderr[-300:]}")
+            return None
+
+        os.remove(source_path)
+        return aiff_path
+
+    except FileNotFoundError:
+        print("  FFmpeg was not found. Check that it's installed and in the PATH.")
+        return None
+    except Exception as error:
+        print(f"  Error during conversion: {error}")
+        return None
+
+
+def _resolve_conversion_target(file_name):
+    """
+    Decides what a non-MP3 file should be converted to, given the current
+    settings - shared by _finish_scan() (the per-row "convert" default) and
+    process_files() (which converter to actually run). Returns "mp3",
+    "aiff", or None (stays in its current format, tagged directly - only
+    possible for WAV/AIFF, the two formats open_audio_file/write_tags
+    support without converting first).
+
+    AUTO_CONVERT_MP3 always wins when it's on, for any format, including
+    WAV - it's the broader, more deliberate setting. AUTO_CONVERT_WAV_TO_AIFF
+    only ever applies to WAV specifically, and only when AUTO_CONVERT_MP3
+    is off.
+    """
+    if file_name.lower().endswith(".mp3"):
+        return None
+    if AUTO_CONVERT_MP3:
+        return "mp3"
+    if file_name.lower().endswith(".wav") and AUTO_CONVERT_WAV_TO_AIFF:
+        return "aiff"
+    return None
+
+
 # ============================================================================
 # 13. TAG WRITING
 # ============================================================================
@@ -2342,6 +2407,8 @@ def open_audio_file(file_path):
         audio = MP3(file_path)
     elif file_path.lower().endswith(".wav"):
         audio = WAVE(file_path)
+    elif file_path.lower().endswith((".aiff", ".aif")):
+        audio = AIFF(file_path)
     else:
         raise ValueError("Unsupported file format")
 
@@ -2509,10 +2576,15 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
         full_path = os.path.join(MUSIC_FOLDER, file_name)
         converted_this_file = False
 
-        if not file_name.lower().endswith(".mp3") and info.get("convert"):
+        target_format = _resolve_conversion_target(file_name) if info.get("convert") else None
+        if target_format:
             source_extension = os.path.splitext(file_name)[1].lstrip(".").upper()
-            log(f"  Converting .{source_extension.lower()} -> .mp3 (320 kbps)...")
-            new_path = convert_to_mp3(full_path)
+            if target_format == "mp3":
+                log(f"  Converting .{source_extension.lower()} -> .mp3 (320 kbps)...")
+                new_path = convert_to_mp3(full_path)
+            else:
+                log(f"  Converting .{source_extension.lower()} -> .aiff...")
+                new_path = convert_wav_to_aiff(full_path)
 
             if not new_path:
                 log("  Conversion failed, file skipped.\n")
