@@ -132,20 +132,33 @@ matching logic instead of a second cover-fetching path.
   default) - it's much slower (real audio analysis + a network call) than
   the fast text search, so running it for every file would meaningfully
   slow down a scan for no benefit on files that already match fine.
-- Needs a free AcoustID API key (Settings -> "AcoustID API key..." -
-  register at https://acoustid.org/api-key, Kevin has to do this himself,
-  Claude can't create third-party accounts) - a no-op without one, same
-  as SoundCloud/Spotify with no credentials configured.
+- Works out of the box via a shared, embedded API key
+  (`ACOUSTID_DEFAULT_API_KEY`, base64-obfuscated like
+  `DISCORD_REPORT_WEBHOOK_URL` - same "not real secrecy" caveat) - unlike
+  SoundCloud/Spotify, AcoustID API keys are meant to be per-application,
+  not per-user, so nobody has to register anything. Settings still has an
+  optional "Use my own AcoustID API key..." button (register at
+  https://acoustid.org/api-key) for anyone who wants to override it, e.g.
+  if the shared key ever gets rate-limited from everyone's combined
+  usage - worth keeping an eye on if AcoustID lookups start failing for
+  multiple users at once.
 - `fpcalc.exe`/`fpcalc` is bundled the same way as `ffmpeg.exe`/`ffmpeg`
   (gitignored, not committed - copy the binary from
   https://github.com/acoustid/chromaprint/releases into the project root
   before building). `find_ffmpeg()`/`find_fpcalc()` share one helper
   (`_find_bundled_tool`) that checks the platform-appropriate bundled
   name first, falling back to PATH.
-- **Not yet verified end to end** - implemented and tested with a real
-  `fpcalc.exe` + mocked AcoustID API responses (no real API key was
-  available to test the live web-service call against). Ask before
-  assuming the live lookup itself has been confirmed working.
+- **Live lookup confirmed working end to end** with a real API key
+  against real audio (Kevin's own real library, via user reports) - the
+  integration itself works. One real report DID turn out to be a
+  genuine false positive at a very high confidence score (0.97, about
+  as high as AcoustID gives) - two stylistically-similar house tracks by
+  different artists apparently fingerprinted close enough to collide.
+  Not a bug to "fix" (the matching algorithm isn't ours to tune), so
+  rows AcoustID identifies now get a "🎧" marker in the main table
+  (`_build_row_values` in interface.py) until the user has reviewed the
+  Artist/Title themselves - don't trust a high score alone as proof of
+  correctness.
 
 ## Cross-platform (Windows/macOS)
 
