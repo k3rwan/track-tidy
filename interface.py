@@ -1906,6 +1906,12 @@ class TaggerInterface:
         self._sync_mentions_to_remove()
 
         for info in self.scanned_plan:
+            # A confident AcoustID identification isn't filename/tag-derived
+            # at all - resolve_artist_title() only ever looks at those, so
+            # re-running it here would silently throw the identification
+            # away and fall back to the original unusable filename/tags.
+            if info.get("acoustid_identified"):
+                continue
             try:
                 old_artist = info.get("detected_artist")
                 old_title = info.get("detected_title")
@@ -2074,7 +2080,11 @@ class TaggerInterface:
         # row's title with a slightly stale mentions list (e.g. "By FuviClan"
         # just got auto-activated by an earlier file in the very same scan).
         self._sync_mentions_to_remove()
-        if not info.get("processed"):
+        # Skip for a confident AcoustID identification - resolve_artist_title()
+        # only ever looks at the filename/existing tags, so re-running it
+        # here would silently throw away the audio-content identification
+        # and fall right back to the original unusable filename/tags.
+        if not info.get("processed") and not info.get("acoustid_identified"):
             new_artist, new_title, _tags_already_present = tagger.resolve_artist_title(
                 info["file"], info.get("current_artist"), info.get("current_title")
             )
