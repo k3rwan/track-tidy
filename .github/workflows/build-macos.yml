@@ -38,6 +38,18 @@ jobs:
           source venv_build/bin/activate
           python -m unittest discover -s tests
 
+      - name: Bundle a macOS ffmpeg binary
+        # build_mac.sh only bundles ffmpeg into the .app if a binary is
+        # already sitting at ./ffmpeg before it runs - nobody had ever put
+        # one there for a macOS build, so WAV->AIFF conversion and RIFF
+        # INFO tag writing (both shell out to it) silently degraded on Mac
+        # even though they work fine on Windows (ffmpeg.exe is checked
+        # into the repo there). Homebrew's ffmpeg is pre-installed on
+        # GitHub's macOS runners.
+        run: |
+          which ffmpeg || brew install ffmpeg
+          cp "$(which ffmpeg)" ./ffmpeg
+
       - name: Build .app and .dmg
         run: |
           source venv_build/bin/activate
