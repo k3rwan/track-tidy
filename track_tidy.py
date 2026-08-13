@@ -1721,11 +1721,20 @@ def _finish_scan(prepared, match_result, cover_source, log=safe_print):
         "current_title": prepared["current_title"],
         "has_cover": prepared["has_cover"],
         "mention_detected": contains_mention_to_remove(file_name),
-        # WAV/AIFF can be tagged either way, so their default follows the
-        # user's global choices (see _resolve_conversion_target) - other
-        # non-MP3 formats have no such choice (can't be tagged without
-        # converting at all), so they always default on.
-        "convert": _resolve_conversion_target(file_name) is not None,
+        # WAV can be tagged either way, so its default follows the user's
+        # global choices (see _resolve_conversion_target) - other non-MP3
+        # formats have no such choice (can't be tagged without converting
+        # at all), so they always default on. AIFF is the one exception:
+        # it's already the taggable, lossless format WAV_TO_AIFF converts
+        # WAV *into* - even with "Convert everything to MP3" on, a file
+        # that's already AIFF shouldn't default to being downgraded to
+        # lossy MP3 just because it happens to not be MP3 already. The
+        # user can still check it manually if they really want that.
+        "convert": (
+            False
+            if file_name.lower().endswith(".aiff")
+            else _resolve_conversion_target(file_name) is not None
+        ),
         # If the file's own tags are already complete, don't default to
         # overwriting them with a filename-derived guess that could be worse
         # (e.g. a truncated/garbled filename from some export tool).
