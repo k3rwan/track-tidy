@@ -1331,7 +1331,7 @@ class TaggerInterface:
 
         # ============================== Extractor tab ==============================
 
-        ttk.Label(
+        extractor_intro_label = ttk.Label(
             extractor_tab,
             text=(
                 "Flattens a messy music folder: every audio file (MP3, WAV, FLAC, "
@@ -1340,8 +1340,13 @@ class TaggerInterface:
                 "Now-empty subfolders are cleaned up automatically afterwards."
             ),
             justify="left",
-            wraplength=440,
-        ).pack(anchor="w", padx=10, pady=(15, 10))
+        )
+        extractor_intro_label.pack(anchor="w", fill="x", padx=10, pady=(15, 10))
+        # Wraps to the label's own actual width instead of a fixed guess, so
+        # it uses the full available width up to the right edge (like the
+        # left-aligned text already does), not just whatever a hardcoded
+        # wraplength happened to allow.
+        extractor_intro_label.bind("<Configure>", lambda e: e.widget.configure(wraplength=e.width))
 
         ttk.Label(extractor_tab, text="Folder to flatten:").pack(anchor="w", padx=10)
         self.extract_folder_var = tk.StringVar(value="")
@@ -1442,11 +1447,13 @@ class TaggerInterface:
                 "person is using it - this happens once."
             ),
             justify="left",
-            wraplength=440,
             foreground="#888888",
             font=("TkDefaultFont", 8),
         )
-        legal_text_label.pack(anchor="w", padx=10, pady=(0, 2), side="bottom")
+        legal_text_label.pack(anchor="w", fill="x", padx=10, pady=(0, 2), side="bottom")
+        # See the Extractor tab's intro label above for why this is dynamic
+        # rather than a fixed wraplength.
+        legal_text_label.bind("<Configure>", lambda e: e.widget.configure(wraplength=e.width))
 
         self.legal_notices_link = ttk.Label(
             soundcloud_tab, text="View license & third-party notices",
