@@ -54,6 +54,10 @@ Instead:
   create a fresh `wip` off the new `main` for the next batch - THEN run
   the normal release pipeline (version bump, CHANGELOG, build, tag,
   `gh release create`) from `main`, per the existing approval rule below.
+  Version bump is always current `APP_VERSION` (in `track_tidy.py` on
+  Kevin's dev machine, i.e. `main`) + 1 on the last segment (e.g. dev is
+  on 0.12 -> release as 0.13) - auto-determine it, no need to ask Kevin
+  which number to use.
 - Test before committing: `python -m unittest discover -s tests` (run from
   the project root with the venv's Python).
 - For GUI changes, actually launch the app and screenshot it rather than
