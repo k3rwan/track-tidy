@@ -76,7 +76,7 @@ jobs:
       - name: Verify the bundled ffmpeg actually runs
         # otool -L only proves the link PATHS look right - this proves the
         # binary genuinely executes, dependencies and all.
-        run: "dist/Track-Tidy.app/Contents/MacOS/ffmpeg" -version
+        run: dist/Track-Tidy.app/Contents/MacOS/ffmpeg -version
 
       - name: Launch the app and verify it doesn't crash on startup
         # A local build's .app has no quarantine attribute (that's only
