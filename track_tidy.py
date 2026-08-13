@@ -2554,6 +2554,7 @@ def identify_via_acoustid(file_path, log=safe_print):
     raises, same philosophy as the other cover sources.
     """
     if not ACOUSTID_API_KEY:
+        log("  [AcoustID] No API key configured - skipping (Settings > AcoustID API key...).")
         return None
 
     acoustid.FPCALC_COMMAND = find_fpcalc()
