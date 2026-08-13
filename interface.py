@@ -2206,14 +2206,24 @@ class TaggerInterface:
     def _compute_cover_summary(self):
         """Counts, among all currently scanned tracks, how many got a cover
         from each source, how many kept their original one, and how many
-        have none at all - independent of whether Apply has run yet."""
+        have none at all - independent of whether Apply has run yet.
+        acoustid_count is a separate, overlapping tally (not another
+        "source" like the others) - AcoustID never provides the cover
+        itself, only identifies the correct Artist/Title from the audio so
+        the iTunes/Spotify/SoundCloud search above can find one; a track it
+        identified still gets counted under whichever of those actually
+        supplied the cover (or "no cover" if none did)."""
         itunes_count = 0
         spotify_count = 0
         soundcloud_count = 0
         kept_existing_count = 0
         no_cover_count = 0
+        acoustid_count = 0
 
         for info in self.scanned_plan:
+            if info.get("acoustid_identified"):
+                acoustid_count += 1
+
             source = info.get("cover_source")
             if source == "iTunes":
                 itunes_count += 1
@@ -2226,7 +2236,7 @@ class TaggerInterface:
             else:
                 no_cover_count += 1
 
-        return itunes_count, spotify_count, soundcloud_count, kept_existing_count, no_cover_count
+        return itunes_count, spotify_count, soundcloud_count, kept_existing_count, no_cover_count, acoustid_count
 
     def _show_scan_summary_dialog(self, no_cover_infos=None):
         """Cover-source breakdown shown right after a scan finds new files -
@@ -2234,7 +2244,7 @@ class TaggerInterface:
         A single dialog: "OK" alone, or "OK" plus a second button straight
         into fixing Artist/Title for no-cover tracks when there are any -
         not a separate yes/no confirmation chained after this one."""
-        itunes_count, spotify_count, soundcloud_count, kept_existing_count, no_cover_count = (
+        itunes_count, spotify_count, soundcloud_count, kept_existing_count, no_cover_count, acoustid_count = (
             self._compute_cover_summary()
         )
 
@@ -2259,6 +2269,13 @@ class TaggerInterface:
             f"Kept original cover: {kept_existing_count}\n"
             f"No cover at all: {no_cover_count}"
         )
+        if acoustid_count:
+            # Not another bucket alongside the ones above (those already add
+            # up to every scanned track) - these overlap with them, since
+            # AcoustID only identifies Artist/Title, it doesn't supply the
+            # cover itself (see _compute_cover_summary).
+            unit = "track" if acoustid_count == 1 else "tracks"
+            summary_text += f"\n\nIdentified via audio (AcoustID): {acoustid_count} {unit}"
         ttk.Label(dialog, text=summary_text, justify="left", foreground="#555555").pack(padx=20, pady=(0, 15))
 
         button_row = ttk.Frame(dialog)
