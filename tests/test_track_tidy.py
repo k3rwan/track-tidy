@@ -561,9 +561,12 @@ class ListAudioFilesTests(unittest.TestCase):
         tagger.AUTO_CONVERT_MP3 = True
         self.assertEqual(set(tagger.list_audio_files()), {"Song.mp3", "Track.wav", "Other.flac"})
 
-    def test_excludes_wav_when_auto_convert_disabled(self):
+    def test_excludes_non_wav_non_mp3_when_auto_convert_disabled(self):
+        # WAV can be tagged directly (no conversion needed), so it stays
+        # included either way - only FLAC (needs converting to be taggable
+        # at all) drops out when auto-convert is off.
         tagger.AUTO_CONVERT_MP3 = False
-        self.assertEqual(set(tagger.list_audio_files()), {"Song.mp3", "Other.flac"})
+        self.assertEqual(set(tagger.list_audio_files()), {"Song.mp3", "Track.wav"})
 
 
 class ScanFilesParallelITunesTests(unittest.TestCase):
