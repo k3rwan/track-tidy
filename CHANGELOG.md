@@ -3,6 +3,35 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.15]
+
+### Added
+- "Remove cover" added to the right-click menu on the cover thumbnail -
+  writes straight to disk immediately, same as the zoom popup's button.
+- A popup now warns when SoundCloud or Spotify credentials are
+  configured but authentication actually fails (e.g. an expired/wrong
+  client) - previously only visible as a line buried in the log.
+- Apply now shows a popup listing exactly which file(s) couldn't be
+  processed and why (most commonly corrupted audio data), instead of
+  that only ever showing up in the log.
+
+### Changed
+- One corrupted or otherwise unprocessable file no longer aborts the
+  rest of an Apply batch - every file is now handled independently.
+- Right-click "Rescan" no longer re-prompts for Artist/Title - it
+  searches directly with whatever the table is already showing for
+  that row (its override if already corrected, otherwise the detected
+  value).
+- Editing Title/Artist on an already-Applied row now shows a pending
+  checkbox instead of the "done" checkmark, until the next Apply
+  actually catches up.
+- AcoustID lookups now use HTTPS instead of plain HTTP - cut down
+  noticeably on "Connection aborted" resets seen in real scans.
+- iTunes searches now share a scan-wide rate-limit cooldown, and run
+  with lower concurrency - a real large-batch scan was hitting a
+  genuine, sustained HTTP 429 that kept getting hammered independently
+  by every concurrent/sequential search.
+
 ## [0.14]
 
 ### Added
