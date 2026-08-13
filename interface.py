@@ -287,6 +287,7 @@ class TaggerInterface:
         tagger.AUTO_CONVERT_WAV_TO_AIFF = self.auto_convert_wav_aiff_var.get()
 
         self._build_interface()
+        self._sync_wav_aiff_checkbox_state()
         self._setup_drag_and_drop()
         self._adjust_window_height()
         self._apply_theme(self.theme_var.get())
@@ -358,7 +359,15 @@ class TaggerInterface:
 
     def _on_auto_convert_changed(self):
         enabled = self.auto_convert_var.get()
-        if not enabled:
+        if enabled:
+            messagebox.showinfo(
+                "Convert WAV to AIFF disabled",
+                "\"Convert everything to MP3\" now takes priority for WAV files too, "
+                "so \"Convert WAV to AIFF\" has no effect and is disabled while this "
+                "is on - turn this back off to make it available again.",
+                parent=self.window,
+            )
+        else:
             wav_fate = (
                 "converted to AIFF" if self.auto_convert_wav_aiff_var.get() else "tagged (and get a cover) in place, kept as WAV"
             )
@@ -371,6 +380,16 @@ class TaggerInterface:
             )
         tagger.AUTO_CONVERT_MP3 = enabled
         tagger.save_setting("auto_convert_mp3", enabled)
+        self._sync_wav_aiff_checkbox_state()
+
+    def _sync_wav_aiff_checkbox_state(self):
+        """"Convert WAV to AIFF" has no effect while "Convert everything to
+        MP3" is on (that setting always wins for WAV too, same as every
+        other format - see tagger._resolve_conversion_target), so it's
+        disabled then instead of leaving a control up that silently does
+        nothing when toggled."""
+        state = "disabled" if self.auto_convert_var.get() else "normal"
+        self.auto_convert_wav_aiff_checkbox.configure(state=state)
 
     def _on_auto_convert_wav_aiff_changed(self):
         enabled = self.auto_convert_wav_aiff_var.get()
@@ -1410,10 +1429,11 @@ class TaggerInterface:
             behavior_frame, text="Convert everything to MP3 (320 kbps)", variable=self.auto_convert_var,
             command=self._on_auto_convert_changed,
         ).pack(anchor="w", padx=10, pady=(10, 0))
-        ttk.Checkbutton(
+        self.auto_convert_wav_aiff_checkbox = ttk.Checkbutton(
             behavior_frame, text="Convert WAV to AIFF (needed for cover art in Rekordbox)",
             variable=self.auto_convert_wav_aiff_var, command=self._on_auto_convert_wav_aiff_changed,
-        ).pack(anchor="w", padx=10, pady=(0, 0))
+        )
+        self.auto_convert_wav_aiff_checkbox.pack(anchor="w", padx=10, pady=(0, 0))
         ttk.Checkbutton(
             behavior_frame, text="Show log section", variable=self.show_log_var,
             command=self._on_show_log_changed,
