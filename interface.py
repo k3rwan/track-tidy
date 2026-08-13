@@ -1511,9 +1511,12 @@ class TaggerInterface:
             ttk.Radiobutton(
                 appearance_frame, text=label, value=value, variable=self.theme_var,
                 command=self._on_theme_changed,
-            ).pack(anchor="w", padx=10, pady=(5, 0) if value == "light" else (0, 5))
+            ).pack(side="left", padx=10, pady=10)
 
-        sources_frame = ttk.LabelFrame(soundcloud_tab, text="Sources")
+        # Sources + AcoustID together: both are really the same kind of
+        # setting (how a cover gets found for a track) - AcoustID used to
+        # be its own separate box, which made it look unrelated.
+        sources_frame = ttk.LabelFrame(soundcloud_tab, text="Cover sources")
         sources_frame.pack(fill="x", padx=10, pady=(0, 10))
         sources_row = ttk.Frame(sources_frame)
         sources_row.pack(fill="x", padx=10, pady=(10, 10))
@@ -1539,15 +1542,16 @@ class TaggerInterface:
             credentials_row, text="Spotify credentials...", command=self._show_spotify_credentials_dialog,
         ).pack(side="left", fill="x", expand=True)
 
-        acoustid_frame = ttk.LabelFrame(soundcloud_tab, text="AcoustID")
-        acoustid_frame.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Separator(sources_frame, orient="horizontal").pack(fill="x", padx=10, pady=(0, 10))
         ttk.Checkbutton(
-            acoustid_frame,
-            text="Identify badly-named tracks from the audio itself",
+            sources_frame,
+            text="Identify badly-named tracks from the audio itself (AcoustID)",
             variable=self.use_acoustid_var, command=self._on_use_acoustid_changed,
-        ).pack(anchor="w", padx=10, pady=(10, 10))
+        ).pack(anchor="w", padx=10, pady=(0, 10))
 
-        behavior_frame = ttk.LabelFrame(soundcloud_tab, text="Behavior")
+        # Renamed from "Behavior" - now holds only actual file-handling
+        # toggles, not one-off maintenance actions (those moved to "App").
+        behavior_frame = ttk.LabelFrame(soundcloud_tab, text="File handling")
         behavior_frame.pack(fill="x", padx=10, pady=(0, 10))
         self.auto_convert_checkbox = ttk.Checkbutton(
             behavior_frame, text="Convert everything to MP3 (320 kbps)", variable=self.auto_convert_var,
@@ -1563,18 +1567,23 @@ class TaggerInterface:
             behavior_frame, text="Show log section", variable=self.show_log_var,
             command=self._on_show_log_changed,
         ).pack(anchor="w", padx=10, pady=(0, 10))
-        update_history_row = ttk.Frame(soundcloud_tab)
-        update_history_row.pack(fill="x", padx=10, pady=(0, 10))
+
+        # Maintenance actions, clearly grouped as their own section instead
+        # of floating unframed below "Behavior" (where they looked like
+        # they were part of it, even though they're one-off actions, not
+        # settings).
+        app_frame = ttk.LabelFrame(soundcloud_tab, text="App")
+        app_frame.pack(fill="x", padx=10, pady=(0, 10))
         self.check_update_button = ttk.Button(
-            update_history_row, text="Check for updates", command=self._check_for_update_manual,
+            app_frame, text="Check for updates", command=self._check_for_update_manual,
         )
-        self.check_update_button.pack(fill="x", pady=(0, 5))
+        self.check_update_button.pack(fill="x", padx=10, pady=(10, 5))
         ttk.Button(
-            update_history_row, text="View processing history", command=self._show_history_window,
-        ).pack(fill="x")
+            app_frame, text="View processing history", command=self._show_history_window,
+        ).pack(fill="x", padx=10, pady=(0, 5))
         ttk.Button(
-            update_history_row, text="Reset all settings to default", command=self._reset_settings_to_default,
-        ).pack(fill="x", pady=(5, 0))
+            app_frame, text="Reset all settings to default", command=self._reset_settings_to_default,
+        ).pack(fill="x", padx=10, pady=(0, 10))
 
         self.internet_status_label = ttk.Label(
             soundcloud_tab, text="● Checking connection...", foreground="#999999",
