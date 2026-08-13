@@ -2600,20 +2600,31 @@ def identify_via_acoustid(file_path, log=safe_print):
         return None
 
     acoustid.FPCALC_COMMAND = find_fpcalc()
-    try:
-        results = list(_run_without_console_window(acoustid.match, ACOUSTID_API_KEY, file_path))
-    except acoustid.NoBackendError:
-        log("  [AcoustID] fpcalc not found - check it's bundled or installed.")
-        return None
-    except acoustid.FingerprintGenerationError as error:
-        log(f"  [AcoustID] Could not fingerprint '{file_path}': {error}")
-        return None
-    except acoustid.WebServiceError as error:
-        log(f"  [AcoustID] Lookup failed: {error}")
-        return None
-    except Exception as error:
-        log(f"  [AcoustID] Unexpected error identifying '{file_path}': {error}")
-        return None
+    # WebServiceError covers connection resets/timeouts, which are usually a
+    # transient network hiccup (flaky Wi-Fi, antivirus HTTP inspection) - worth
+    # a couple of quick retries. Fingerprinting errors are deterministic (same
+    # file will fail the same way again), so those return immediately instead.
+    max_attempts = 3
+    results = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            results = list(_run_without_console_window(acoustid.match, ACOUSTID_API_KEY, file_path))
+            break
+        except acoustid.NoBackendError:
+            log("  [AcoustID] fpcalc not found - check it's bundled or installed.")
+            return None
+        except acoustid.FingerprintGenerationError as error:
+            log(f"  [AcoustID] Could not fingerprint '{file_path}': {error}")
+            return None
+        except acoustid.WebServiceError as error:
+            if attempt == max_attempts:
+                log(f"  [AcoustID] Lookup failed after {max_attempts} attempts: {error}")
+                return None
+            log(f"  [AcoustID] Lookup failed (retrying, attempt {attempt}/{max_attempts}): {error}")
+            time.sleep(1.5)
+        except Exception as error:
+            log(f"  [AcoustID] Unexpected error identifying '{file_path}': {error}")
+            return None
 
     for score, _recording_id, title, artist in results:
         if not artist or not title:
