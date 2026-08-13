@@ -501,7 +501,15 @@ class TaggerInterface:
     def _on_tab_changed(self, event=None):
         if self._tagger_resize_pending and self.notebook.index("current") == 0:
             self._tagger_resize_pending = False
-            self._adjust_window_height()
+        # The window height is otherwise only ever computed from whichever
+        # tab happened to be active at startup (or the last explicit
+        # resize) - Settings/Extractor's own content can grow past that
+        # (e.g. Settings picking up a new row of controls) without ever
+        # triggering a resize, so widgets packed at the bottom (the footer
+        # links/legal text) end up cramped or overlapping. Recomputing on
+        # every tab switch keeps the window actually fitting whatever's
+        # visible.
+        self._adjust_window_height()
         if self.notebook.index("current") == 2:  # Settings - recheck right away rather than
             self._check_internet_connection()      # waiting for the next background 10s poll
 
