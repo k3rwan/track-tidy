@@ -763,6 +763,18 @@ USE_ITUNES = True
 USE_SPOTIFY = False
 USE_SOUNDCLOUD = True
 
+
+def enabled_cover_sources():
+    """Names (in search-priority order) of the cover sources currently
+    turned on in Settings - used to explain scan results that depend on
+    which ones were actually tried (see _show_scan_summary_dialog /
+    _show_fix_no_cover_dialog)."""
+    return [
+        name
+        for name, enabled in (("iTunes", USE_ITUNES), ("Spotify", USE_SPOTIFY), ("SoundCloud", USE_SOUNDCLOUD))
+        if enabled
+    ]
+
 # Last-resort audio-content identification (AcoustID/Chromaprint) for a file
 # whose filename/tags are too mangled for the normal text-based search to
 # even attempt, or that search comes up empty - never tried otherwise, since
