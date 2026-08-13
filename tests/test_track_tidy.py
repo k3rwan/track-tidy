@@ -1316,10 +1316,15 @@ class ProcessFilesTests(unittest.TestCase):
 
         results = []
         tagger.process_files(
-            plan, log=lambda *_: None, on_file_processed=lambda ident, ok: results.append((ident, ok)),
+            plan, log=lambda *_: None,
+            on_file_processed=lambda ident, ok, reason=None: results.append((ident, ok, reason)),
         )
 
-        self.assertEqual(results, [("corrupted.mp3", False), ("good_track.mp3", True)])
+        self.assertEqual(len(results), 2)
+        corrupted_ident, corrupted_ok, corrupted_reason = results[0]
+        self.assertEqual((corrupted_ident, corrupted_ok), ("corrupted.mp3", False))
+        self.assertTrue(corrupted_reason)  # some human-readable reason, exact text is mutagen's own
+        self.assertEqual(results[1], ("good_track.mp3", True, None))
         self.assertTrue(plan[0]["processed"])
         self.assertTrue(plan[1]["processed"])
 

@@ -246,6 +246,7 @@ class TaggerInterface:
         self.message_queue = queue.Queue()
         self._is_online = True  # optimistic default until the first real check lands
         self.processing_in_progress = False
+        self._processing_failures = []  # (identifier, reason) pairs - see _show_processing_failures_dialog
         self.cancel_requested = threading.Event()
         self.scanned_plan = []
         self.tk_images = {}  # keeps a reference to PhotoImages (otherwise Tkinter clears them)
@@ -2374,6 +2375,53 @@ class TaggerInterface:
 
         self._center_dialog(dialog)
 
+    def _show_processing_failures_dialog(self):
+        """Shown right before the "Processing complete" dialog whenever
+        Apply hit one or more files it couldn't actually process (most
+        commonly: corrupted audio data mutagen can't read/write at all,
+        e.g. "can't sync to MPEG frame") - process_files() keeps going for
+        the rest of the batch, but without this the failure was only ever
+        visible buried in the log, easy to miss."""
+        failures = self._processing_failures
+        count = len(failures)
+        unit = "file" if count == 1 else "files"
+
+        dialog = tk.Toplevel(self.window)
+        self._style_toplevel(dialog)
+        dialog.title("Some files could not be processed")
+        dialog.resizable(False, False)
+        dialog.transient(self.window)
+        dialog.grab_set()
+
+        ttk.Label(
+            dialog,
+            text=f"⚠ {count} {unit} could not be processed - likely corrupted "
+                 f"audio data. Everything else in this run was unaffected.",
+            justify="left", wraplength=420,
+            padding=(20, 20, 20, 10),
+        ).pack()
+
+        list_frame = ttk.Frame(dialog)
+        list_frame.pack(fill="both", expand=True, padx=20, pady=(0, 10))
+        text_height = min(count, 8)
+        failures_text = scrolledtext.ScrolledText(
+            list_frame, height=text_height, width=50, wrap="word", state="normal",
+        )
+        for identifier, reason in failures:
+            failures_text.insert("end", f"{identifier}\n    {reason}\n")
+        failures_text.configure(state="disabled")
+        if self.theme_colors:
+            failures_text.configure(
+                bg=self.theme_colors["journal_bg"], fg=self.theme_colors["journal_fg"],
+                insertbackground=self.theme_colors["journal_fg"],
+            )
+        failures_text.pack(fill="both", expand=True)
+
+        ttk.Button(dialog, text="OK", command=dialog.destroy).pack(pady=(0, 15))
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+
+        self._center_dialog(dialog)
+
     def _show_success_dialog(self):
         """Custom success dialog with a green checkmark and a distinct chime
         sound - the cover breakdown is shown earlier at scan time, so this
@@ -3760,8 +3808,8 @@ class TaggerInterface:
     def _update_progress(self, index, total):
         self.message_queue.put(("progress", (index, total)))
 
-    def _file_processed(self, identifier, success):
-        self.message_queue.put(("file_processed", identifier))
+    def _file_processed(self, identifier, success, reason=None):
+        self.message_queue.put(("file_processed", (identifier, success, reason)))
 
     def _start_message_loop(self):
         try:
@@ -3785,6 +3833,8 @@ class TaggerInterface:
                     self._set_buttons_enabled(True)
                     self._update_progress_bar(1.0 if not cancelled else 0, "Cancelled" if cancelled else "Done ✓")
                     if not cancelled:
+                        if self._processing_failures:
+                            self._show_processing_failures_dialog()
                         self._show_success_dialog()
 
                 elif message_type == "file_scanned":
@@ -3902,7 +3952,9 @@ class TaggerInterface:
                         )
 
                 elif message_type == "file_processed":
-                    identifier = content
+                    identifier, success, reason = content
+                    if not success:
+                        self._processing_failures.append((identifier, reason or "Unknown error"))
                     if self.table.exists(identifier):
                         info = next((i for i in self.scanned_plan if i["file"] == identifier), None)
                         if info:
@@ -4006,6 +4058,7 @@ class TaggerInterface:
         self._update_progress_bar(0, "0 %")
         self.processing_in_progress = True
         self.cancel_requested.clear()
+        self._processing_failures = []  # (identifier, reason) pairs - see _show_processing_failures_dialog
 
         self.browse_button.configure(state="disabled")
         self.scan_button.configure(state="disabled")
@@ -4043,15 +4096,17 @@ class TaggerInterface:
                 final_artist = info["artist_override"] or info["detected_artist"]
                 final_title = info["title_override"] or info["detected_title"]
 
+                fix_error = None
                 if final_artist and final_title:
                     try:
                         tagger.fix_title_artist(info, final_artist, final_title)
                         self._append_to_journal(f"Fix applied: '{final_artist} - {final_title}'")
                         info["fix_pending"] = False
                     except Exception as error:
+                        fix_error = str(error)
                         self._append_to_journal(f"Error while applying fix: {error}")
 
-                self.message_queue.put(("file_processed", info["file"]))
+                self.message_queue.put(("file_processed", (info["file"], fix_error is None, fix_error)))
 
         except Exception as error:
             self._append_to_journal(f"Unexpected error: {error}")
