@@ -246,6 +246,7 @@ class TaggerInterface:
         self.message_queue = queue.Queue()
         self._is_online = True  # optimistic default until the first real check lands
         self.processing_in_progress = False
+        self._processing_failures = []  # (identifier, reason) pairs - see _show_processing_failures_dialog
         self.cancel_requested = threading.Event()
         self.scanned_plan = []
         self.tk_images = {}  # keeps a reference to PhotoImages (otherwise Tkinter clears them)
@@ -263,6 +264,7 @@ class TaggerInterface:
         self._drag_moved = False
         self._table_font = tkfont.nametofont("TkDefaultFont")
         self.soundcloud_rate_limit_warned = False
+        self.source_auth_error_warned = {}  # "SoundCloud"/"Spotify" -> already warned this scan
         self.mention_counts = {}  # raw mention text -> number of times seen
 
         self._native_theme = ttk.Style().theme_use()  # so "light" can restore it later
@@ -1193,6 +1195,7 @@ class TaggerInterface:
         tagger.MUSIC_FOLDER = folder
         self._sync_mentions_to_remove()
         self.soundcloud_rate_limit_warned = False
+        self.source_auth_error_warned = {}
 
         if folder != getattr(self, "last_scanned_folder", None):
             for row in self.table.get_children():
@@ -1233,6 +1236,7 @@ class TaggerInterface:
         tagger.MUSIC_FOLDER = folder
         self.last_scanned_folder = folder
         self.soundcloud_rate_limit_warned = False
+        self.source_auth_error_warned = {}
 
         self.notebook.select(0)
         self._set_buttons_enabled(False)
@@ -2073,6 +2077,7 @@ class TaggerInterface:
         tagger.MUSIC_FOLDER = folder
         self._sync_mentions_to_remove()
         self.soundcloud_rate_limit_warned = False
+        self.source_auth_error_warned = {}
 
         if folder != getattr(self, "last_scanned_folder", None):
             for row in self.table.get_children():
@@ -2121,6 +2126,7 @@ class TaggerInterface:
                 on_new_mention=lambda mention: self.message_queue.put(("mention_added", mention)),
                 on_rate_limited=lambda: self.message_queue.put(("soundcloud_rate_limited", None)),
                 should_cancel=self.cancel_requested.is_set,
+                on_auth_error=self._on_source_auth_error,
             )
 
         except Exception as error:
@@ -2329,20 +2335,11 @@ class TaggerInterface:
         lines.append(f"No cover at all: {no_cover_count}")
         summary_text = "\n".join(lines)
 
-        if no_cover_count:
-            if not enabled_sources:
-                summary_text += (
-                    "\n\nNo cover source is enabled in Settings - enable iTunes, "
-                    "Spotify and/or SoundCloud to find covers automatically."
-                )
-            elif len(enabled_sources) < 3:
-                disabled_sources = [
-                    name for name in ("iTunes", "Spotify", "SoundCloud") if name not in enabled_sources
-                ]
-                summary_text += (
-                    f"\n\nOnly searched {', '.join(enabled_sources)} - {', '.join(disabled_sources)} "
-                    f"{'is' if len(disabled_sources) == 1 else 'are'} disabled in Settings."
-                )
+        if no_cover_count and not enabled_sources:
+            summary_text += (
+                "\n\nNo cover source is enabled in Settings - enable iTunes, "
+                "Spotify and/or SoundCloud to find covers automatically."
+            )
         if acoustid_count:
             # Not another bucket alongside the ones above (those already add
             # up to every scanned track) - these overlap with them, since
@@ -2371,6 +2368,53 @@ class TaggerInterface:
             ttk.Button(button_row, text=f"Fix {count} {unit}...", command=fix_no_cover).pack(side="left")
 
         dialog.protocol("WM_DELETE_WINDOW", close)
+
+        self._center_dialog(dialog)
+
+    def _show_processing_failures_dialog(self):
+        """Shown right before the "Processing complete" dialog whenever
+        Apply hit one or more files it couldn't actually process (most
+        commonly: corrupted audio data mutagen can't read/write at all,
+        e.g. "can't sync to MPEG frame") - process_files() keeps going for
+        the rest of the batch, but without this the failure was only ever
+        visible buried in the log, easy to miss."""
+        failures = self._processing_failures
+        count = len(failures)
+        unit = "file" if count == 1 else "files"
+
+        dialog = tk.Toplevel(self.window)
+        self._style_toplevel(dialog)
+        dialog.title("Some files could not be processed")
+        dialog.resizable(False, False)
+        dialog.transient(self.window)
+        dialog.grab_set()
+
+        ttk.Label(
+            dialog,
+            text=f"⚠ {count} {unit} could not be processed - likely corrupted "
+                 f"audio data. Everything else in this run was unaffected.",
+            justify="left", wraplength=420,
+            padding=(20, 20, 20, 10),
+        ).pack()
+
+        list_frame = ttk.Frame(dialog)
+        list_frame.pack(fill="both", expand=True, padx=20, pady=(0, 10))
+        text_height = min(count, 8)
+        failures_text = scrolledtext.ScrolledText(
+            list_frame, height=text_height, width=50, wrap="word", state="normal",
+        )
+        for identifier, reason in failures:
+            failures_text.insert("end", f"{identifier}\n    {reason}\n")
+        failures_text.configure(state="disabled")
+        if self.theme_colors:
+            failures_text.configure(
+                bg=self.theme_colors["journal_bg"], fg=self.theme_colors["journal_fg"],
+                insertbackground=self.theme_colors["journal_fg"],
+            )
+        failures_text.pack(fill="both", expand=True)
+
+        ttk.Button(dialog, text="OK", command=dialog.destroy).pack(pady=(0, 15))
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
 
         self._center_dialog(dialog)
 
@@ -2481,14 +2525,67 @@ class TaggerInterface:
 
     # --- Fix Artist/Title and search again (tracks with no cover match) ---
 
+    def _quick_rescan(self, infos):
+        """Right-click "Rescan" - re-runs the cover search directly with
+        whatever Artist/Title the table is already showing for each row
+        (its override if the user corrected it via double-click, otherwise
+        the detected one) - no re-entry dialog, since that value is
+        already right there. Runs sequentially in one background thread,
+        reusing a single SoundCloud/Spotify token across the batch, same
+        as a real scan (see scan_files) - firing one independent thread
+        per row would multiply token fetches and hit iTunes/SoundCloud
+        with an unthrottled burst instead. Reuses
+        _apply_fix_row_search_result to update the table, which already
+        tolerates no "Fix no cover" dialog being open."""
+        to_search = []
+        skipped = 0
+        for info in infos:
+            artist = info.get("artist_override") or info.get("detected_artist")
+            title = info.get("title_override") or info.get("detected_title")
+            if not artist or not title:
+                skipped += 1
+                continue
+            to_search.append((info, artist, title))
+
+        if skipped:
+            messagebox.showwarning(
+                "Missing info",
+                f"{skipped} track(s) skipped - no Artist/Title to search with yet. "
+                "Use \"Fix no cover\" or edit the cell first.",
+                parent=self.window,
+            )
+        if not to_search:
+            return
+
+        def _run():
+            soundcloud_token = None
+            if tagger.USE_SOUNDCLOUD and tagger.SOUNDCLOUD_CLIENT_ID and tagger.SOUNDCLOUD_CLIENT_SECRET:
+                soundcloud_token = tagger.get_soundcloud_token(
+                    log=self._append_to_journal, on_auth_error=self._on_source_auth_error,
+                )
+            spotify_token = (
+                tagger.get_spotify_token(log=self._append_to_journal, on_auth_error=self._on_source_auth_error)
+                if tagger.USE_SPOTIFY else None
+            )
+
+            for info, artist, title in to_search:
+                self._append_to_journal(f"Rescanning '{artist} - {title}'...")
+                found_cover_image, cover_source, returned_artist, returned_title = tagger.search_cover_manual(
+                    artist, title, soundcloud_token, spotify_token, log=self._append_to_journal,
+                )
+                self.message_queue.put((
+                    "fix_row_search_result",
+                    (info["file"], artist, title, found_cover_image, cover_source, returned_artist, returned_title),
+                ))
+
+        self._run_in_background(_run)
+
     def _show_fix_no_cover_dialog(self, infos):
         """Lets the user correct Artist/Title for each track and retry the
         cover search right there - each row is independent, so some can be
-        fixed while others are left for later. Used both for tracks a scan
-        couldn't find a cover for, and for the right-click "Rescan" action
-        (rescanning blind with the same auto-detected Artist/Title tends to
-        just reproduce the same result, so this lets it be corrected
-        first)."""
+        fixed while others are left for later. Used for tracks a scan
+        couldn't find a cover for at all (often nothing usable to search
+        with in the first place, unlike _quick_rescan's case)."""
         dialog = tk.Toplevel(self.window)
         self._style_toplevel(dialog)
         dialog.title("Correct Artist/Title and search again")
@@ -2594,7 +2691,7 @@ class TaggerInterface:
 
         def _run():
             found_cover_image, cover_source, returned_artist, returned_title = tagger.search_cover_manual_with_tokens(
-                artist, title, log=self._append_to_journal,
+                artist, title, log=self._append_to_journal, on_auth_error=self._on_source_auth_error,
             )
             self.message_queue.put((
                 "fix_row_search_result",
@@ -2694,8 +2791,14 @@ class TaggerInterface:
             # means checked" - a row that was unchecked (kept as-is) still
             # ends up "processed" once the run reaches it, and showing it
             # checked made every row look selected after Apply even when
-            # most weren't.
-            apply_box = PROCESSED_CHECK if info.get("apply_changes") else EMPTY_BOX
+            # most weren't. An edit made AFTER Apply (fix_pending) reverts
+            # this back to a plain checked box instead - the file's own
+            # tags no longer match what the table shows, so "done" (✔)
+            # would be actively misleading until the next Apply catches up.
+            if info.get("fix_pending"):
+                apply_box = CHECKED_BOX
+            else:
+                apply_box = PROCESSED_CHECK if info.get("apply_changes") else EMPTY_BOX
             return (apply_box, displayed_title, displayed_artist, displayed_format)
 
         apply = info["apply_changes"]
@@ -2855,6 +2958,44 @@ class TaggerInterface:
             base_folder = os.path.join(tagger.app_base_dir(), base_folder)
         return os.path.abspath(os.path.join(base_folder, relative_path))
 
+    def _apply_new_cover(self, info, new_bytes, parent=None):
+        """Writes a new cover (or None to remove it) straight to the file
+        on disk, immediately - independent of the Apply workflow. Updates
+        the row's info dict, table, and journal on success. Shared by the
+        cover zoom popup (_show_cover_zoom) and the right-click "Remove
+        cover" action (_remove_cover_with_confirmation). Returns True on
+        success, False on failure (an error dialog is already shown)."""
+        full_path = self._resolve_full_path(info)
+        if not os.path.exists(full_path):
+            messagebox.showerror(
+                "File not found", "Could not locate this file on disk anymore.", parent=parent or self.window,
+            )
+            return False
+        try:
+            tagger.write_tags(
+                full_path, artist="", title="", cover_image=new_bytes,
+                force_remove_if_missing=True, update_title=False, update_artist=False, update_cover=True,
+            )
+        except Exception as error:
+            messagebox.showerror("Error", f"Could not update the cover: {error}", parent=parent or self.window)
+            return False
+
+        info["current_cover_bytes"] = new_bytes
+        info["found_cover_image"] = new_bytes
+        info["has_cover"] = new_bytes is not None
+        info["cover_source"] = "Manual" if new_bytes else None
+        self._refresh_row(info)
+        self._append_to_journal(f"Cover {'updated' if new_bytes else 'removed'} for '{info['file']}'")
+        return True
+
+    def _remove_cover_with_confirmation(self, info):
+        """Right-click a cover thumbnail -> "Remove cover" - same action
+        as the "Remove cover" button inside the zoom popup (_show_cover_
+        zoom), just without opening it first."""
+        if not messagebox.askyesno("Remove cover", "Remove the cover from this file?", parent=self.window):
+            return
+        self._apply_new_cover(info, None)
+
     def _show_cover_zoom(self, info):
         """Click on the cover thumbnail: shows it full-size in a popup, with
         buttons to import a replacement or remove it - both write straight to
@@ -2901,28 +3042,8 @@ class TaggerInterface:
             self._center_dialog(dialog)
 
         def apply_new_cover(new_bytes):
-            full_path = self._resolve_full_path(info)
-            if not os.path.exists(full_path):
-                messagebox.showerror("File not found", "Could not locate this file on disk anymore.", parent=dialog)
-                return
-            try:
-                tagger.write_tags(
-                    full_path, artist="", title="", cover_image=new_bytes,
-                    force_remove_if_missing=True, update_title=False, update_artist=False, update_cover=True,
-                )
-            except Exception as error:
-                messagebox.showerror("Error", f"Could not update the cover: {error}", parent=dialog)
-                return
-
-            info["current_cover_bytes"] = new_bytes
-            info["found_cover_image"] = new_bytes
-            info["has_cover"] = new_bytes is not None
-            info["cover_source"] = "Manual" if new_bytes else None
-            self._refresh_row(info)
-            self._append_to_journal(
-                f"Cover {'updated' if new_bytes else 'removed'} for '{info['file']}'"
-            )
-            render()
+            if self._apply_new_cover(info, new_bytes, parent=dialog):
+                render()
 
         def import_cover():
             file_path = filedialog.askopenfilename(
@@ -3591,7 +3712,12 @@ class TaggerInterface:
         menu = self._make_themed_menu(self.window)
         rescan_label = "Rescan this track" if len(selected_infos) <= 1 else f"Rescan selected ({len(selected_infos)})"
         menu.add_command(label="Info", command=lambda: self._show_track_info(info))
-        menu.add_command(label=rescan_label, command=lambda: self._show_fix_no_cover_dialog(selected_infos))
+        if self.table.identify_column(event.x) == "#0":
+            cover_state = "normal" if tagger.effective_cover_bytes(info) else "disabled"
+            menu.add_command(
+                label="Remove cover", command=lambda: self._remove_cover_with_confirmation(info), state=cover_state,
+            )
+        menu.add_command(label=rescan_label, command=lambda: self._quick_rescan(selected_infos))
         menu.add_command(label="Open file location", command=lambda: self._open_file_location(info))
         menu.add_separator()
         menu.add_command(label="Move up", command=lambda: self._move_row(info, -1))
@@ -3760,8 +3886,11 @@ class TaggerInterface:
     def _update_progress(self, index, total):
         self.message_queue.put(("progress", (index, total)))
 
-    def _file_processed(self, identifier, success):
-        self.message_queue.put(("file_processed", identifier))
+    def _file_processed(self, identifier, success, reason=None):
+        self.message_queue.put(("file_processed", (identifier, success, reason)))
+
+    def _on_source_auth_error(self, source, message):
+        self.message_queue.put(("auth_error", (source, message)))
 
     def _start_message_loop(self):
         try:
@@ -3785,6 +3914,8 @@ class TaggerInterface:
                     self._set_buttons_enabled(True)
                     self._update_progress_bar(1.0 if not cancelled else 0, "Cancelled" if cancelled else "Done ✓")
                     if not cancelled:
+                        if self._processing_failures:
+                            self._show_processing_failures_dialog()
                         self._show_success_dialog()
 
                 elif message_type == "file_scanned":
@@ -3814,6 +3945,20 @@ class TaggerInterface:
                             "SoundCloud rate limit reached",
                             "SoundCloud's request limit has been reached for now.\n"
                             "No cover will be fetched for this scan — try again later.",
+                            parent=self.window,
+                        )
+
+                elif message_type == "auth_error":
+                    source, error_message = content
+                    already_warned = self.source_auth_error_warned.get(source, False)
+                    if not already_warned:
+                        self.source_auth_error_warned[source] = True
+                        messagebox.showwarning(
+                            f"{source} authentication failed",
+                            f"{source} is enabled as a cover source with credentials configured, but "
+                            f"authentication failed:\n\n{error_message}\n\n"
+                            f"No cover will come from {source} until this is fixed - check the "
+                            f"credentials in Settings.",
                             parent=self.window,
                         )
 
@@ -3902,7 +4047,9 @@ class TaggerInterface:
                         )
 
                 elif message_type == "file_processed":
-                    identifier = content
+                    identifier, success, reason = content
+                    if not success:
+                        self._processing_failures.append((identifier, reason or "Unknown error"))
                     if self.table.exists(identifier):
                         info = next((i for i in self.scanned_plan if i["file"] == identifier), None)
                         if info:
@@ -4006,6 +4153,7 @@ class TaggerInterface:
         self._update_progress_bar(0, "0 %")
         self.processing_in_progress = True
         self.cancel_requested.clear()
+        self._processing_failures = []  # (identifier, reason) pairs - see _show_processing_failures_dialog
 
         self.browse_button.configure(state="disabled")
         self.scan_button.configure(state="disabled")
@@ -4043,15 +4191,17 @@ class TaggerInterface:
                 final_artist = info["artist_override"] or info["detected_artist"]
                 final_title = info["title_override"] or info["detected_title"]
 
+                fix_error = None
                 if final_artist and final_title:
                     try:
                         tagger.fix_title_artist(info, final_artist, final_title)
                         self._append_to_journal(f"Fix applied: '{final_artist} - {final_title}'")
                         info["fix_pending"] = False
                     except Exception as error:
+                        fix_error = str(error)
                         self._append_to_journal(f"Error while applying fix: {error}")
 
-                self.message_queue.put(("file_processed", info["file"]))
+                self.message_queue.put(("file_processed", (info["file"], fix_error is None, fix_error)))
 
         except Exception as error:
             self._append_to_journal(f"Unexpected error: {error}")

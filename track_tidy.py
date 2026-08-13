@@ -1658,7 +1658,7 @@ def search_cover_manual(artist, title, soundcloud_token, spotify_token=None, log
     return None, None, None, None
 
 
-def search_cover_manual_with_tokens(artist, title, log=safe_print):
+def search_cover_manual_with_tokens(artist, title, log=safe_print, on_auth_error=None):
     """
     Same as search_cover_manual(), but also fetches the SoundCloud/Spotify
     tokens itself - for a single ad-hoc search (e.g. the "fix Artist/Title
@@ -1667,9 +1667,9 @@ def search_cover_manual_with_tokens(artist, title, log=safe_print):
     """
     soundcloud_token = None
     if USE_SOUNDCLOUD and SOUNDCLOUD_CLIENT_ID and SOUNDCLOUD_CLIENT_SECRET:
-        soundcloud_token = get_soundcloud_token(log=log)
+        soundcloud_token = get_soundcloud_token(log=log, on_auth_error=on_auth_error)
 
-    spotify_token = get_spotify_token(log=log) if USE_SPOTIFY else None
+    spotify_token = get_spotify_token(log=log, on_auth_error=on_auth_error) if USE_SPOTIFY else None
 
     return search_cover_manual(artist, title, soundcloud_token, spotify_token, log=log)
 
@@ -1876,12 +1876,15 @@ SOUNDCLOUD_UNAVAILABLE = False  # set for the current run when no credentials ar
 # Bounded on purpose: iTunes' undocumented search endpoint already returns
 # the occasional transient 403 under plain sequential use (see
 # search_cover_itunes's own retry logic) - too much concurrency risks
-# tripping that more often, not less.
-ITUNES_SCAN_MAX_WORKERS = 4
+# tripping that more often, not less. Lowered from 4 - a real ~65-file
+# scan reliably tripped a genuine HTTP 429 (not just transient 403s) with
+# 4 concurrent workers, costing far more in failed searches/retries than
+# the extra concurrency ever saved.
+ITUNES_SCAN_MAX_WORKERS = 2
 
 
 def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=None, on_rate_limited=None,
-               should_cancel=None):
+               should_cancel=None, on_auth_error=None):
     """
     Scans ONLY the files in the given list (relative paths).
     Useful for an incremental scan (only reprocess new files).
@@ -1889,6 +1892,9 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
     to allow a progressive display instead of waiting for the whole thing to finish.
     should_cancel() is checked before each file - if it returns True, the scan
     stops early and returns whatever was scanned so far.
+    on_auth_error(source, message) is called if SoundCloud/Spotify credentials
+    are configured but wrong/expired (distinct from simply missing) - easy to
+    miss buried in the log since it doesn't stop the scan.
 
     iTunes searches (if enabled) run concurrently across files, up to
     ITUNES_SCAN_MAX_WORKERS at once - iTunes needs no auth/shared token and
@@ -1921,11 +1927,11 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
             if on_rate_limited:
                 on_rate_limited()
 
-        soundcloud_token = get_soundcloud_token(log=log, on_rate_limited=_mark_rate_limited)
+        soundcloud_token = get_soundcloud_token(log=log, on_rate_limited=_mark_rate_limited, on_auth_error=on_auth_error)
 
     # Only bother authenticating with Spotify if it's actually enabled for
     # this run - no point for a scan that'll never call it.
-    spotify_token = get_spotify_token(log=log) if USE_SPOTIFY else None
+    spotify_token = get_spotify_token(log=log, on_auth_error=on_auth_error) if USE_SPOTIFY else None
 
     # Phase 1: prepare every file (local-only: tags, filename parsing) -
     # fast, so should_cancel is checked cheaply between each one.
@@ -2272,6 +2278,19 @@ def build_search_query(artist, title):
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
+# Shared across every concurrent/sequential iTunes call within a scan (see
+# ITUNES_SCAN_MAX_WORKERS) - a large batch (dozens of files) can trip a real
+# HTTP 429 despite each individual call's own retry/backoff, since several
+# concurrent workers (plus later sequential AcoustID-triggered re-searches)
+# each retry independently with no awareness that iTunes is already telling
+# everyone to back off. Once that happens, every further iTunes call in this
+# same scan is skipped outright for a cooldown period instead of piling on
+# more doomed requests - they fall through to Spotify/SoundCloud/AcoustID
+# immediately, same as if iTunes just wasn't enabled for those files.
+ITUNES_RATE_LIMIT_COOLDOWN_SECONDS = 30
+_itunes_rate_limited_until = 0
+
+
 def search_cover_itunes(artist, title, log=safe_print, max_retries=2, allow_loose_remix_match=False):
     """
     Retries on HTTP 429 (rate limited) with a short backoff before giving up.
@@ -2291,6 +2310,12 @@ def search_cover_itunes(artist, title, log=safe_print, max_retries=2, allow_loos
     remix-qualified retry, not the default search, since it's a narrower
     but still real risk of a false positive.
     """
+    global _itunes_rate_limited_until
+
+    if time.time() < _itunes_rate_limited_until:
+        log("  [iTunes] Still rate limited from earlier in this scan - skipping.")
+        return None
+
     try:
         for attempt in range(max_retries + 1):
             response = requests.get(
@@ -2317,6 +2342,14 @@ def search_cover_itunes(artist, title, log=safe_print, max_retries=2, allow_loos
                 continue
 
             break
+
+        if response.status_code == 429:
+            _itunes_rate_limited_until = time.time() + ITUNES_RATE_LIMIT_COOLDOWN_SECONDS
+            log(
+                f"  [iTunes] Still rate limited after {max_retries} retries - pausing iTunes for "
+                f"{ITUNES_RATE_LIMIT_COOLDOWN_SECONDS}s for the rest of this scan."
+            )
+            return None
 
         if response.status_code != 200:
             log(f"  [iTunes] Search failed: HTTP {response.status_code} - {response.text[:300]}")
@@ -2394,7 +2427,7 @@ def invalidate_soundcloud_token():
     _cached_token_expiry = 0
 
 
-def get_soundcloud_token(log=safe_print, on_rate_limited=None):
+def get_soundcloud_token(log=safe_print, on_rate_limited=None, on_auth_error=None):
     global _cached_soundcloud_token, _cached_token_expiry
 
     # Reuse the cached token if it's still valid (with a 60s safety margin)
@@ -2434,7 +2467,13 @@ def get_soundcloud_token(log=safe_print, on_rate_limited=None):
             if on_rate_limited:
                 on_rate_limited()
         else:
-            log(f"  [SoundCloud] Authentication error: HTTP {response.status_code} - {response.text[:300]}")
+            message = f"HTTP {response.status_code} - {response.text[:300]}"
+            log(f"  [SoundCloud] Authentication error: {message}")
+            # Distinct from "no credentials" above - these ARE configured,
+            # they're just wrong/expired (e.g. a revoked client). Easy to
+            # miss buried in the log since it doesn't stop the scan.
+            if on_auth_error:
+                on_auth_error("SoundCloud", message)
         return None
 
     except Exception as error:
@@ -2539,7 +2578,7 @@ def invalidate_spotify_token():
     _cached_spotify_token_expiry = 0
 
 
-def get_spotify_token(log=safe_print):
+def get_spotify_token(log=safe_print, on_auth_error=None):
     global _cached_spotify_token, _cached_spotify_token_expiry
 
     # Reuse the cached token if it's still valid (with a 60s safety margin)
@@ -2570,7 +2609,13 @@ def get_spotify_token(log=safe_print):
             _cached_spotify_token_expiry = time.time() + payload.get("expires_in", 3600)
             return _cached_spotify_token
 
-        log(f"  [Spotify] Authentication error: HTTP {response.status_code} - {response.text[:300]}")
+        message = f"HTTP {response.status_code} - {response.text[:300]}"
+        log(f"  [Spotify] Authentication error: {message}")
+        # Distinct from "no credentials" above - these ARE configured,
+        # they're just wrong/expired. Easy to miss buried in the log
+        # since it doesn't stop the scan.
+        if on_auth_error:
+            on_auth_error("Spotify", message)
         return None
 
     except Exception as error:
@@ -2652,6 +2697,14 @@ def search_cover_spotify(artist, title, token, log=safe_print):
 
 
 ACOUSTID_MIN_SCORE = 0.5  # AcoustID scores range 0-1; below this, not worth trusting
+
+# pyacoustid defaults to plain HTTP for the lookup API - confirmed the
+# server also accepts HTTPS on the exact same endpoint, and switching to
+# it measurably cut down on "Connection aborted" (WinError 10054) resets
+# seen constantly in real scans: some antivirus/firewall/router setups are
+# far more likely to interfere with (or outright reset) plain HTTP traffic
+# than HTTPS.
+acoustid.set_base_url("https://api.acoustid.org/v2/")
 
 
 def _run_without_console_window(func, *args, **kwargs):
@@ -3006,8 +3059,10 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
     Processes a list of already-scanned files (see scan_files()).
     Each item in the plan carries its own options:
     convert, update_title, update_artist, update_cover.
-    on_file_processed(identifier, success) is called after each file,
-    whether it was processed successfully or skipped/failed.
+    on_file_processed(identifier, success, reason=None) is called after
+    each file, whether it was processed successfully or skipped/failed -
+    reason is a short human-readable explanation, only set when success
+    is False (e.g. a corrupted file's tags/audio couldn't be read).
     should_cancel() is called before each file; if it returns True,
     processing stops cleanly (remaining files are left untouched).
     """
@@ -3026,101 +3081,113 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
         identifier = file_name  # stable key to find the row again in the UI
         log(f"File: {file_name}")
 
-        full_path = os.path.join(MUSIC_FOLDER, file_name)
-        converted_this_file = False
+        try:
+            full_path = os.path.join(MUSIC_FOLDER, file_name)
+            converted_this_file = False
 
-        target_format = _resolve_conversion_target(file_name) if info.get("convert") else None
-        if target_format:
-            source_extension = os.path.splitext(file_name)[1].lstrip(".").upper()
-            if target_format == "mp3":
-                log(f"  Converting .{source_extension.lower()} -> .mp3 (320 kbps)...")
-                new_path = convert_to_mp3(full_path)
-            else:
-                log(f"  Converting .{source_extension.lower()} -> .aiff...")
-                new_path = convert_wav_to_aiff(full_path)
+            target_format = _resolve_conversion_target(file_name) if info.get("convert") else None
+            if target_format:
+                source_extension = os.path.splitext(file_name)[1].lstrip(".").upper()
+                if target_format == "mp3":
+                    log(f"  Converting .{source_extension.lower()} -> .mp3 (320 kbps)...")
+                    new_path = convert_to_mp3(full_path)
+                else:
+                    log(f"  Converting .{source_extension.lower()} -> .aiff...")
+                    new_path = convert_wav_to_aiff(full_path)
 
-            if not new_path:
-                log("  Conversion failed, file skipped.\n")
+                if not new_path:
+                    log("  Conversion failed, file skipped.\n")
+                    info["processed"] = True
+                    if on_progress:
+                        on_progress(index, total)
+                    if on_file_processed:
+                        on_file_processed(identifier, False, "Conversion failed")
+                    continue
+
+                full_path = new_path
+                file_name = os.path.relpath(new_path, MUSIC_FOLDER)
+                converted_this_file = True
+                log(f"  Converted to: '{file_name}'")
+
+            artist = info.get("artist_override") or info.get("detected_artist")
+            title = info.get("title_override") or info.get("detected_title")
+
+            if not title:
+                log("  Missing title, file skipped.\n")
                 info["processed"] = True
                 if on_progress:
                     on_progress(index, total)
                 if on_file_processed:
-                    on_file_processed(identifier, False)
+                    on_file_processed(identifier, False, "No title to write")
                 continue
 
-            full_path = new_path
-            file_name = os.path.relpath(new_path, MUSIC_FOLDER)
-            converted_this_file = True
-            log(f"  Converted to: '{file_name}'")
+            log(f"  Artist: '{artist}' | Title: '{title}'")
 
-        artist = info.get("artist_override") or info.get("detected_artist")
-        title = info.get("title_override") or info.get("detected_title")
+            update_title = update_artist = update_cover = info.get("apply_changes", True)
 
-        if not title:
-            log("  Missing title, file skipped.\n")
-            info["processed"] = True
-            if on_progress:
-                on_progress(index, total)
-            if on_file_processed:
-                on_file_processed(identifier, False)
-            continue
+            force_remove_if_missing = bool(detect_fuviclan_mention(file_name))
 
-        log(f"  Artist: '{artist}' | Title: '{title}'")
+            cover_image = info.get("found_cover_image") if update_cover else None
 
-        update_title = update_artist = update_cover = info.get("apply_changes", True)
-
-        force_remove_if_missing = bool(detect_fuviclan_mention(file_name))
-
-        cover_image = info.get("found_cover_image") if update_cover else None
-
-        write_tags(
-            full_path, artist, title, cover_image, force_remove_if_missing,
-            update_title=update_title, update_artist=update_artist, update_cover=update_cover,
-            log=log,
-        )
-
-        if update_title and update_artist:
-            folder_part = os.path.dirname(file_name)
-            extension = os.path.splitext(file_name)[1]
-            new_base_name = sanitize_filename(build_display_name(artist, title)) + extension
-            new_name = os.path.join(folder_part, new_base_name) if folder_part else new_base_name
-            new_full_path = os.path.join(MUSIC_FOLDER, new_name)
-
-            if new_full_path != full_path:
-                os.rename(full_path, new_full_path)
-                log(f"  File renamed: '{new_name}'")
-                file_name = new_name
-
-        info["final_path"] = file_name  # actual current path, useful for a later fix
-
-        # Only log a history entry when tags actually changed (apply_changes
-        # was True) - an unchecked row still reaches this point (e.g. it
-        # just needed converting), but old==new for it, so logging it would
-        # just clutter the history with entries there's nothing to restore.
-        if update_title:
-            log_history_entry(
-                old_file=info["file"],
-                new_file=file_name,
-                old_artist=info.get("current_artist"),
-                old_title=info.get("current_title"),
-                new_artist=artist,
-                new_title=title,
-                cover_updated=bool(update_cover and (cover_image or force_remove_if_missing)),
-                converted=converted_this_file,
-                folder=os.path.abspath(MUSIC_FOLDER) if MUSIC_FOLDER else None,
-                old_cover_bytes=info.get("current_cover_bytes") if info.get("has_cover") else None,
+            write_tags(
+                full_path, artist, title, cover_image, force_remove_if_missing,
+                update_title=update_title, update_artist=update_artist, update_cover=update_cover,
+                log=log,
             )
 
-        if update_cover and cover_image:
-            log("  Tags updated (cover found and added).\n")
-        elif update_cover and force_remove_if_missing:
-            log("  Tags updated (no cover found -> removed).\n")
-        else:
-            log("  Tags updated.\n")
+            if update_title and update_artist:
+                folder_part = os.path.dirname(file_name)
+                extension = os.path.splitext(file_name)[1]
+                new_base_name = sanitize_filename(build_display_name(artist, title)) + extension
+                new_name = os.path.join(folder_part, new_base_name) if folder_part else new_base_name
+                new_full_path = os.path.join(MUSIC_FOLDER, new_name)
 
-        info["processed"] = True
-        if on_file_processed:
-            on_file_processed(identifier, True)
+                if new_full_path != full_path:
+                    os.rename(full_path, new_full_path)
+                    log(f"  File renamed: '{new_name}'")
+                    file_name = new_name
+
+            info["final_path"] = file_name  # actual current path, useful for a later fix
+
+            # Only log a history entry when tags actually changed (apply_changes
+            # was True) - an unchecked row still reaches this point (e.g. it
+            # just needed converting), but old==new for it, so logging it would
+            # just clutter the history with entries there's nothing to restore.
+            if update_title:
+                log_history_entry(
+                    old_file=info["file"],
+                    new_file=file_name,
+                    old_artist=info.get("current_artist"),
+                    old_title=info.get("current_title"),
+                    new_artist=artist,
+                    new_title=title,
+                    cover_updated=bool(update_cover and (cover_image or force_remove_if_missing)),
+                    converted=converted_this_file,
+                    folder=os.path.abspath(MUSIC_FOLDER) if MUSIC_FOLDER else None,
+                    old_cover_bytes=info.get("current_cover_bytes") if info.get("has_cover") else None,
+                )
+
+            if update_cover and cover_image:
+                log("  Tags updated (cover found and added).\n")
+            elif update_cover and force_remove_if_missing:
+                log("  Tags updated (no cover found -> removed).\n")
+            else:
+                log("  Tags updated.\n")
+
+            info["processed"] = True
+            if on_file_processed:
+                on_file_processed(identifier, True)
+
+        except Exception as error:
+            # Never let one bad file (e.g. corrupted audio data mutagen
+            # can't parse - "can't sync to MPEG frame" and similar) abort
+            # the whole batch - every file queued after it would otherwise
+            # silently never get tagged/renamed at all, with nothing in the
+            # log to explain why.
+            log(f"  Error processing '{file_name}': {error}\n")
+            info["processed"] = True
+            if on_file_processed:
+                on_file_processed(identifier, False, str(error))
 
         if on_progress:
             on_progress(index, total)
