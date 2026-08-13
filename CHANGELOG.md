@@ -3,6 +3,48 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.14]
+
+### Added
+- Scan summary now shows how many tracks were identified via AcoustID
+  (audio fingerprinting), and which cover sources were actually
+  searched vs. disabled in Settings.
+- "Reset all settings to default" button in Settings.
+- Tracks identified via AcoustID (rather than filename/tags) are
+  flagged with a headphone marker in the table until reviewed - audio
+  fingerprinting can still confidently misidentify a track between
+  two stylistically similar songs.
+- The developer now gets a Discord notification each time a scan
+  finishes, in addition to the existing new-install notification.
+
+### Changed
+- AcoustID now works out of the box - no more registering your own
+  API key, it's shared automatically.
+- AIFF files no longer show a misleading "convert" checkbox in the
+  Format column (already directly taggable, never needed to convert).
+- Settings reorganized: "Sources" and "AcoustID" merged into one
+  "Cover sources" section, and "Check for updates" / "View processing
+  history" / "Reset settings" moved into their own new "App" section
+  instead of floating below "Behavior" (renamed "File handling").
+- Cover-search summary and "no cover" messaging now adapt to which
+  sources are actually enabled, instead of implying a disabled source
+  was searched and came up empty.
+- AcoustID lookups now retry automatically on a transient network
+  error instead of failing immediately.
+
+### Fixed
+- Fixed a false-positive cover match: a generic mix label like
+  "(Original Mix)" could make SoundCloud match a completely different
+  song by the same artist.
+- Filenames using an en dash or em dash (–/—) instead of a hyphen as
+  the Artist/Title separator are now parsed correctly.
+- Dialogs no longer briefly flash as an empty black window before
+  their content appears.
+- Fixed the Settings tab's footer (credits/legal text) overlapping
+  after the window grew past its original size.
+- The journal now explains when a file is skipped from cover search
+  because no artist could be determined from its filename or tags.
+
 ## [0.13]
 
 ### Added
