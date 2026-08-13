@@ -2836,12 +2836,21 @@ class TaggerInterface:
             entries = [e for e in all_entries if matches_query(e, query)] if query else all_entries
 
             if not entries:
+                # The message goes in the "When" column (#0) - normally only
+                # 140px wide, nowhere near enough to fit it without being
+                # clipped at the column border. Widened here to span the
+                # table's full width instead (the other columns are blank
+                # anyway for this row), restored to normal once real
+                # entries exist again.
+                tree.column("#0", width=140 + sum(widths.values()))
                 tree.insert(
                     "", "end", iid=EMPTY_ROW_ID,
                     text="No matching entries." if query else "No files have been processed yet.",
                     values=("", "", "", "", ""),
                 )
                 return
+
+            tree.column("#0", width=140)
 
             for index, entry in enumerate(entries):
                 timestamp = entry.get("timestamp", "")
