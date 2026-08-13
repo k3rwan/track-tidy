@@ -2653,6 +2653,14 @@ def search_cover_spotify(artist, title, token, log=safe_print):
 
 ACOUSTID_MIN_SCORE = 0.5  # AcoustID scores range 0-1; below this, not worth trusting
 
+# pyacoustid defaults to plain HTTP for the lookup API - confirmed the
+# server also accepts HTTPS on the exact same endpoint, and switching to
+# it measurably cut down on "Connection aborted" (WinError 10054) resets
+# seen constantly in real scans: some antivirus/firewall/router setups are
+# far more likely to interfere with (or outright reset) plain HTTP traffic
+# than HTTPS.
+acoustid.set_base_url("https://api.acoustid.org/v2/")
+
 
 def _run_without_console_window(func, *args, **kwargs):
     """
