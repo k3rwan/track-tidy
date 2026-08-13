@@ -264,6 +264,7 @@ class TaggerInterface:
         self._drag_moved = False
         self._table_font = tkfont.nametofont("TkDefaultFont")
         self.soundcloud_rate_limit_warned = False
+        self.source_auth_error_warned = {}  # "SoundCloud"/"Spotify" -> already warned this scan
         self.mention_counts = {}  # raw mention text -> number of times seen
 
         self._native_theme = ttk.Style().theme_use()  # so "light" can restore it later
@@ -1194,6 +1195,7 @@ class TaggerInterface:
         tagger.MUSIC_FOLDER = folder
         self._sync_mentions_to_remove()
         self.soundcloud_rate_limit_warned = False
+        self.source_auth_error_warned = {}
 
         if folder != getattr(self, "last_scanned_folder", None):
             for row in self.table.get_children():
@@ -1234,6 +1236,7 @@ class TaggerInterface:
         tagger.MUSIC_FOLDER = folder
         self.last_scanned_folder = folder
         self.soundcloud_rate_limit_warned = False
+        self.source_auth_error_warned = {}
 
         self.notebook.select(0)
         self._set_buttons_enabled(False)
@@ -2074,6 +2077,7 @@ class TaggerInterface:
         tagger.MUSIC_FOLDER = folder
         self._sync_mentions_to_remove()
         self.soundcloud_rate_limit_warned = False
+        self.source_auth_error_warned = {}
 
         if folder != getattr(self, "last_scanned_folder", None):
             for row in self.table.get_children():
@@ -2122,6 +2126,7 @@ class TaggerInterface:
                 on_new_mention=lambda mention: self.message_queue.put(("mention_added", mention)),
                 on_rate_limited=lambda: self.message_queue.put(("soundcloud_rate_limited", None)),
                 should_cancel=self.cancel_requested.is_set,
+                on_auth_error=self._on_source_auth_error,
             )
 
         except Exception as error:
@@ -2529,14 +2534,67 @@ class TaggerInterface:
 
     # --- Fix Artist/Title and search again (tracks with no cover match) ---
 
+    def _quick_rescan(self, infos):
+        """Right-click "Rescan" - re-runs the cover search directly with
+        whatever Artist/Title the table is already showing for each row
+        (its override if the user corrected it via double-click, otherwise
+        the detected one) - no re-entry dialog, since that value is
+        already right there. Runs sequentially in one background thread,
+        reusing a single SoundCloud/Spotify token across the batch, same
+        as a real scan (see scan_files) - firing one independent thread
+        per row would multiply token fetches and hit iTunes/SoundCloud
+        with an unthrottled burst instead. Reuses
+        _apply_fix_row_search_result to update the table, which already
+        tolerates no "Fix no cover" dialog being open."""
+        to_search = []
+        skipped = 0
+        for info in infos:
+            artist = info.get("artist_override") or info.get("detected_artist")
+            title = info.get("title_override") or info.get("detected_title")
+            if not artist or not title:
+                skipped += 1
+                continue
+            to_search.append((info, artist, title))
+
+        if skipped:
+            messagebox.showwarning(
+                "Missing info",
+                f"{skipped} track(s) skipped - no Artist/Title to search with yet. "
+                "Use \"Fix no cover\" or edit the cell first.",
+                parent=self.window,
+            )
+        if not to_search:
+            return
+
+        def _run():
+            soundcloud_token = None
+            if tagger.USE_SOUNDCLOUD and tagger.SOUNDCLOUD_CLIENT_ID and tagger.SOUNDCLOUD_CLIENT_SECRET:
+                soundcloud_token = tagger.get_soundcloud_token(
+                    log=self._append_to_journal, on_auth_error=self._on_source_auth_error,
+                )
+            spotify_token = (
+                tagger.get_spotify_token(log=self._append_to_journal, on_auth_error=self._on_source_auth_error)
+                if tagger.USE_SPOTIFY else None
+            )
+
+            for info, artist, title in to_search:
+                self._append_to_journal(f"Rescanning '{artist} - {title}'...")
+                found_cover_image, cover_source, returned_artist, returned_title = tagger.search_cover_manual(
+                    artist, title, soundcloud_token, spotify_token, log=self._append_to_journal,
+                )
+                self.message_queue.put((
+                    "fix_row_search_result",
+                    (info["file"], artist, title, found_cover_image, cover_source, returned_artist, returned_title),
+                ))
+
+        self._run_in_background(_run)
+
     def _show_fix_no_cover_dialog(self, infos):
         """Lets the user correct Artist/Title for each track and retry the
         cover search right there - each row is independent, so some can be
-        fixed while others are left for later. Used both for tracks a scan
-        couldn't find a cover for, and for the right-click "Rescan" action
-        (rescanning blind with the same auto-detected Artist/Title tends to
-        just reproduce the same result, so this lets it be corrected
-        first)."""
+        fixed while others are left for later. Used for tracks a scan
+        couldn't find a cover for at all (often nothing usable to search
+        with in the first place, unlike _quick_rescan's case)."""
         dialog = tk.Toplevel(self.window)
         self._style_toplevel(dialog)
         dialog.title("Correct Artist/Title and search again")
@@ -2642,7 +2700,7 @@ class TaggerInterface:
 
         def _run():
             found_cover_image, cover_source, returned_artist, returned_title = tagger.search_cover_manual_with_tokens(
-                artist, title, log=self._append_to_journal,
+                artist, title, log=self._append_to_journal, on_auth_error=self._on_source_auth_error,
             )
             self.message_queue.put((
                 "fix_row_search_result",
@@ -3668,7 +3726,7 @@ class TaggerInterface:
             menu.add_command(
                 label="Remove cover", command=lambda: self._remove_cover_with_confirmation(info), state=cover_state,
             )
-        menu.add_command(label=rescan_label, command=lambda: self._show_fix_no_cover_dialog(selected_infos))
+        menu.add_command(label=rescan_label, command=lambda: self._quick_rescan(selected_infos))
         menu.add_command(label="Open file location", command=lambda: self._open_file_location(info))
         menu.add_separator()
         menu.add_command(label="Move up", command=lambda: self._move_row(info, -1))
@@ -3840,6 +3898,9 @@ class TaggerInterface:
     def _file_processed(self, identifier, success, reason=None):
         self.message_queue.put(("file_processed", (identifier, success, reason)))
 
+    def _on_source_auth_error(self, source, message):
+        self.message_queue.put(("auth_error", (source, message)))
+
     def _start_message_loop(self):
         try:
             while True:
@@ -3893,6 +3954,20 @@ class TaggerInterface:
                             "SoundCloud rate limit reached",
                             "SoundCloud's request limit has been reached for now.\n"
                             "No cover will be fetched for this scan — try again later.",
+                            parent=self.window,
+                        )
+
+                elif message_type == "auth_error":
+                    source, error_message = content
+                    already_warned = self.source_auth_error_warned.get(source, False)
+                    if not already_warned:
+                        self.source_auth_error_warned[source] = True
+                        messagebox.showwarning(
+                            f"{source} authentication failed",
+                            f"{source} is enabled as a cover source with credentials configured, but "
+                            f"authentication failed:\n\n{error_message}\n\n"
+                            f"No cover will come from {source} until this is fixed - check the "
+                            f"credentials in Settings.",
                             parent=self.window,
                         )
 
