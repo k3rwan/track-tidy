@@ -2481,9 +2481,11 @@ class TaggerInterface:
         self._update_apply_button_label()
 
     def _toggle_all(self):
-        """The "apply" and "format" header checkboxes are kept in sync -
-        a track that isn't going to be touched at all shouldn't still have
-        a pending conversion queued, and vice versa."""
+        """Also clears the "format" column - a track that isn't going to be
+        touched at all shouldn't still have a pending conversion queued.
+        Not symmetric: toggling "format" (_toggle_all_convert) only affects
+        that column, since a conversion choice has no bearing on whether a
+        track should be selected at all."""
         new_state = not self.all_checked_state
         self._set_all_checked_state(new_state)
         self._set_all_convert_state(new_state)
@@ -2530,10 +2532,10 @@ class TaggerInterface:
         self.table.heading("format", text=CHECKED_BOX if checked else EMPTY_BOX)
 
     def _toggle_all_convert(self):
-        """See _toggle_all - the two header checkboxes stay in sync."""
+        """Only affects the Format column - unlike _toggle_all (the "apply"
+        header), this does NOT also touch which tracks are selected."""
         new_state = not self.all_convert_state
         self._set_all_convert_state(new_state)
-        self._set_all_checked_state(new_state)
 
     def _reorder_table_rows(self):
         """Reorders the table rows to match the current order of self.scanned_plan."""
