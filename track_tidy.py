@@ -758,10 +758,13 @@ USE_ITUNES = True
 USE_SPOTIFY = False
 USE_SOUNDCLOUD = True
 
-# Whether non-MP3 files get converted to MP3 (320 kbps) automatically (set by
-# the UI). When off, WAV files (the only format taggable without converting)
-# are skipped during scanning instead of being tagged in place.
-AUTO_CONVERT_MP3 = True
+# Whether non-MP3, non-WAV files get converted to MP3 (320 kbps) automatically
+# (set by the UI). WAV is always tagged directly, on or off - it's the only
+# non-MP3 format mutagen can write ID3 tags/cover art to without converting
+# first (see open_audio_file/write_tags) - so when this is off, only the
+# other formats (FLAC, M4A, OGG, ...), which truly can't be tagged without
+# converting, are skipped during scanning.
+AUTO_CONVERT_MP3 = False
 
 
 # ============================================================================
@@ -1199,16 +1202,15 @@ def list_audio_files():
     of relative paths of the audio files found (without reading any tags).
     Fast: useful for detecting new files without rescanning everything.
 
-    Skips .wav files entirely when AUTO_CONVERT_MP3 is off - WAV is the only
-    format that can be tagged without converting, so with auto-convert
-    disabled there's nothing usable left to do with them.
+    Skips formats other than MP3/WAV when AUTO_CONVERT_MP3 is off - those are
+    the only two formats mutagen can tag directly (see open_audio_file), so
+    with auto-convert disabled there's nothing usable left to do with the
+    rest. WAV itself is always included either way.
     """
     if not os.path.isdir(MUSIC_FOLDER):
         return []
 
-    extensions = SUPPORTED_EXTENSIONS if AUTO_CONVERT_MP3 else tuple(
-        ext for ext in SUPPORTED_EXTENSIONS if ext != ".wav"
-    )
+    extensions = SUPPORTED_EXTENSIONS if AUTO_CONVERT_MP3 else (".mp3", ".wav")
 
     audio_files = []
     for current_folder, _, file_names in os.walk(MUSIC_FOLDER):
@@ -1503,7 +1505,12 @@ def _finish_scan(prepared, match_result, cover_source, log=safe_print):
         "current_title": prepared["current_title"],
         "has_cover": prepared["has_cover"],
         "mention_detected": contains_mention_to_remove(file_name),
-        "convert": prepared["needs_conversion"],
+        # WAV can be tagged either way, so its default follows the user's
+        # global choice - other non-MP3 formats have no such choice (can't
+        # be tagged without converting at all), so they always default on.
+        "convert": (
+            AUTO_CONVERT_MP3 if file_name.lower().endswith(".wav") else prepared["needs_conversion"]
+        ),
         # If the file's own tags are already complete, don't default to
         # overwriting them with a filename-derived guess that could be worse
         # (e.g. a truncated/garbled filename from some export tool).

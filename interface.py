@@ -274,7 +274,7 @@ class TaggerInterface:
         self.use_itunes_var = tk.BooleanVar(value=saved_settings.get("use_itunes", True))
         self.use_spotify_var = tk.BooleanVar(value=saved_settings.get("use_spotify", False))
         self.use_soundcloud_var = tk.BooleanVar(value=saved_settings.get("use_soundcloud", True))
-        self.auto_convert_var = tk.BooleanVar(value=saved_settings.get("auto_convert_mp3", True))
+        self.auto_convert_var = tk.BooleanVar(value=saved_settings.get("auto_convert_mp3", False))
         self.show_log_var = tk.BooleanVar(value=saved_settings.get("show_log_section", False))
         self._tagger_resize_pending = False
         tagger.USE_ITUNES = self.use_itunes_var.get()
@@ -357,8 +357,10 @@ class TaggerInterface:
         if not enabled:
             messagebox.showwarning(
                 "Convert to MP3 disabled",
-                "WAV files will now be ignored when scanning - they can't be "
-                "tagged without converting to MP3 first.",
+                "WAV files will now be tagged (and get a cover) in place, kept "
+                "as WAV. Other non-MP3 formats (FLAC, M4A, OGG...) will be "
+                "ignored when scanning - they can't be tagged without "
+                "converting to MP3 first.",
                 parent=self.window,
             )
         tagger.AUTO_CONVERT_MP3 = enabled
@@ -1066,10 +1068,13 @@ class TaggerInterface:
             return
         if not file_path.lower().endswith(tagger.SUPPORTED_EXTENSIONS):
             return
-        if file_path.lower().endswith(".wav") and not tagger.AUTO_CONVERT_MP3:
+        if (
+            not tagger.AUTO_CONVERT_MP3
+            and not file_path.lower().endswith((".mp3", ".wav"))
+        ):
             self._append_to_journal(
-                f"Ignored '{os.path.basename(file_path)}' - WAV files are disabled "
-                "(Settings > Convert everything to MP3)."
+                f"Ignored '{os.path.basename(file_path)}' - only MP3/WAV can be tagged "
+                "without converting (Settings > Convert everything to MP3)."
             )
             return
 
