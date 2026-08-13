@@ -122,7 +122,6 @@ CLIENT_ID_KEY = "soundcloud_client_id"
 CLIENT_SECRET_KEY = "soundcloud_client_secret"
 SPOTIFY_CLIENT_ID_KEY = "spotify_client_id"
 SPOTIFY_CLIENT_SECRET_KEY = "spotify_client_secret"
-ACOUSTID_API_KEY_KEY = "acoustid_api_key"
 
 # Old plaintext file locations (pre-keyring) - read once at startup as a
 # migration path, then deleted. Not used for anything else.
@@ -178,7 +177,12 @@ SOUNDCLOUD_CLIENT_ID = read_credential(CLIENT_ID_KEY)
 SOUNDCLOUD_CLIENT_SECRET = read_credential(CLIENT_SECRET_KEY)
 SPOTIFY_CLIENT_ID = read_credential(SPOTIFY_CLIENT_ID_KEY)
 SPOTIFY_CLIENT_SECRET = read_credential(SPOTIFY_CLIENT_SECRET_KEY)
-ACOUSTID_API_KEY = read_credential(ACOUSTID_API_KEY_KEY)
+
+# AcoustID API keys are meant to be per-APPLICATION, one key shared by every
+# user of that app - unlike SoundCloud/Spotify, which need each user's own
+# app credentials, so this one is just hardcoded rather than something
+# every user has to configure.
+ACOUSTID_API_KEY = "dXJOG4A1um"
 
 
 def load_id_txt_credentials():
@@ -480,6 +484,18 @@ def send_track_report(info, reporter_name=None, timeout=10):
         return False
 
 
+# Windows usernames that never trigger the automatic "new install"/"scan
+# complete" Discord pings below - the developer's own machine, so their own
+# day-to-day testing doesn't spam the channel with self-notifications.
+# Case-insensitive. Doesn't apply to send_track_report() - that one's an
+# explicit user action ("Report this track"), not automatic telemetry.
+DISCORD_NOTIFICATION_EXCLUDED_USERS = {"kevin"}
+
+
+def _is_discord_notification_excluded(reporter_name):
+    return (reporter_name or "").strip().lower() in DISCORD_NOTIFICATION_EXCLUDED_USERS
+
+
 def send_new_install_notification(reporter_name=None, timeout=10):
     """
     Posts a one-time "new install" ping to the same Discord webhook as
@@ -487,13 +503,47 @@ def send_new_install_notification(reporter_name=None, timeout=10):
     using the app. Called once per Windows user account (see
     _check_new_install_notification_on_startup in interface.py, gated by a
     saved setting so it never fires twice on the same machine+account).
-    Returns True on success, False on any failure (never raises).
+    Returns True on success, False on any failure (never raises) - also
+    False without posting anything for an excluded account (see
+    DISCORD_NOTIFICATION_EXCLUDED_USERS).
     """
+    if _is_discord_notification_excluded(reporter_name):
+        return False
     embed = {
         "title": "New install",
         "color": 0x2ECC71,
         "fields": [
             {"name": "User", "value": reporter_name or "(unknown)", "inline": True},
+            {"name": "App version", "value": APP_VERSION, "inline": True},
+        ],
+    }
+    try:
+        response = requests.post(DISCORD_REPORT_WEBHOOK_URL, json={"embeds": [embed]}, timeout=timeout)
+        return response.status_code in (200, 204)
+    except Exception:
+        return False
+
+
+def send_scan_complete_notification(reporter_name=None, number_new=0, number_removed=0, total=0, timeout=10):
+    """
+    Posts a scan-complete ping to the same Discord webhook as
+    send_new_install_notification/send_track_report, so the developer
+    knows when a user actually uses the app day to day, not just installs
+    it. Called once per finished scan (see _finalize_scan in interface.py).
+    Returns True on success, False on any failure (never raises) - also
+    False without posting anything for an excluded account (see
+    DISCORD_NOTIFICATION_EXCLUDED_USERS).
+    """
+    if _is_discord_notification_excluded(reporter_name):
+        return False
+    embed = {
+        "title": "Scan complete",
+        "color": 0x3498DB,
+        "fields": [
+            {"name": "User", "value": reporter_name or "(unknown)", "inline": True},
+            {"name": "New files", "value": str(number_new), "inline": True},
+            {"name": "Removed files", "value": str(number_removed), "inline": True},
+            {"name": "Total files", "value": str(total), "inline": True},
             {"name": "App version", "value": APP_VERSION, "inline": True},
         ],
     }
@@ -763,6 +813,18 @@ USE_ITUNES = True
 USE_SPOTIFY = False
 USE_SOUNDCLOUD = True
 
+
+def enabled_cover_sources():
+    """Names (in search-priority order) of the cover sources currently
+    turned on in Settings - used to explain scan results that depend on
+    which ones were actually tried (see _show_scan_summary_dialog /
+    _show_fix_no_cover_dialog)."""
+    return [
+        name
+        for name, enabled in (("iTunes", USE_ITUNES), ("Spotify", USE_SPOTIFY), ("SoundCloud", USE_SOUNDCLOUD))
+        if enabled
+    ]
+
 # Last-resort audio-content identification (AcoustID/Chromaprint) for a file
 # whose filename/tags are too mangled for the normal text-based search to
 # even attempt, or that search comes up empty - never tried otherwise, since
@@ -1028,6 +1090,11 @@ def _move_bare_feature_credit_to_artist(artist, title):
 def parse_filename(file_name):
     base_name = os.path.basename(file_name)
     name_no_ext = os.path.splitext(base_name)[0]
+    # Normalize en dash (–) and em dash (—) to a plain hyphen before any
+    # splitting below - some sources (e.g. Vinyl On Demand releases) use
+    # them instead of "-" as the Artist/Title separator, and every split
+    # pattern in this function only recognizes a literal ASCII hyphen.
+    name_no_ext = name_no_ext.replace("–", "-").replace("—", "-")
     name_no_ext = re.sub(r"^\d{1,3}\s*[.\-]\s*", "", name_no_ext)  # drop a leading track number like "01. ", "01-" or "076 - "
 
     if name_no_ext == name_no_ext.lower():
@@ -1451,6 +1518,27 @@ def strip_parentheses(text):
     return cleaned
 
 
+def compute_search_titles(title):
+    """
+    Derives (search_title, remix_qualified_title) from a track's title, for
+    the cover search only - never written to the file's own tags.
+
+    remix_qualified_title keeps a parenthetical qualifier attached ONLY when
+    it's a genuinely NAMED remix/edit/bootleg credit (see
+    title_has_named_qualifier) - otherwise it's identical to search_title.
+    A purely generic label like "(Original Mix)"/"(Extended Mix)" adds no
+    real specificity, and used to be kept anyway: SoundCloud's looser
+    title_words_overlap() check (search_cover_soundcloud) then treated
+    "mix"/"original" as meaningfully shared words against a COMPLETELY
+    different song that happened to carry the same generic label,
+    producing a confident but wrong cover match.
+    """
+    search_title = strip_parentheses(title)
+    if title_has_named_qualifier(title):
+        return search_title, strip_trailing_noise_words(title)
+    return search_title, search_title
+
+
 FUVICLAN_PATTERN = re.compile(r"by\s*fuvi\s*clan", re.IGNORECASE)
 
 
@@ -1551,9 +1639,7 @@ def search_cover_manual(artist, title, soundcloud_token, spotify_token=None, log
     if not artist or not title:
         return None, None, None, None
 
-    search_title = strip_parentheses(title)
-    has_parenthetical = search_title != title
-    remix_qualified_title = strip_trailing_noise_words(title) if has_parenthetical else search_title
+    search_title, remix_qualified_title = compute_search_titles(title)
 
     for source, enabled in (
         ("itunes", USE_ITUNES),
@@ -1622,9 +1708,16 @@ def _prepare_scan(file_name, log=safe_print, on_new_mention=None):
 
     search_title = remix_qualified_title = None
     if detected_artist and detected_title:
-        search_title = strip_parentheses(detected_title)
-        has_parenthetical = search_title != detected_title
-        remix_qualified_title = strip_trailing_noise_words(detected_title) if has_parenthetical else search_title
+        search_title, remix_qualified_title = compute_search_titles(detected_title)
+    elif not detected_artist:
+        # scan_one_file()/scan_files() both skip iTunes/Spotify/SoundCloud
+        # entirely without an artist to search with (see search_title being
+        # left None) - without this line that skip was completely silent,
+        # leaving no trace of why the file ended up with no cover.
+        log(
+            "  No artist could be determined from the filename or tags - skipping "
+            "iTunes/Spotify/SoundCloud search (correct the Artist/Title and search again)."
+        )
 
     return {
         "file_name": file_name,
@@ -1667,11 +1760,7 @@ def _try_acoustid_correction(prepared, log=safe_print):
     artist, title = identified
     prepared["detected_artist"] = artist
     prepared["detected_title"] = title
-    prepared["search_title"] = strip_parentheses(title)
-    has_parenthetical = prepared["search_title"] != title
-    prepared["remix_qualified_title"] = (
-        strip_trailing_noise_words(title) if has_parenthetical else prepared["search_title"]
-    )
+    prepared["search_title"], prepared["remix_qualified_title"] = compute_search_titles(title)
     # Marks this result as NOT filename/tag-derived - the UI mustn't
     # re-run resolve_artist_title() on it later (e.g. to pick up a "to
     # remove" mentions-list change mid-scan, see _add_scan_row), since
@@ -1721,11 +1810,20 @@ def _finish_scan(prepared, match_result, cover_source, log=safe_print):
         "current_title": prepared["current_title"],
         "has_cover": prepared["has_cover"],
         "mention_detected": contains_mention_to_remove(file_name),
-        # WAV/AIFF can be tagged either way, so their default follows the
-        # user's global choices (see _resolve_conversion_target) - other
-        # non-MP3 formats have no such choice (can't be tagged without
-        # converting at all), so they always default on.
-        "convert": _resolve_conversion_target(file_name) is not None,
+        # WAV can be tagged either way, so its default follows the user's
+        # global choices (see _resolve_conversion_target) - other non-MP3
+        # formats have no such choice (can't be tagged without converting
+        # at all), so they always default on. AIFF is the one exception:
+        # it's already the taggable, lossless format WAV_TO_AIFF converts
+        # WAV *into* - even with "Convert everything to MP3" on, a file
+        # that's already AIFF shouldn't default to being downgraded to
+        # lossy MP3 just because it happens to not be MP3 already. The
+        # user can still check it manually if they really want that.
+        "convert": (
+            False
+            if file_name.lower().endswith(".aiff")
+            else _resolve_conversion_target(file_name) is not None
+        ),
         # If the file's own tags are already complete, don't default to
         # overwriting them with a filename-derived guess that could be worse
         # (e.g. a truncated/garbled filename from some export tool).
@@ -2600,20 +2698,31 @@ def identify_via_acoustid(file_path, log=safe_print):
         return None
 
     acoustid.FPCALC_COMMAND = find_fpcalc()
-    try:
-        results = list(_run_without_console_window(acoustid.match, ACOUSTID_API_KEY, file_path))
-    except acoustid.NoBackendError:
-        log("  [AcoustID] fpcalc not found - check it's bundled or installed.")
-        return None
-    except acoustid.FingerprintGenerationError as error:
-        log(f"  [AcoustID] Could not fingerprint '{file_path}': {error}")
-        return None
-    except acoustid.WebServiceError as error:
-        log(f"  [AcoustID] Lookup failed: {error}")
-        return None
-    except Exception as error:
-        log(f"  [AcoustID] Unexpected error identifying '{file_path}': {error}")
-        return None
+    # WebServiceError covers connection resets/timeouts, which are usually a
+    # transient network hiccup (flaky Wi-Fi, antivirus HTTP inspection) - worth
+    # a couple of quick retries. Fingerprinting errors are deterministic (same
+    # file will fail the same way again), so those return immediately instead.
+    max_attempts = 3
+    results = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            results = list(_run_without_console_window(acoustid.match, ACOUSTID_API_KEY, file_path))
+            break
+        except acoustid.NoBackendError:
+            log("  [AcoustID] fpcalc not found - check it's bundled or installed.")
+            return None
+        except acoustid.FingerprintGenerationError as error:
+            log(f"  [AcoustID] Could not fingerprint '{file_path}': {error}")
+            return None
+        except acoustid.WebServiceError as error:
+            if attempt == max_attempts:
+                log(f"  [AcoustID] Lookup failed after {max_attempts} attempts: {error}")
+                return None
+            log(f"  [AcoustID] Lookup failed (retrying, attempt {attempt}/{max_attempts}): {error}")
+            time.sleep(1.5)
+        except Exception as error:
+            log(f"  [AcoustID] Unexpected error identifying '{file_path}': {error}")
+            return None
 
     for score, _recording_id, title, artist in results:
         if not artist or not title:
