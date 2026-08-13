@@ -816,6 +816,76 @@ class RestoreHistoryEntryTests(unittest.TestCase):
         self.assertEqual(os.path.dirname(restored_path), elsewhere)
 
 
+def _read_riff_info_chunk(file_path):
+    """Parses a WAV's raw RIFF LIST/INFO sub-chunks (INAM/IART/...) by hand -
+    mutagen has no support for reading these, only ID3, so this is the only
+    way to verify write_tags() actually wrote them."""
+    with open(file_path, "rb") as f:
+        data = f.read()
+    found = {}
+    i = 12
+    while i < len(data) - 8:
+        chunk_id = data[i:i + 4]
+        chunk_size = int.from_bytes(data[i + 4:i + 8], "little")
+        if chunk_id == b"LIST" and data[i + 8:i + 12] == b"INFO":
+            j = i + 12
+            end = i + 8 + chunk_size
+            while j < end:
+                sub_id = data[j:j + 4]
+                sub_size = int.from_bytes(data[j + 4:j + 8], "little")
+                found[sub_id] = data[j + 8:j + 8 + sub_size].rstrip(b"\x00").decode("utf-8", "replace")
+                j += 8 + sub_size + (sub_size % 2)
+        i += 8 + chunk_size + (chunk_size % 2)
+    return found
+
+
+@unittest.skipUnless(shutil.which(tagger.find_ffmpeg()) or os.path.exists(tagger.find_ffmpeg()),
+                      "ffmpeg not available in this environment")
+class WriteTagsWavRiffInfoTests(unittest.TestCase):
+    """write_tags() on a .wav also writes the RIFF LIST/INFO chunk
+    (INAM/IART) via FFmpeg, alongside the usual ID3 tags - Windows Explorer
+    and several DJ tools only read RIFF INFO for WAV metadata, not ID3."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.file_path = os.path.join(self._tmp_dir.name, "song.wav")
+        shutil.copy(os.path.join(project_root, "fart.wav"), self.file_path)
+
+    def tearDown(self):
+        self._tmp_dir.cleanup()
+
+    def test_writes_both_riff_info_and_id3(self):
+        tagger.write_tags(
+            self.file_path, "New Artist", "New Title", cover_image=None, force_remove_if_missing=False,
+            update_title=True, update_artist=True, update_cover=False, log=lambda *_: None,
+        )
+
+        riff_info = _read_riff_info_chunk(self.file_path)
+        self.assertEqual(riff_info.get(b"INAM"), "New Title")
+        self.assertEqual(riff_info.get(b"IART"), "New Artist")
+
+        _, artist, title, _ = tagger.read_current_info(self.file_path)
+        self.assertEqual(artist, "New Artist")
+        self.assertEqual(title, "New Title")
+
+    def test_riff_info_write_failure_does_not_block_id3_write(self):
+        original_find_ffmpeg = tagger.find_ffmpeg
+        tagger.find_ffmpeg = lambda: os.path.join(self._tmp_dir.name, "no-such-ffmpeg.exe")
+        try:
+            tagger.write_tags(
+                self.file_path, "New Artist", "New Title", cover_image=None, force_remove_if_missing=False,
+                update_title=True, update_artist=True, update_cover=False, log=lambda *_: None,
+            )
+        finally:
+            tagger.find_ffmpeg = original_find_ffmpeg
+
+        # RIFF INFO wasn't touched (ffmpeg "failed"), but ID3 still wrote fine
+        _, artist, title, _ = tagger.read_current_info(self.file_path)
+        self.assertEqual(artist, "New Artist")
+        self.assertEqual(title, "New Title")
+
+
 class SettingsPersistenceTests(unittest.TestCase):
     def setUp(self):
         self._original_settings_file = tagger.SETTINGS_FILE
