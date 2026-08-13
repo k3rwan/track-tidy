@@ -638,6 +638,7 @@ def restore_history_entry(entry, log=safe_print, override_path=None):
         full_path, old_artist, old_title, cover_image=old_cover_bytes,
         force_remove_if_missing=True,  # no old cover logged -> remove whatever cover is there now
         update_title=bool(old_title), update_artist=bool(old_artist), update_cover=True,
+        log=log,
     )
     log(f"  Restored tags on: '{full_path}'")
 
@@ -2372,14 +2373,62 @@ def effective_cover_bytes(info):
     return info.get("current_cover_bytes")
 
 
+def _write_wav_riff_info(file_path, artist, title, update_artist, update_title, log=safe_print):
+    """
+    Writes title/artist into a WAV's RIFF "LIST INFO" chunk (INAM/IART) via
+    FFmpeg, alongside the ID3 tags write_tags() already writes - ID3-in-WAV
+    isn't read by Windows Explorer or several DJ tools, which only look at
+    RIFF INFO for WAV metadata (see read_current_info's own RIFF INFO
+    fallback for the read side of this).
+
+    Best-effort: mutagen has no RIFF INFO support at all, so this shells out
+    to the bundled FFmpeg instead of hand-rolling raw chunk-editing binary
+    code. Silently does nothing if FFmpeg isn't available - the ID3 tags
+    write_tags() writes right after this still succeed either way.
+
+    Must run BEFORE the ID3 write, never after: FFmpeg remuxes the whole
+    file and drops any existing "id3 " chunk it doesn't understand, which
+    would silently wipe out title/artist/cover again if this ran second.
+    """
+    temp_path = file_path + ".riffinfo_tmp.wav"
+    command = [find_ffmpeg(), "-y", "-nostdin", "-i", file_path]
+    if update_title:
+        command += ["-metadata", f"title={title}"]
+    if update_artist:
+        command += ["-metadata", f"artist={artist}"]
+    command += ["-c", "copy", temp_path]
+
+    try:
+        result = subprocess.run(
+            command, capture_output=True, text=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode != 0:
+            log(f"  Could not write WAV RIFF INFO tags: {result.stderr[-300:]}")
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            return
+        os.replace(temp_path, file_path)
+    except FileNotFoundError:
+        log("  FFmpeg was not found - WAV files will only get ID3 tags, "
+            "not the RIFF INFO tags Explorer/some DJ tools read instead.")
+    except Exception as error:
+        log(f"  Could not write WAV RIFF INFO tags: {error}")
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
 def write_tags(file_path, artist, title, cover_image, force_remove_if_missing,
-                update_title=True, update_artist=True, update_cover=True):
+                update_title=True, update_artist=True, update_cover=True, log=safe_print):
     """
     Writes the chosen tags:
     - update_title / update_artist: True to write, False to leave as-is
     - update_cover: True to apply the cover logic (replace/remove/keep),
       False to leave the cover untouched entirely
     """
+    if file_path.lower().endswith(".wav") and (update_title or update_artist):
+        _write_wav_riff_info(file_path, artist, title, update_artist, update_title, log=log)
+
     audio = open_audio_file(file_path)
     tags = audio.tags
 
@@ -2502,6 +2551,7 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
         write_tags(
             full_path, artist, title, cover_image, force_remove_if_missing,
             update_title=update_title, update_artist=update_artist, update_cover=update_cover,
+            log=log,
         )
 
         if update_title and update_artist:
