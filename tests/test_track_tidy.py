@@ -512,11 +512,39 @@ class IdentifyViaAcoustidTests(unittest.TestCase):
         tagger.acoustid.match = raise_no_backend
         self.assertIsNone(tagger.identify_via_acoustid("song.mp3"))
 
-    def test_web_service_error_returns_none_without_raising(self):
+    def test_web_service_error_retries_then_gives_up(self):
+        # Connection resets/timeouts are usually transient (flaky network,
+        # antivirus HTTP inspection) - retried a couple of times before
+        # giving up, unlike the deterministic fingerprinting errors above.
+        calls = []
         def raise_web_error(apikey, path):
+            calls.append(1)
             raise tagger.acoustid.WebServiceError("network down")
         tagger.acoustid.match = raise_web_error
-        self.assertIsNone(tagger.identify_via_acoustid("song.mp3"))
+        original_sleep = tagger.time.sleep
+        tagger.time.sleep = lambda seconds: None
+        try:
+            self.assertIsNone(tagger.identify_via_acoustid("song.mp3"))
+        finally:
+            tagger.time.sleep = original_sleep
+        self.assertEqual(len(calls), 3)
+
+    def test_web_service_error_retries_and_recovers(self):
+        calls = []
+        def flaky_then_ok(apikey, path):
+            calls.append(1)
+            if len(calls) < 2:
+                raise tagger.acoustid.WebServiceError("connection reset")
+            return iter([(0.95, "rec-1", "Real Title", "Real Artist")])
+        tagger.acoustid.match = flaky_then_ok
+        original_sleep = tagger.time.sleep
+        tagger.time.sleep = lambda seconds: None
+        try:
+            result = tagger.identify_via_acoustid("song.mp3")
+        finally:
+            tagger.time.sleep = original_sleep
+        self.assertEqual(result, ("Real Artist", "Real Title"))
+        self.assertEqual(len(calls), 2)
 
 
 class TryAcoustidCorrectionTests(unittest.TestCase):
