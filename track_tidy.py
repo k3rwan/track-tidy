@@ -1658,7 +1658,7 @@ def search_cover_manual(artist, title, soundcloud_token, spotify_token=None, log
     return None, None, None, None
 
 
-def search_cover_manual_with_tokens(artist, title, log=safe_print):
+def search_cover_manual_with_tokens(artist, title, log=safe_print, on_auth_error=None):
     """
     Same as search_cover_manual(), but also fetches the SoundCloud/Spotify
     tokens itself - for a single ad-hoc search (e.g. the "fix Artist/Title
@@ -1667,9 +1667,9 @@ def search_cover_manual_with_tokens(artist, title, log=safe_print):
     """
     soundcloud_token = None
     if USE_SOUNDCLOUD and SOUNDCLOUD_CLIENT_ID and SOUNDCLOUD_CLIENT_SECRET:
-        soundcloud_token = get_soundcloud_token(log=log)
+        soundcloud_token = get_soundcloud_token(log=log, on_auth_error=on_auth_error)
 
-    spotify_token = get_spotify_token(log=log) if USE_SPOTIFY else None
+    spotify_token = get_spotify_token(log=log, on_auth_error=on_auth_error) if USE_SPOTIFY else None
 
     return search_cover_manual(artist, title, soundcloud_token, spotify_token, log=log)
 
@@ -1884,7 +1884,7 @@ ITUNES_SCAN_MAX_WORKERS = 2
 
 
 def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=None, on_rate_limited=None,
-               should_cancel=None):
+               should_cancel=None, on_auth_error=None):
     """
     Scans ONLY the files in the given list (relative paths).
     Useful for an incremental scan (only reprocess new files).
@@ -1892,6 +1892,9 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
     to allow a progressive display instead of waiting for the whole thing to finish.
     should_cancel() is checked before each file - if it returns True, the scan
     stops early and returns whatever was scanned so far.
+    on_auth_error(source, message) is called if SoundCloud/Spotify credentials
+    are configured but wrong/expired (distinct from simply missing) - easy to
+    miss buried in the log since it doesn't stop the scan.
 
     iTunes searches (if enabled) run concurrently across files, up to
     ITUNES_SCAN_MAX_WORKERS at once - iTunes needs no auth/shared token and
@@ -1924,11 +1927,11 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
             if on_rate_limited:
                 on_rate_limited()
 
-        soundcloud_token = get_soundcloud_token(log=log, on_rate_limited=_mark_rate_limited)
+        soundcloud_token = get_soundcloud_token(log=log, on_rate_limited=_mark_rate_limited, on_auth_error=on_auth_error)
 
     # Only bother authenticating with Spotify if it's actually enabled for
     # this run - no point for a scan that'll never call it.
-    spotify_token = get_spotify_token(log=log) if USE_SPOTIFY else None
+    spotify_token = get_spotify_token(log=log, on_auth_error=on_auth_error) if USE_SPOTIFY else None
 
     # Phase 1: prepare every file (local-only: tags, filename parsing) -
     # fast, so should_cancel is checked cheaply between each one.
@@ -2424,7 +2427,7 @@ def invalidate_soundcloud_token():
     _cached_token_expiry = 0
 
 
-def get_soundcloud_token(log=safe_print, on_rate_limited=None):
+def get_soundcloud_token(log=safe_print, on_rate_limited=None, on_auth_error=None):
     global _cached_soundcloud_token, _cached_token_expiry
 
     # Reuse the cached token if it's still valid (with a 60s safety margin)
@@ -2464,7 +2467,13 @@ def get_soundcloud_token(log=safe_print, on_rate_limited=None):
             if on_rate_limited:
                 on_rate_limited()
         else:
-            log(f"  [SoundCloud] Authentication error: HTTP {response.status_code} - {response.text[:300]}")
+            message = f"HTTP {response.status_code} - {response.text[:300]}"
+            log(f"  [SoundCloud] Authentication error: {message}")
+            # Distinct from "no credentials" above - these ARE configured,
+            # they're just wrong/expired (e.g. a revoked client). Easy to
+            # miss buried in the log since it doesn't stop the scan.
+            if on_auth_error:
+                on_auth_error("SoundCloud", message)
         return None
 
     except Exception as error:
@@ -2569,7 +2578,7 @@ def invalidate_spotify_token():
     _cached_spotify_token_expiry = 0
 
 
-def get_spotify_token(log=safe_print):
+def get_spotify_token(log=safe_print, on_auth_error=None):
     global _cached_spotify_token, _cached_spotify_token_expiry
 
     # Reuse the cached token if it's still valid (with a 60s safety margin)
@@ -2600,7 +2609,13 @@ def get_spotify_token(log=safe_print):
             _cached_spotify_token_expiry = time.time() + payload.get("expires_in", 3600)
             return _cached_spotify_token
 
-        log(f"  [Spotify] Authentication error: HTTP {response.status_code} - {response.text[:300]}")
+        message = f"HTTP {response.status_code} - {response.text[:300]}"
+        log(f"  [Spotify] Authentication error: {message}")
+        # Distinct from "no credentials" above - these ARE configured,
+        # they're just wrong/expired. Easy to miss buried in the log
+        # since it doesn't stop the scan.
+        if on_auth_error:
+            on_auth_error("Spotify", message)
         return None
 
     except Exception as error:

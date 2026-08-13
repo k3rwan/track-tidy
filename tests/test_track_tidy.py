@@ -807,6 +807,76 @@ class SearchOneSourceTests(unittest.TestCase):
         self.assertIsNotNone(match_result)
 
 
+class TokenAuthErrorCallbackTests(unittest.TestCase):
+    """get_soundcloud_token()/get_spotify_token() call on_auth_error(source,
+    message) specifically when credentials ARE configured but authentication
+    fails (e.g. a revoked/wrong client) - distinct from simply missing
+    credentials, and (for SoundCloud) distinct from a 429 rate limit, neither
+    of which should trigger it."""
+
+    def setUp(self):
+        self._original_sc_id = tagger.SOUNDCLOUD_CLIENT_ID
+        self._original_sc_secret = tagger.SOUNDCLOUD_CLIENT_SECRET
+        self._original_spotify_id = tagger.SPOTIFY_CLIENT_ID
+        self._original_spotify_secret = tagger.SPOTIFY_CLIENT_SECRET
+        self._original_post = tagger.requests.post
+        tagger.SOUNDCLOUD_CLIENT_ID = "bad-id"
+        tagger.SOUNDCLOUD_CLIENT_SECRET = "bad-secret"
+        tagger.SPOTIFY_CLIENT_ID = "bad-id"
+        tagger.SPOTIFY_CLIENT_SECRET = "bad-secret"
+        tagger.invalidate_soundcloud_token()
+        tagger.invalidate_spotify_token()
+
+    def tearDown(self):
+        tagger.SOUNDCLOUD_CLIENT_ID = self._original_sc_id
+        tagger.SOUNDCLOUD_CLIENT_SECRET = self._original_sc_secret
+        tagger.SPOTIFY_CLIENT_ID = self._original_spotify_id
+        tagger.SPOTIFY_CLIENT_SECRET = self._original_spotify_secret
+        tagger.requests.post = self._original_post
+        tagger.invalidate_soundcloud_token()
+        tagger.invalidate_spotify_token()
+
+    class FakeResponse:
+        def __init__(self, status_code, text=""):
+            self.status_code = status_code
+            self.text = text
+
+        def json(self):
+            return {}
+
+    def test_soundcloud_401_triggers_callback(self):
+        tagger.requests.post = lambda *a, **k: self.FakeResponse(401, '{"error":"invalid_client"}')
+        calls = []
+        result = tagger.get_soundcloud_token(log=lambda *_: None, on_auth_error=lambda s, m: calls.append((s, m)))
+
+        self.assertIsNone(result)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "SoundCloud")
+        self.assertIn("401", calls[0][1])
+
+    def test_soundcloud_429_does_not_trigger_auth_error_callback(self):
+        tagger.requests.post = lambda *a, **k: self.FakeResponse(429)
+        calls = []
+        tagger.get_soundcloud_token(log=lambda *_: None, on_auth_error=lambda s, m: calls.append((s, m)))
+        self.assertEqual(calls, [])
+
+    def test_soundcloud_missing_credentials_does_not_trigger_callback(self):
+        tagger.SOUNDCLOUD_CLIENT_ID = None
+        calls = []
+        tagger.get_soundcloud_token(log=lambda *_: None, on_auth_error=lambda s, m: calls.append((s, m)))
+        self.assertEqual(calls, [])
+
+    def test_spotify_401_triggers_callback(self):
+        tagger.requests.post = lambda *a, **k: self.FakeResponse(401, '{"error":"invalid_client"}')
+        calls = []
+        result = tagger.get_spotify_token(log=lambda *_: None, on_auth_error=lambda s, m: calls.append((s, m)))
+
+        self.assertIsNone(result)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "Spotify")
+        self.assertIn("401", calls[0][1])
+
+
 class SearchCoverManualTests(unittest.TestCase):
     """search_cover_manual() - the "fix Artist/Title and search again" flow
     after a scan finds no match - searches with the given artist/title
@@ -1024,7 +1094,7 @@ class ScanFilesParallelITunesTests(unittest.TestCase):
         # this machine's keyring.
         tagger.SOUNDCLOUD_CLIENT_ID = "test-client-id"
         tagger.SOUNDCLOUD_CLIENT_SECRET = "test-client-secret"
-        tagger.get_soundcloud_token = lambda log=None, on_rate_limited=None: "fake-token"
+        tagger.get_soundcloud_token = lambda log=None, on_rate_limited=None, on_auth_error=None: "fake-token"
 
     def tearDown(self):
         tagger.MUSIC_FOLDER = self._original_music_folder
