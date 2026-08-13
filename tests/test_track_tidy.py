@@ -43,6 +43,19 @@ class ParseFilenameTests(unittest.TestCase):
     def test_no_dash_returns_none(self):
         self.assertEqual(tagger.parse_filename("JustATitleNoArtist.mp3"), (None, None))
 
+    def test_en_dash_and_em_dash_recognized_as_separator(self):
+        # Some sources (e.g. Vinyl On Demand releases) use "–"/"—"
+        # instead of a plain hyphen - previously fell through to (None, None)
+        # since every split pattern only matched a literal ASCII "-".
+        self.assertEqual(
+            tagger.parse_filename("UNKLE – Only You (&ME Remix).mp3"),
+            ("UNKLE", "Only You (&ME Remix)"),
+        )
+        self.assertEqual(
+            tagger.parse_filename("Artist — Title (Remix).mp3"),
+            ("Artist", "Title (Remix)"),
+        )
+
     def test_entirely_lowercase_gets_titlecased(self):
         artist, title = tagger.parse_filename("daft_punk - one_more_time.mp3")
         self.assertEqual((artist, title), ("Daft Punk", "One More Time"))
