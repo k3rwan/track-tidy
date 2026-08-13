@@ -377,10 +377,12 @@ class ITunesRetryTests(unittest.TestCase):
         self.original_get = tagger.requests.get
         self.original_sleep = tagger.time.sleep
         tagger.time.sleep = lambda seconds: None
+        tagger._itunes_rate_limited_until = 0
 
     def tearDown(self):
         tagger.requests.get = self.original_get
         tagger.time.sleep = self.original_sleep
+        tagger._itunes_rate_limited_until = 0
 
     class FakeResponse:
         def __init__(self, status_code, payload=None, content=b""):
@@ -427,6 +429,47 @@ class ITunesRetryTests(unittest.TestCase):
 
         self.assertIsNone(result)
         self.assertEqual(calls["search"], 3)  # initial attempt + 2 retries (max_retries=2)
+
+    def test_persistent_429_trips_the_shared_cooldown(self):
+        # A real large-batch scan hit a genuine, sustained HTTP 429 (not
+        # just transient 403s) - every further iTunes call across the rest
+        # of that scan (other concurrent workers, later sequential
+        # AcoustID-triggered re-searches) should back off immediately
+        # instead of each independently retrying into the same wall.
+        calls = {"search": 0}
+
+        def fake_get(url, params=None, timeout=None):
+            calls["search"] += 1
+            return self.FakeResponse(429)
+
+        tagger.requests.get = fake_get
+        result = tagger.search_cover_itunes("PEATY, Jawora", "One Time")
+
+        self.assertIsNone(result)
+        self.assertEqual(calls["search"], 3)  # this call still does its own retries
+        self.assertGreater(tagger._itunes_rate_limited_until, time.time())
+
+        # A second call, still within the cooldown, is skipped outright -
+        # no further HTTP request at all.
+        result2 = tagger.search_cover_itunes("Someone Else", "Another Title")
+        self.assertIsNone(result2)
+        self.assertEqual(calls["search"], 3)  # unchanged - no new request made
+
+    def test_cooldown_expiring_allows_requests_again(self):
+        tagger._itunes_rate_limited_until = time.time() - 1  # already expired
+
+        def fake_get(url, params=None, timeout=None):
+            return self.FakeResponse(200, {"results": [
+                {
+                    "artistName": "PEATY, Jawora", "trackName": "One Time",
+                    "artworkUrl100": "https://example.com/cover100x100.jpg",
+                },
+            ]}) if "itunes.apple.com" in url else self.FakeResponse(200, content=b"fake-image-bytes")
+
+        tagger.requests.get = fake_get
+        result = tagger.search_cover_itunes("PEATY, Jawora", "One Time")
+
+        self.assertIsNotNone(result)
 
 
 class SearchCoverSoundcloudTests(unittest.TestCase):
@@ -764,6 +807,76 @@ class SearchOneSourceTests(unittest.TestCase):
         self.assertIsNotNone(match_result)
 
 
+class TokenAuthErrorCallbackTests(unittest.TestCase):
+    """get_soundcloud_token()/get_spotify_token() call on_auth_error(source,
+    message) specifically when credentials ARE configured but authentication
+    fails (e.g. a revoked/wrong client) - distinct from simply missing
+    credentials, and (for SoundCloud) distinct from a 429 rate limit, neither
+    of which should trigger it."""
+
+    def setUp(self):
+        self._original_sc_id = tagger.SOUNDCLOUD_CLIENT_ID
+        self._original_sc_secret = tagger.SOUNDCLOUD_CLIENT_SECRET
+        self._original_spotify_id = tagger.SPOTIFY_CLIENT_ID
+        self._original_spotify_secret = tagger.SPOTIFY_CLIENT_SECRET
+        self._original_post = tagger.requests.post
+        tagger.SOUNDCLOUD_CLIENT_ID = "bad-id"
+        tagger.SOUNDCLOUD_CLIENT_SECRET = "bad-secret"
+        tagger.SPOTIFY_CLIENT_ID = "bad-id"
+        tagger.SPOTIFY_CLIENT_SECRET = "bad-secret"
+        tagger.invalidate_soundcloud_token()
+        tagger.invalidate_spotify_token()
+
+    def tearDown(self):
+        tagger.SOUNDCLOUD_CLIENT_ID = self._original_sc_id
+        tagger.SOUNDCLOUD_CLIENT_SECRET = self._original_sc_secret
+        tagger.SPOTIFY_CLIENT_ID = self._original_spotify_id
+        tagger.SPOTIFY_CLIENT_SECRET = self._original_spotify_secret
+        tagger.requests.post = self._original_post
+        tagger.invalidate_soundcloud_token()
+        tagger.invalidate_spotify_token()
+
+    class FakeResponse:
+        def __init__(self, status_code, text=""):
+            self.status_code = status_code
+            self.text = text
+
+        def json(self):
+            return {}
+
+    def test_soundcloud_401_triggers_callback(self):
+        tagger.requests.post = lambda *a, **k: self.FakeResponse(401, '{"error":"invalid_client"}')
+        calls = []
+        result = tagger.get_soundcloud_token(log=lambda *_: None, on_auth_error=lambda s, m: calls.append((s, m)))
+
+        self.assertIsNone(result)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "SoundCloud")
+        self.assertIn("401", calls[0][1])
+
+    def test_soundcloud_429_does_not_trigger_auth_error_callback(self):
+        tagger.requests.post = lambda *a, **k: self.FakeResponse(429)
+        calls = []
+        tagger.get_soundcloud_token(log=lambda *_: None, on_auth_error=lambda s, m: calls.append((s, m)))
+        self.assertEqual(calls, [])
+
+    def test_soundcloud_missing_credentials_does_not_trigger_callback(self):
+        tagger.SOUNDCLOUD_CLIENT_ID = None
+        calls = []
+        tagger.get_soundcloud_token(log=lambda *_: None, on_auth_error=lambda s, m: calls.append((s, m)))
+        self.assertEqual(calls, [])
+
+    def test_spotify_401_triggers_callback(self):
+        tagger.requests.post = lambda *a, **k: self.FakeResponse(401, '{"error":"invalid_client"}')
+        calls = []
+        result = tagger.get_spotify_token(log=lambda *_: None, on_auth_error=lambda s, m: calls.append((s, m)))
+
+        self.assertIsNone(result)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "Spotify")
+        self.assertIn("401", calls[0][1])
+
+
 class SearchCoverManualTests(unittest.TestCase):
     """search_cover_manual() - the "fix Artist/Title and search again" flow
     after a scan finds no match - searches with the given artist/title
@@ -981,7 +1094,7 @@ class ScanFilesParallelITunesTests(unittest.TestCase):
         # this machine's keyring.
         tagger.SOUNDCLOUD_CLIENT_ID = "test-client-id"
         tagger.SOUNDCLOUD_CLIENT_SECRET = "test-client-secret"
-        tagger.get_soundcloud_token = lambda log=None, on_rate_limited=None: "fake-token"
+        tagger.get_soundcloud_token = lambda log=None, on_rate_limited=None, on_auth_error=None: "fake-token"
 
     def tearDown(self):
         tagger.MUSIC_FOLDER = self._original_music_folder
@@ -1263,6 +1376,75 @@ class WriteTagsWavRiffInfoTests(unittest.TestCase):
         _, artist, title, _ = tagger.read_current_info(self.file_path)
         self.assertEqual(artist, "New Artist")
         self.assertEqual(title, "New Title")
+
+
+class ProcessFilesTests(unittest.TestCase):
+    """Reported bug: a corrupted file ("can't sync to MPEG frame", a real
+    mutagen error for invalid MP3 audio data) raised uncaught from inside
+    the per-file loop, aborting process_files() entirely - every file
+    queued AFTER the bad one silently never got tagged or renamed, with
+    no indication why. Each file must be independent: one failure logs an
+    error and moves on to the next."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_music_folder = tagger.MUSIC_FOLDER
+        tagger.MUSIC_FOLDER = self._tmp_dir.name
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self._good_source = os.path.join(project_root, "fart.wav")
+
+    def tearDown(self):
+        tagger.MUSIC_FOLDER = self._original_music_folder
+        self._tmp_dir.cleanup()
+
+    def _make_plan_entry(self, file_name, artist, title):
+        return {
+            "file": file_name,
+            "artist_override": None,
+            "title_override": None,
+            "detected_artist": artist,
+            "detected_title": title,
+            "current_artist": None,
+            "current_title": None,
+            "current_cover_bytes": None,
+            "has_cover": False,
+            "apply_changes": True,
+            "convert": False,
+            "found_cover_image": None,
+            "processed": False,
+        }
+
+    def test_corrupted_file_does_not_abort_the_rest_of_the_batch(self):
+        corrupted_path = os.path.join(self._tmp_dir.name, "corrupted.mp3")
+        with open(corrupted_path, "wb") as f:
+            f.write(b"ID3" + b"\x00" * 200)  # not valid MP3 audio data
+
+        good_path = os.path.join(self._tmp_dir.name, "good_track.mp3")
+        shutil.copy(self._good_source, good_path)
+
+        plan = [
+            self._make_plan_entry("corrupted.mp3", "Bad Artist", "Bad Title"),
+            self._make_plan_entry("good_track.mp3", "Daft Punk", "One More Time"),
+        ]
+
+        results = []
+        tagger.process_files(
+            plan, log=lambda *_: None,
+            on_file_processed=lambda ident, ok, reason=None: results.append((ident, ok, reason)),
+        )
+
+        self.assertEqual(len(results), 2)
+        corrupted_ident, corrupted_ok, corrupted_reason = results[0]
+        self.assertEqual((corrupted_ident, corrupted_ok), ("corrupted.mp3", False))
+        self.assertTrue(corrupted_reason)  # some human-readable reason, exact text is mutagen's own
+        self.assertEqual(results[1], ("good_track.mp3", True, None))
+        self.assertTrue(plan[0]["processed"])
+        self.assertTrue(plan[1]["processed"])
+
+        remaining_files = set(os.listdir(self._tmp_dir.name))
+        self.assertIn("Daft Punk - One More Time.mp3", remaining_files)
+        # The corrupted file is left alone (not silently deleted/renamed).
+        self.assertIn("corrupted.mp3", remaining_files)
 
 
 class SettingsPersistenceTests(unittest.TestCase):
