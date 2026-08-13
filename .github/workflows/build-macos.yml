@@ -73,6 +73,42 @@ jobs:
           chmod +x build_mac.sh
           ./build_mac.sh
 
+      - name: Verify the bundled ffmpeg actually runs
+        # otool -L only proves the link PATHS look right - this proves the
+        # binary genuinely executes, dependencies and all.
+        run: "dist/Track-Tidy.app/Contents/MacOS/ffmpeg" -version
+
+      - name: Launch the app and verify it doesn't crash on startup
+        # A local build's .app has no quarantine attribute (that's only
+        # set on files that arrive via a browser/AirDrop/etc, not ones
+        # compiled right here) - Gatekeeper's "unidentified developer"
+        # block, a real concern for anyone who downloads the finished
+        # .dmg, doesn't apply to this same-machine launch. Only checks
+        # "does it start and stay up", not any actual feature.
+        run: |
+          "dist/Track-Tidy.app/Contents/MacOS/Track-Tidy" > launch.log 2>&1 &
+          APP_PID=$!
+          sleep 5
+          if kill -0 $APP_PID 2>/dev/null; then
+            echo "Still running after 5s (PID $APP_PID) - clean launch."
+            screencapture -x launch_screenshot.png || echo "screencapture failed (no display attached to this runner?)"
+            kill $APP_PID
+          else
+            echo "Exited within 5s on its own - crashed on startup. Log:"
+            cat launch.log
+            exit 1
+          fi
+
+      - name: Upload launch-check artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Track-Tidy-macOS-${{ matrix.arch }}-launch-check-v${{ github.run_number }}
+          path: |
+            launch.log
+            launch_screenshot.png
+          if-no-files-found: ignore
+
       - name: Upload .dmg
         uses: actions/upload-artifact@v4
         with:
