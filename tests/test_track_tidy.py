@@ -149,6 +149,26 @@ class StripHelpersTests(unittest.TestCase):
         )
 
 
+class TitleHasNamedQualifierTests(unittest.TestCase):
+    def test_named_bootleg_credit_is_named(self):
+        self.assertTrue(tagger.title_has_named_qualifier("Gimme That Remix (Royale BR Bootleg)"))
+
+    def test_named_remixer_credit_is_named(self):
+        self.assertTrue(tagger.title_has_named_qualifier("Astronomia (DJ Snake Remix)"))
+
+    def test_bare_remix_with_no_name_is_not_named(self):
+        self.assertFalse(tagger.title_has_named_qualifier("Title (Remix)"))
+
+    def test_generic_mix_label_is_not_named(self):
+        self.assertFalse(tagger.title_has_named_qualifier("Astronomia (Extended Mix)"))
+
+    def test_no_parenthetical_is_not_named(self):
+        self.assertFalse(tagger.title_has_named_qualifier("Astronomia"))
+
+    def test_unrelated_parenthetical_is_not_named(self):
+        self.assertFalse(tagger.title_has_named_qualifier("Title (feat. Someone)"))
+
+
 class ExactMatchTests(unittest.TestCase):
     def test_case_and_whitespace_insensitive(self):
         self.assertTrue(tagger.exact_match("  Astronomia ", "astronomia"))
@@ -386,6 +406,29 @@ class SearchOneSourceTests(unittest.TestCase):
         self.assertEqual(calls, ["Title", "Title (Remix)"])
         self.assertEqual(source, "iTunes")
         self.assertIsNotNone(match_result)
+
+    def test_itunes_skips_plain_title_for_a_named_qualifier(self):
+        # Reported bug: a bare "(Remix)" tries the plain title first (see
+        # test above), but a NAMED one (e.g. "(Royale BR Bootleg)") must
+        # NOT - the plain title risks matching a different, unrelated
+        # official release (e.g. an official "(Remix)" single) instead of
+        # the specific unofficial version actually wanted.
+        calls = []
+
+        def fake_itunes(artist, title, log=None, **kwargs):
+            calls.append(title)
+            # Only the WRONG plain-title query would find anything here -
+            # if it's ever sent, the bug has regressed.
+            return (b"wrong cover", artist, title) if title == "Title" else None
+
+        tagger.search_cover_itunes = fake_itunes
+
+        match_result, source = tagger._search_one_source(
+            "itunes", "Artist", "Title", "Title (Royale BR Bootleg)", None, None, print
+        )
+        self.assertEqual(calls, ["Title (Royale BR Bootleg)"])
+        self.assertIsNone(match_result)
+        self.assertIsNone(source)
 
     def test_itunes_no_retry_when_remix_qualified_title_matches_plain(self):
         calls = []
