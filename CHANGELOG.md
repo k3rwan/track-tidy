@@ -3,6 +3,52 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.13]
+
+### Added
+- WAV files can now be tagged (and given a cover) directly, without
+  being forced through an MP3 conversion.
+- WAV files are now converted to AIFF by default before tagging (new
+  "Convert WAV to AIFF" setting in Settings, on by default) - purely
+  for cover-art compatibility with software that doesn't read embedded
+  artwork from WAV at all (confirmed: Rekordbox), not sound quality
+  (lossless) or tag support (both work directly either way).
+- Ctrl+Z now also undoes a Title/Artist edit, including one already
+  confirmed (previously only undid a removed row, and did nothing at
+  all while still typing in the edit box).
+
+### Changed
+- "Convert everything to MP3" now defaults to off.
+- The "Format" column header checkbox no longer deselects tracks when
+  unchecked - only the "Apply" header does that (a track that won't be
+  touched shouldn't keep a pending conversion queued; the reverse
+  doesn't hold).
+- The update check now runs before the SoundCloud/Spotify "not
+  configured" nag at startup.
+
+### Fixed
+- WAV files also get RIFF INFO tags (title/artist) alongside ID3 now,
+  so they show up correctly in Windows Explorer and DJ software that
+  doesn't read ID3 from WAV.
+- Filename parsing fixed for patterns like "Artist - Title ft. X -
+  (Suffix)" - a featured-artist credit no longer gets stuck in the
+  title, and a trailing bootleg/remix suffix no longer gets misread as
+  the artist.
+- Cover search no longer settles for a different, unrelated official
+  release when a specific named remix/bootleg was asked for - checks
+  more candidates per source and requires the named credit to actually
+  be present in the match.
+- The packaged app no longer crashes at launch with "No module named
+  'keyring'".
+- The auto-updater retries a connection reset during download
+  (including mid-transfer) instead of failing on the first hiccup.
+- The "no audio file found" messages now mention formats beyond
+  MP3/WAV.
+- The progress bar no longer keeps showing a previous run's "Done"
+  after editing an already-processed row.
+- The legal notice and Extractor intro text now use the full available
+  width instead of leaving an unused gap on the right.
+
 ## [0.12]
 
 ### Added
