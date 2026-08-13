@@ -44,11 +44,28 @@ jobs:
         # one there for a macOS build, so WAV->AIFF conversion and RIFF
         # INFO tag writing (both shell out to it) silently degraded on Mac
         # even though they work fine on Windows (ffmpeg.exe is checked
-        # into the repo there). Homebrew's ffmpeg is pre-installed on
-        # GitHub's macOS runners.
+        # into the repo there).
+        #
+        # Homebrew's ffmpeg is pre-installed on GitHub's macOS runners, but
+        # it's dynamically linked against its OWN Homebrew-installed
+        # dependencies (dav1d, x264, x265, libvpx...) at absolute
+        # /opt/homebrew (or /usr/local) paths - copying just the ffmpeg
+        # binary alone would be broken on any Mac without Homebrew (i.e.
+        # every real end user). dylibbundler resolves and copies every
+        # dependency into ./ffmpeg-libs and rewrites ffmpeg's own link
+        # paths to look for them next to itself instead - the standard
+        # tool for exactly this "redistribute a Homebrew binary" case.
         run: |
           which ffmpeg || brew install ffmpeg
+          brew install dylibbundler
           cp "$(which ffmpeg)" ./ffmpeg
+          chmod +w ./ffmpeg
+          dylibbundler -od -b -x ./ffmpeg -d ./ffmpeg-libs -p "@executable_path/ffmpeg-libs/"
+          echo "--- ffmpeg link dependencies after bundling (should show no /opt/homebrew or /usr/local paths left) ---"
+          otool -L ./ffmpeg
+          echo "--- bundled dylib count and total size ---"
+          ls -la ./ffmpeg-libs | wc -l
+          du -sh ./ffmpeg ./ffmpeg-libs
 
       - name: Build .app and .dmg
         run: |
