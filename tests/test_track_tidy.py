@@ -43,6 +43,19 @@ class ParseFilenameTests(unittest.TestCase):
     def test_no_dash_returns_none(self):
         self.assertEqual(tagger.parse_filename("JustATitleNoArtist.mp3"), (None, None))
 
+    def test_en_dash_and_em_dash_recognized_as_separator(self):
+        # Some sources (e.g. Vinyl On Demand releases) use "–"/"—"
+        # instead of a plain hyphen - previously fell through to (None, None)
+        # since every split pattern only matched a literal ASCII "-".
+        self.assertEqual(
+            tagger.parse_filename("UNKLE – Only You (&ME Remix).mp3"),
+            ("UNKLE", "Only You (&ME Remix)"),
+        )
+        self.assertEqual(
+            tagger.parse_filename("Artist — Title (Remix).mp3"),
+            ("Artist", "Title (Remix)"),
+        )
+
     def test_entirely_lowercase_gets_titlecased(self):
         artist, title = tagger.parse_filename("daft_punk - one_more_time.mp3")
         self.assertEqual((artist, title), ("Daft Punk", "One More Time"))
@@ -172,6 +185,36 @@ class StripHelpersTests(unittest.TestCase):
             tagger.strip_parentheses("Water (Dj Nasty Remix) [AMAPIANO]"),
             "Water",
         )
+
+
+class ComputeSearchTitlesTests(unittest.TestCase):
+    """Reported bug: 'Move (Original Mix)' matched a SoundCloud upload of a
+    COMPLETELY different song, 'Rinketin (Original Mix)', by the same
+    artist duo - both title_words_overlap() checks (search_cover_soundcloud)
+    treated the generic "original"/"mix" words as a meaningful match.
+    remix_qualified_title must drop a purely generic qualifier entirely
+    (falling back to the plain title) - only a genuinely NAMED one
+    (remixer/bootleg credit) is worth keeping attached for the search."""
+
+    def test_generic_qualifier_is_dropped(self):
+        self.assertEqual(
+            tagger.compute_search_titles("Move (Original Mix)"),
+            ("Move", "Move"),
+        )
+
+    def test_named_qualifier_is_kept(self):
+        self.assertEqual(
+            tagger.compute_search_titles("Gimme That Remix (Royale BR Bootleg)"),
+            ("Gimme That Remix", "Gimme That Remix (Royale BR Bootleg)"),
+        )
+
+    def test_no_parenthetical_returns_same_value_twice(self):
+        self.assertEqual(tagger.compute_search_titles("Astronomia"), ("Astronomia", "Astronomia"))
+
+    def test_generic_qualifier_no_longer_overlaps_an_unrelated_title(self):
+        search_title, remix_qualified_title = tagger.compute_search_titles("Move (Original Mix)")
+        self.assertFalse(tagger.title_words_overlap(remix_qualified_title, "Rinketin (Original Mix)"))
+        self.assertEqual(search_title, remix_qualified_title)
 
 
 class TitleHasNamedQualifierTests(unittest.TestCase):
@@ -512,11 +555,39 @@ class IdentifyViaAcoustidTests(unittest.TestCase):
         tagger.acoustid.match = raise_no_backend
         self.assertIsNone(tagger.identify_via_acoustid("song.mp3"))
 
-    def test_web_service_error_returns_none_without_raising(self):
+    def test_web_service_error_retries_then_gives_up(self):
+        # Connection resets/timeouts are usually transient (flaky network,
+        # antivirus HTTP inspection) - retried a couple of times before
+        # giving up, unlike the deterministic fingerprinting errors above.
+        calls = []
         def raise_web_error(apikey, path):
+            calls.append(1)
             raise tagger.acoustid.WebServiceError("network down")
         tagger.acoustid.match = raise_web_error
-        self.assertIsNone(tagger.identify_via_acoustid("song.mp3"))
+        original_sleep = tagger.time.sleep
+        tagger.time.sleep = lambda seconds: None
+        try:
+            self.assertIsNone(tagger.identify_via_acoustid("song.mp3"))
+        finally:
+            tagger.time.sleep = original_sleep
+        self.assertEqual(len(calls), 3)
+
+    def test_web_service_error_retries_and_recovers(self):
+        calls = []
+        def flaky_then_ok(apikey, path):
+            calls.append(1)
+            if len(calls) < 2:
+                raise tagger.acoustid.WebServiceError("connection reset")
+            return iter([(0.95, "rec-1", "Real Title", "Real Artist")])
+        tagger.acoustid.match = flaky_then_ok
+        original_sleep = tagger.time.sleep
+        tagger.time.sleep = lambda seconds: None
+        try:
+            result = tagger.identify_via_acoustid("song.mp3")
+        finally:
+            tagger.time.sleep = original_sleep
+        self.assertEqual(result, ("Real Artist", "Real Title"))
+        self.assertEqual(len(calls), 2)
 
 
 class TryAcoustidCorrectionTests(unittest.TestCase):
@@ -1287,12 +1358,60 @@ class NewInstallNotificationTests(unittest.TestCase):
             return FakeResponse()
 
         tagger.requests.post = fake_post
-        result = tagger.send_new_install_notification(reporter_name="kevin")
+        result = tagger.send_new_install_notification(reporter_name="someuser")
 
         self.assertTrue(result)
         self.assertEqual(captured["url"], tagger.DISCORD_REPORT_WEBHOOK_URL)
         fields = captured["json"]["embeds"][0]["fields"]
-        self.assertEqual(fields[0], {"name": "User", "value": "kevin", "inline": True})
+        self.assertEqual(fields[0], {"name": "User", "value": "someuser", "inline": True})
+
+    def test_excluded_user_is_not_notified(self):
+        # The developer's own Windows account - see
+        # DISCORD_NOTIFICATION_EXCLUDED_USERS, checked case-insensitively.
+        calls = []
+        tagger.requests.post = lambda *a, **k: calls.append(1)
+
+        self.assertFalse(tagger.send_new_install_notification(reporter_name="Kevin"))
+        self.assertEqual(calls, [])
+
+
+class ScanCompleteNotificationTests(unittest.TestCase):
+    def setUp(self):
+        self.original_post = tagger.requests.post
+
+    def tearDown(self):
+        tagger.requests.post = self.original_post
+
+    def test_sends_counts_and_returns_true_on_success(self):
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["url"] = url
+            captured["json"] = json
+
+            class FakeResponse:
+                status_code = 204
+            return FakeResponse()
+
+        tagger.requests.post = fake_post
+        result = tagger.send_scan_complete_notification(
+            reporter_name="someuser", number_new=3, number_removed=1, total=10,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(captured["url"], tagger.DISCORD_REPORT_WEBHOOK_URL)
+        fields = captured["json"]["embeds"][0]["fields"]
+        self.assertEqual(fields[0], {"name": "User", "value": "someuser", "inline": True})
+        self.assertEqual(fields[1], {"name": "New files", "value": "3", "inline": True})
+        self.assertEqual(fields[2], {"name": "Removed files", "value": "1", "inline": True})
+        self.assertEqual(fields[3], {"name": "Total files", "value": "10", "inline": True})
+
+    def test_excluded_user_is_not_notified(self):
+        calls = []
+        tagger.requests.post = lambda *a, **k: calls.append(1)
+
+        self.assertFalse(tagger.send_scan_complete_notification(reporter_name="kevin", number_new=1))
+        self.assertEqual(calls, [])
 
     def test_returns_false_on_network_failure(self):
         def fake_post(url, json=None, timeout=None):
