@@ -2556,6 +2556,34 @@ def search_cover_spotify(artist, title, token, log=safe_print):
 ACOUSTID_MIN_SCORE = 0.5  # AcoustID scores range 0-1; below this, not worth trusting
 
 
+def _run_without_console_window(func, *args, **kwargs):
+    """
+    Runs func() with subprocess.Popen temporarily patched to suppress the
+    console window Windows would otherwise briefly flash for any child
+    process it spawns. Every OTHER subprocess call in this codebase
+    (convert_to_mp3, _write_wav_riff_info, ...) already passes
+    creationflags=CREATE_NO_WINDOW itself - pyacoustid's own internal
+    fpcalc invocation (inside acoustid.match()) has no parameter to do the
+    same, so this patches it in from the outside instead. Scoped to just
+    this call (restored in a finally, even on error) rather than a
+    permanent global patch, to keep the blast radius as small as possible.
+    """
+    if sys.platform != "win32":
+        return func(*args, **kwargs)
+
+    original_popen = subprocess.Popen
+
+    def popen_no_window(*popen_args, **popen_kwargs):
+        popen_kwargs["creationflags"] = popen_kwargs.get("creationflags", 0) | subprocess.CREATE_NO_WINDOW
+        return original_popen(*popen_args, **popen_kwargs)
+
+    subprocess.Popen = popen_no_window
+    try:
+        return func(*args, **kwargs)
+    finally:
+        subprocess.Popen = original_popen
+
+
 def identify_via_acoustid(file_path, log=safe_print):
     """
     Identifies a track from its actual audio content via AcoustID/
@@ -2573,7 +2601,7 @@ def identify_via_acoustid(file_path, log=safe_print):
 
     acoustid.FPCALC_COMMAND = find_fpcalc()
     try:
-        results = list(acoustid.match(ACOUSTID_API_KEY, file_path))
+        results = list(_run_without_console_window(acoustid.match, ACOUSTID_API_KEY, file_path))
     except acoustid.NoBackendError:
         log("  [AcoustID] fpcalc not found - check it's bundled or installed.")
         return None
