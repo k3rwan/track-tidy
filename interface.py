@@ -2063,7 +2063,7 @@ class TaggerInterface:
 
         ttk.Label(
             dialog,
-            text="💨 No .mp3 or .wav file was found in this folder\n(or its subfolders).",
+            text="💨 No audio file (.mp3, .wav, .aiff, etc.) was found in this\nfolder (or its subfolders).",
             justify="center",
             padding=20,
         ).pack()
@@ -2211,7 +2211,7 @@ class TaggerInterface:
         number_new = len(self.scanned_plan) - number_before + len(removed_files)
 
         if not self.scanned_plan:
-            self._append_to_journal("No audio file (.mp3/.wav) found in this folder.")
+            self._append_to_journal("No audio file (.mp3, .wav, .aiff, etc.) found in this folder.")
             self._show_no_files_dialog()
         else:
             if number_new == 0 and not removed_files:
