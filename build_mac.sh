@@ -35,9 +35,13 @@ fi
 
 if [ ! -f "ffmpeg" ]; then
     echo "[WARNING] No 'ffmpeg' binary (macOS build, no extension) found next to this script."
-    echo "WAV-to-MP3 conversion won't work for people who don't already have FFmpeg installed."
-    echo "Download a macOS ffmpeg build (e.g. from evermeet.cx or 'brew install ffmpeg' and copy"
-    echo "the binary out) and place it here as './ffmpeg' if you want it bundled."
+    echo "Format conversion (WAV->MP3/AIFF) and WAV RIFF INFO tag writing won't work for"
+    echo "people who don't already have FFmpeg installed. A plain 'brew install ffmpeg' binary"
+    echo "is NOT enough on its own - it's dynamically linked against other Homebrew-installed"
+    echo "libraries and will fail to launch without them. Either download a genuinely static"
+    echo "build (e.g. evermeet.cx), or run 'brew install ffmpeg dylibbundler' and:"
+    echo "  dylibbundler -od -b -x ./ffmpeg -d ./ffmpeg-libs -p \"@executable_path/ffmpeg-libs/\""
+    echo "(see build-macos.yml, which does exactly this in CI) before placing the result here."
     echo
 fi
 
@@ -87,6 +91,15 @@ if [ -f "ffmpeg" ]; then
     echo "Bundling ffmpeg into the .app..."
     cp ffmpeg "dist/Track-Tidy.app/Contents/MacOS/ffmpeg"
     chmod +x "dist/Track-Tidy.app/Contents/MacOS/ffmpeg"
+    # If ffmpeg was prepared with dylibbundler (e.g. from a Homebrew
+    # install - see build-macos.yml), its resolved dependency .dylibs live
+    # alongside it in ./ffmpeg-libs, and ffmpeg's own link paths point at
+    # "@executable_path/ffmpeg-libs/" - that folder must end up in the
+    # exact same place relative to the bundled binary (Contents/MacOS/) or
+    # ffmpeg won't find them at runtime.
+    if [ -d "ffmpeg-libs" ]; then
+        cp -R ffmpeg-libs "dist/Track-Tidy.app/Contents/MacOS/ffmpeg-libs"
+    fi
 fi
 
 echo
