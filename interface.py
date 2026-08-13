@@ -275,12 +275,14 @@ class TaggerInterface:
         self.use_spotify_var = tk.BooleanVar(value=saved_settings.get("use_spotify", False))
         self.use_soundcloud_var = tk.BooleanVar(value=saved_settings.get("use_soundcloud", True))
         self.auto_convert_var = tk.BooleanVar(value=saved_settings.get("auto_convert_mp3", False))
+        self.auto_convert_wav_aiff_var = tk.BooleanVar(value=saved_settings.get("auto_convert_wav_to_aiff", True))
         self.show_log_var = tk.BooleanVar(value=saved_settings.get("show_log_section", False))
         self._tagger_resize_pending = False
         tagger.USE_ITUNES = self.use_itunes_var.get()
         tagger.USE_SPOTIFY = self.use_spotify_var.get()
         tagger.USE_SOUNDCLOUD = self.use_soundcloud_var.get()
         tagger.AUTO_CONVERT_MP3 = self.auto_convert_var.get()
+        tagger.AUTO_CONVERT_WAV_TO_AIFF = self.auto_convert_wav_aiff_var.get()
 
         self._build_interface()
         self._setup_drag_and_drop()
@@ -355,16 +357,23 @@ class TaggerInterface:
     def _on_auto_convert_changed(self):
         enabled = self.auto_convert_var.get()
         if not enabled:
+            wav_fate = (
+                "converted to AIFF" if self.auto_convert_wav_aiff_var.get() else "tagged (and get a cover) in place, kept as WAV"
+            )
             messagebox.showwarning(
                 "Convert to MP3 disabled",
-                "WAV files will now be tagged (and get a cover) in place, kept "
-                "as WAV. Other non-MP3 formats (FLAC, M4A, OGG...) will be "
-                "ignored when scanning - they can't be tagged without "
-                "converting to MP3 first.",
+                f"WAV files will now be {wav_fate}. Other non-MP3 formats "
+                "(FLAC, M4A, OGG...) will be ignored when scanning - they "
+                "can't be tagged without converting to MP3 first.",
                 parent=self.window,
             )
         tagger.AUTO_CONVERT_MP3 = enabled
         tagger.save_setting("auto_convert_mp3", enabled)
+
+    def _on_auto_convert_wav_aiff_changed(self):
+        enabled = self.auto_convert_wav_aiff_var.get()
+        tagger.AUTO_CONVERT_WAV_TO_AIFF = enabled
+        tagger.save_setting("auto_convert_wav_to_aiff", enabled)
 
     def _on_show_log_changed(self):
         enabled = self.show_log_var.get()
@@ -1070,10 +1079,10 @@ class TaggerInterface:
             return
         if (
             not tagger.AUTO_CONVERT_MP3
-            and not file_path.lower().endswith((".mp3", ".wav"))
+            and not file_path.lower().endswith((".mp3", ".wav", ".aiff", ".aif"))
         ):
             self._append_to_journal(
-                f"Ignored '{os.path.basename(file_path)}' - only MP3/WAV can be tagged "
+                f"Ignored '{os.path.basename(file_path)}' - only MP3/WAV/AIFF can be tagged "
                 "without converting (Settings > Convert everything to MP3)."
             )
             return
@@ -1394,6 +1403,10 @@ class TaggerInterface:
             behavior_frame, text="Convert everything to MP3 (320 kbps)", variable=self.auto_convert_var,
             command=self._on_auto_convert_changed,
         ).pack(anchor="w", padx=10, pady=(10, 0))
+        ttk.Checkbutton(
+            behavior_frame, text="Convert WAV to AIFF (needed for cover art in Rekordbox)",
+            variable=self.auto_convert_wav_aiff_var, command=self._on_auto_convert_wav_aiff_changed,
+        ).pack(anchor="w", padx=10, pady=(0, 0))
         ttk.Checkbutton(
             behavior_frame, text="Show log section", variable=self.show_log_var,
             command=self._on_show_log_changed,
@@ -2420,13 +2433,18 @@ class TaggerInterface:
     def _build_row_values(self, info):
         """Builds the tuple of displayed values for a row (image handled separately)."""
         needs_conversion = info["format"] != "MP3"
+        # What "convert" actually resolves to for THIS file - MP3 for most
+        # formats, but WAV can go to AIFF instead (see AUTO_CONVERT_WAV_TO_AIFF /
+        # _resolve_conversion_target) purely for cover-art compatibility
+        # with software that doesn't read artwork from WAV (e.g. Rekordbox).
+        target_format = (tagger._resolve_conversion_target(info["file"]) or "mp3").upper()
 
         if info.get("processed"):
             displayed_title = info["title_override"] or info["detected_title"] or "?"
             displayed_artist = info["artist_override"]
             if displayed_artist is None:
                 displayed_artist = info["detected_artist"] if info["detected_artist"] else "(empty)"
-            displayed_format = f"MP3 {PROCESSED_CHECK}" if (needs_conversion and info["convert"]) else info["format"]
+            displayed_format = f"{target_format} {PROCESSED_CHECK}" if (needs_conversion and info["convert"]) else info["format"]
             # Reflects what actually happened to THIS row, not "processed
             # means checked" - a row that was unchecked (kept as-is) still
             # ends up "processed" once the run reaches it, and showing it
@@ -2455,7 +2473,7 @@ class TaggerInterface:
 
         if needs_conversion:
             convert_box = CHECKED_BOX if info["convert"] else EMPTY_BOX
-            format_text = "MP3" if info["convert"] else info["format"]
+            format_text = target_format if info["convert"] else info["format"]
             displayed_format = f"{format_text} {convert_box}"
         else:
             displayed_format = info["format"]
@@ -2521,11 +2539,14 @@ class TaggerInterface:
         self.table.heading("artist", text="Artist" + artist_arrow)
 
     def _set_all_convert_state(self, checked):
-        """Sets 'convert' for all non-MP3 files not yet processed."""
+        """Sets 'convert' for all WAV/AIFF files not yet processed - every
+        other non-MP3 format has no choice (it MUST convert to be taggable
+        at all, see open_audio_file), so it's left forced on regardless,
+        same restriction as the per-row toggle in _handle_table_click."""
         self.all_convert_state = checked
 
         for info in self.scanned_plan:
-            if not info.get("processed") and info["format"] != "MP3":
+            if not info.get("processed") and info["format"] in ("WAV", "AIFF"):
                 info["convert"] = checked
                 self.table.item(info["file"], values=self._build_row_values(info))
 
@@ -2572,8 +2593,8 @@ class TaggerInterface:
             self._refresh_row(info)  # the image also changes based on current/suggested
             self._update_apply_button_label()
         elif column_id == f"#{COLUMNS.index('format') + 1}":
-            if info["format"] != "WAV":
-                return  # nothing to toggle for mp3s
+            if info["format"] not in ("WAV", "AIFF"):
+                return  # every other non-MP3 format has no choice - it MUST convert to be taggable at all
             info["convert"] = not info["convert"]
             self.table.item(item_id, values=self._build_row_values(info))
 
@@ -3648,15 +3669,18 @@ class TaggerInterface:
                 if not confirmed:
                     return
 
-        conversions_count = sum(
-            1 for i in to_process if i["format"] != "MP3" and i.get("convert")
-        )
-        if conversions_count:
+        to_convert = [i for i in to_process if i["format"] != "MP3" and i.get("convert")]
+        mp3_count = sum(1 for i in to_convert if tagger._resolve_conversion_target(i["file"]) == "mp3")
+        aiff_count = len(to_convert) - mp3_count
+        if to_convert:
+            parts = []
+            if mp3_count:
+                parts.append(f"{mp3_count} file(s) to MP3 (320 kbps, takes noticeably longer than just updating tags)")
+            if aiff_count:
+                parts.append(f"{aiff_count} file(s) to AIFF (lossless, quick)")
             confirmed = messagebox.askyesno(
                 "Confirm conversion",
-                f"{conversions_count} file(s) will be converted to MP3 (320 kbps).\n"
-                "This takes noticeably longer than just updating tags.\n\n"
-                "Continue?",
+                "\n".join(parts) + ".\n\nContinue?",
                 parent=self.window,
             )
             if not confirmed:
