@@ -418,6 +418,57 @@ class TaggerInterface:
         tagger.save_setting("auto_convert_wav_to_aiff", enabled)
         self._sync_convert_checkboxes_state()
 
+    def _reset_settings_to_default(self):
+        """Restores every Settings-tab option to its out-of-the-box value.
+        Deliberately bypasses the individual _on_X_changed() handlers -
+        several of them (auto-convert, iTunes/Spotify exclusivity) pop up
+        an explanatory messagebox on every change, which would mean a wall
+        of unwanted dialogs to click through here. Credentials (SoundCloud/
+        Spotify/AcoustID) are untouched - resetting "settings" shouldn't
+        force re-entering those."""
+        if not messagebox.askyesno(
+            "Reset settings",
+            "Reset all settings to their default values?\n\n"
+            "Your saved SoundCloud/Spotify/AcoustID credentials won't be affected.",
+            parent=self.window,
+        ):
+            return
+
+        for key, value in (
+            ("theme", "light"),
+            ("use_itunes", True),
+            ("use_spotify", False),
+            ("use_soundcloud", True),
+            ("use_acoustid_fallback", True),
+            ("auto_convert_mp3", False),
+            ("auto_convert_wav_to_aiff", True),
+            ("show_log_section", False),
+        ):
+            tagger.save_setting(key, value)
+
+        tagger.USE_ITUNES = True
+        tagger.USE_SPOTIFY = False
+        tagger.USE_SOUNDCLOUD = True
+        tagger.USE_ACOUSTID_FALLBACK = True
+        tagger.AUTO_CONVERT_MP3 = False
+        tagger.AUTO_CONVERT_WAV_TO_AIFF = True
+
+        self.use_itunes_var.set(True)
+        self.use_spotify_var.set(False)
+        self.use_soundcloud_var.set(True)
+        self.use_acoustid_var.set(True)
+        self.auto_convert_var.set(False)
+        self.auto_convert_wav_aiff_var.set(True)
+        self._sync_convert_checkboxes_state()
+
+        self.show_log_var.set(False)
+        self._on_show_log_changed()
+
+        self.theme_var.set("light")
+        self._apply_theme("light")
+
+        messagebox.showinfo("Settings reset", "All settings have been restored to their defaults.", parent=self.window)
+
     def _on_show_log_changed(self):
         enabled = self.show_log_var.get()
         tagger.save_setting("show_log_section", enabled)
@@ -1497,6 +1548,9 @@ class TaggerInterface:
         ttk.Button(
             update_history_row, text="View processing history", command=self._show_history_window,
         ).pack(fill="x")
+        ttk.Button(
+            update_history_row, text="Reset all settings to default", command=self._reset_settings_to_default,
+        ).pack(fill="x", pady=(5, 0))
 
         self.internet_status_label = ttk.Label(
             soundcloud_tab, text="● Checking connection...", foreground="#999999",
