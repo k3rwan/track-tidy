@@ -1642,6 +1642,15 @@ def _prepare_scan(file_name, log=safe_print, on_new_mention=None):
         search_title = strip_parentheses(detected_title)
         has_parenthetical = search_title != detected_title
         remix_qualified_title = strip_trailing_noise_words(detected_title) if has_parenthetical else search_title
+    elif not detected_artist:
+        # scan_one_file()/scan_files() both skip iTunes/Spotify/SoundCloud
+        # entirely without an artist to search with (see search_title being
+        # left None) - without this line that skip was completely silent,
+        # leaving no trace of why the file ended up with no cover.
+        log(
+            "  No artist could be determined from the filename or tags - skipping "
+            "iTunes/Spotify/SoundCloud search (correct the Artist/Title and search again)."
+        )
 
     return {
         "file_name": file_name,
