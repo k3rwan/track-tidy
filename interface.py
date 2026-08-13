@@ -457,7 +457,16 @@ class TaggerInterface:
     def _style_toplevel(self, dialog):
         """Applies the current theme's background (and title bar) to a dialog
         window (its ttk children already follow the active ttk style
-        automatically)."""
+        automatically).
+
+        Withdraws the window first - a freshly-created Toplevel maps itself
+        immediately, at whatever position Tk defaults to and with no
+        content packed into it yet, so without this a dark-themed dialog
+        briefly flashes as an empty black rectangle in the wrong spot
+        before its widgets and _center_dialog() catch up. The caller's
+        matching _center_dialog() call deiconifies it again once it's
+        actually ready to show."""
+        dialog.withdraw()
         if self.theme_colors:
             dialog.configure(bg=self.theme_colors["bg"])
         dialog.update_idletasks()  # make sure the native HWND exists before DwmSetWindowAttribute
@@ -482,13 +491,20 @@ class TaggerInterface:
     def _center_dialog(self, dialog):
         """Centers a dialog over the main window, clamped to stay fully
         on-screen - a dialog wider/taller than the main window (e.g. the
-        history table) would otherwise end up centered partly off-screen."""
+        history table) would otherwise end up centered partly off-screen.
+
+        Also deiconifies it - the matching partner to _style_toplevel()'s
+        withdraw(), so the dialog only actually becomes visible once it's
+        both fully built and correctly positioned. A dialog that was never
+        withdrawn (no _style_toplevel() call) is unaffected - deiconify()
+        on an already-mapped window is a no-op."""
         dialog.update_idletasks()
         x = self.window.winfo_x() + (self.window.winfo_width() - dialog.winfo_width()) // 2
         y = self.window.winfo_y() + (self.window.winfo_height() - dialog.winfo_height()) // 2
         x = max(0, min(x, dialog.winfo_screenwidth() - dialog.winfo_width()))
         y = max(0, min(y, dialog.winfo_screenheight() - dialog.winfo_height()))
         dialog.geometry(f"+{x}+{y}")
+        dialog.deiconify()
 
     def _make_themed_menu(self, parent):
         """A tk.Menu with the current theme's colors applied - tk.Menu is
