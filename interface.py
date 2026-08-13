@@ -3448,9 +3448,20 @@ class TaggerInterface:
 
             self.table.item(item_id, values=self._build_row_values(info))
 
+        def undo_typing(_event=None):
+            # ttk.Entry has no built-in undo (unlike tk.Text) - restores the
+            # value it had when editing started, rather than the main
+            # table's Ctrl+Z (self.table's own binding never fires while
+            # this entry has focus - keyboard shortcuts don't propagate
+            # from a child widget up to a parent's binding in Tk).
+            edit_entry.delete(0, "end")
+            edit_entry.insert(0, current_value)
+            return "break"
+
         edit_entry.bind("<Return>", confirm)
         edit_entry.bind("<FocusOut>", confirm)
         edit_entry.bind("<Escape>", lambda e: edit_entry.destroy())
+        edit_entry.bind("<Control-z>", undo_typing)
         self._bind_entry_context_menu(edit_entry)
 
     # --- Log / progress (thread-safe) ---
