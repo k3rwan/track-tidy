@@ -100,6 +100,31 @@ class ParseFilenameTests(unittest.TestCase):
             ("Jimi Jules", "My City's On Fire (Notre Dame Remix)"),
         )
 
+    def test_downloader_site_prefix_is_stripped_title_then_artist(self):
+        # Reported: some track-downloader tools stamp their own domain as
+        # a prefix and put the title BEFORE the artist (the reverse of the
+        # usual "Artist - Title") - "SpotiDownloader.com - Imagination -
+        # Samm" means artist "Samm", title "Imagination", not artist
+        # "SpotiDownloader.com".
+        self.assertEqual(
+            tagger.parse_filename("SpotiDownloader.com - Imagination - Samm.mp3"),
+            ("Samm", "Imagination"),
+        )
+
+    def test_downloader_site_prefix_generalizes_to_other_domains(self):
+        self.assertEqual(
+            tagger.parse_filename("YTMP3.cc - Some Song - Some Artist.mp3"),
+            ("Some Artist", "Some Song"),
+        )
+
+    def test_three_dash_parts_without_a_domain_looking_first_part_falls_through(self):
+        # Must not misfire just because there happen to be 3 dash-separated
+        # parts - only a genuinely domain-shaped first part counts.
+        self.assertEqual(
+            tagger.parse_filename("Artist Name - Song - Extra Info Not A Site.mp3"),
+            ("Artist Name", "Song - Extra Info Not A Site"),
+        )
+
 
 class CleanTitleTests(unittest.TestCase):
     def setUp(self):
