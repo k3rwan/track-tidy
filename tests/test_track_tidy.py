@@ -1358,12 +1358,60 @@ class NewInstallNotificationTests(unittest.TestCase):
             return FakeResponse()
 
         tagger.requests.post = fake_post
-        result = tagger.send_new_install_notification(reporter_name="kevin")
+        result = tagger.send_new_install_notification(reporter_name="someuser")
 
         self.assertTrue(result)
         self.assertEqual(captured["url"], tagger.DISCORD_REPORT_WEBHOOK_URL)
         fields = captured["json"]["embeds"][0]["fields"]
-        self.assertEqual(fields[0], {"name": "User", "value": "kevin", "inline": True})
+        self.assertEqual(fields[0], {"name": "User", "value": "someuser", "inline": True})
+
+    def test_excluded_user_is_not_notified(self):
+        # The developer's own Windows account - see
+        # DISCORD_NOTIFICATION_EXCLUDED_USERS, checked case-insensitively.
+        calls = []
+        tagger.requests.post = lambda *a, **k: calls.append(1)
+
+        self.assertFalse(tagger.send_new_install_notification(reporter_name="Kevin"))
+        self.assertEqual(calls, [])
+
+
+class ScanCompleteNotificationTests(unittest.TestCase):
+    def setUp(self):
+        self.original_post = tagger.requests.post
+
+    def tearDown(self):
+        tagger.requests.post = self.original_post
+
+    def test_sends_counts_and_returns_true_on_success(self):
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["url"] = url
+            captured["json"] = json
+
+            class FakeResponse:
+                status_code = 204
+            return FakeResponse()
+
+        tagger.requests.post = fake_post
+        result = tagger.send_scan_complete_notification(
+            reporter_name="someuser", number_new=3, number_removed=1, total=10,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(captured["url"], tagger.DISCORD_REPORT_WEBHOOK_URL)
+        fields = captured["json"]["embeds"][0]["fields"]
+        self.assertEqual(fields[0], {"name": "User", "value": "someuser", "inline": True})
+        self.assertEqual(fields[1], {"name": "New files", "value": "3", "inline": True})
+        self.assertEqual(fields[2], {"name": "Removed files", "value": "1", "inline": True})
+        self.assertEqual(fields[3], {"name": "Total files", "value": "10", "inline": True})
+
+    def test_excluded_user_is_not_notified(self):
+        calls = []
+        tagger.requests.post = lambda *a, **k: calls.append(1)
+
+        self.assertFalse(tagger.send_scan_complete_notification(reporter_name="kevin", number_new=1))
+        self.assertEqual(calls, [])
 
     def test_returns_false_on_network_failure(self):
         def fake_post(url, json=None, timeout=None):
