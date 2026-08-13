@@ -1531,11 +1531,11 @@ class TaggerInterface:
             credentials_row, text="Spotify credentials...", command=self._show_spotify_credentials_dialog,
         ).pack(side="left", fill="x", expand=True)
 
-        acoustid_frame = ttk.LabelFrame(soundcloud_tab, text="Audio recognition (for badly-named tracks)")
+        acoustid_frame = ttk.LabelFrame(soundcloud_tab, text="AcoustID")
         acoustid_frame.pack(fill="x", padx=10, pady=(0, 10))
         ttk.Checkbutton(
             acoustid_frame,
-            text="Identify tracks iTunes/Spotify/SoundCloud can't find by name, from the audio itself (AcoustID)",
+            text="Identify badly-named tracks from the audio itself",
             variable=self.use_acoustid_var, command=self._on_use_acoustid_changed,
         ).pack(anchor="w", padx=10, pady=(10, 10))
 
