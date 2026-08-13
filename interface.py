@@ -1539,7 +1539,7 @@ class TaggerInterface:
             variable=self.use_acoustid_var, command=self._on_use_acoustid_changed,
         ).pack(anchor="w", padx=10, pady=(10, 5))
         ttk.Button(
-            acoustid_frame, text="AcoustID API key...", command=self._show_acoustid_credentials_dialog,
+            acoustid_frame, text="Use my own AcoustID API key...", command=self._show_acoustid_credentials_dialog,
         ).pack(fill="x", padx=10, pady=(0, 10))
 
         behavior_frame = ttk.LabelFrame(soundcloud_tab, text="Behavior")
@@ -1841,7 +1841,10 @@ class TaggerInterface:
         api_key = self.acoustid_key_entry.get().strip()
         try:
             tagger.write_credential(tagger.ACOUSTID_API_KEY_KEY, api_key)
-            tagger.ACOUSTID_API_KEY = api_key or None
+            # Clearing the field falls back to the shared default key
+            # (tagger.ACOUSTID_DEFAULT_API_KEY), not to no key at all -
+            # AcoustID still works out of the box either way.
+            tagger.ACOUSTID_API_KEY = api_key or tagger.ACOUSTID_DEFAULT_API_KEY
             messagebox.showinfo("Saved", "AcoustID API key saved.", parent=self._acoustid_dialog)
         except Exception as error:
             messagebox.showerror("Error", f"Could not save the API key: {error}", parent=self._acoustid_dialog)
@@ -1860,8 +1863,10 @@ class TaggerInterface:
 
         ttk.Label(
             dialog,
-            text="Free - sign in at the link below (MusicBrainz/Google/OpenID) and "
-                 "register an application to get a key, then paste it below.",
+            text="AcoustID already works out of the box, using a shared key - you only "
+                 "need this if you'd rather use your own (e.g. the shared one is rate-"
+                 "limited). Free - sign in at the link below (MusicBrainz/Google/OpenID) "
+                 "and register an application to get a key, then paste it below.",
             justify="left",
         ).pack(anchor="w", fill="x", padx=10, pady=(15, 10))
 
@@ -1869,8 +1874,12 @@ class TaggerInterface:
         self.acoustid_key_entry = ttk.Entry(dialog, show="*")
         self.acoustid_key_entry.pack(fill="x", padx=10, pady=(0, 15))
         self._bind_entry_context_menu(self.acoustid_key_entry)
-        if tagger.ACOUSTID_API_KEY:
-            self.acoustid_key_entry.insert(0, tagger.ACOUSTID_API_KEY)
+        # Only pre-fill with a key the user actually saved themselves - not
+        # the shared fallback tagger.ACOUSTID_API_KEY falls back to, which
+        # would otherwise show up here for every user who never set one.
+        existing_key = tagger.read_credential(tagger.ACOUSTID_API_KEY_KEY)
+        if existing_key:
+            self.acoustid_key_entry.insert(0, existing_key)
 
         acoustid_buttons_frame = ttk.Frame(dialog)
         acoustid_buttons_frame.pack(fill="x", padx=10, pady=(0, 10))
