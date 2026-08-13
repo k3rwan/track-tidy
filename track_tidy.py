@@ -1876,8 +1876,11 @@ SOUNDCLOUD_UNAVAILABLE = False  # set for the current run when no credentials ar
 # Bounded on purpose: iTunes' undocumented search endpoint already returns
 # the occasional transient 403 under plain sequential use (see
 # search_cover_itunes's own retry logic) - too much concurrency risks
-# tripping that more often, not less.
-ITUNES_SCAN_MAX_WORKERS = 4
+# tripping that more often, not less. Lowered from 4 - a real ~65-file
+# scan reliably tripped a genuine HTTP 429 (not just transient 403s) with
+# 4 concurrent workers, costing far more in failed searches/retries than
+# the extra concurrency ever saved.
+ITUNES_SCAN_MAX_WORKERS = 2
 
 
 def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=None, on_rate_limited=None,
@@ -2272,6 +2275,19 @@ def build_search_query(artist, title):
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
+# Shared across every concurrent/sequential iTunes call within a scan (see
+# ITUNES_SCAN_MAX_WORKERS) - a large batch (dozens of files) can trip a real
+# HTTP 429 despite each individual call's own retry/backoff, since several
+# concurrent workers (plus later sequential AcoustID-triggered re-searches)
+# each retry independently with no awareness that iTunes is already telling
+# everyone to back off. Once that happens, every further iTunes call in this
+# same scan is skipped outright for a cooldown period instead of piling on
+# more doomed requests - they fall through to Spotify/SoundCloud/AcoustID
+# immediately, same as if iTunes just wasn't enabled for those files.
+ITUNES_RATE_LIMIT_COOLDOWN_SECONDS = 30
+_itunes_rate_limited_until = 0
+
+
 def search_cover_itunes(artist, title, log=safe_print, max_retries=2, allow_loose_remix_match=False):
     """
     Retries on HTTP 429 (rate limited) with a short backoff before giving up.
@@ -2291,6 +2307,12 @@ def search_cover_itunes(artist, title, log=safe_print, max_retries=2, allow_loos
     remix-qualified retry, not the default search, since it's a narrower
     but still real risk of a false positive.
     """
+    global _itunes_rate_limited_until
+
+    if time.time() < _itunes_rate_limited_until:
+        log("  [iTunes] Still rate limited from earlier in this scan - skipping.")
+        return None
+
     try:
         for attempt in range(max_retries + 1):
             response = requests.get(
@@ -2317,6 +2339,14 @@ def search_cover_itunes(artist, title, log=safe_print, max_retries=2, allow_loos
                 continue
 
             break
+
+        if response.status_code == 429:
+            _itunes_rate_limited_until = time.time() + ITUNES_RATE_LIMIT_COOLDOWN_SECONDS
+            log(
+                f"  [iTunes] Still rate limited after {max_retries} retries - pausing iTunes for "
+                f"{ITUNES_RATE_LIMIT_COOLDOWN_SECONDS}s for the rest of this scan."
+            )
+            return None
 
         if response.status_code != 200:
             log(f"  [iTunes] Search failed: HTTP {response.status_code} - {response.text[:300]}")
