@@ -1537,10 +1537,7 @@ class TaggerInterface:
             acoustid_frame,
             text="Identify tracks iTunes/Spotify/SoundCloud can't find by name, from the audio itself (AcoustID)",
             variable=self.use_acoustid_var, command=self._on_use_acoustid_changed,
-        ).pack(anchor="w", padx=10, pady=(10, 5))
-        ttk.Button(
-            acoustid_frame, text="Use my own AcoustID API key...", command=self._show_acoustid_credentials_dialog,
-        ).pack(fill="x", padx=10, pady=(0, 10))
+        ).pack(anchor="w", padx=10, pady=(10, 10))
 
         behavior_frame = ttk.LabelFrame(soundcloud_tab, text="Behavior")
         behavior_frame.pack(fill="x", padx=10, pady=(0, 10))
@@ -1831,64 +1828,6 @@ class TaggerInterface:
         ).pack(side="left", fill="x", expand=True)
 
         self._update_spotify_save_state()
-
-        ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=(0, 15))
-        dialog.bind("<Escape>", lambda _event: dialog.destroy())
-
-        self._center_dialog(dialog)
-
-    def _save_acoustid_credentials(self):
-        api_key = self.acoustid_key_entry.get().strip()
-        try:
-            tagger.write_credential(tagger.ACOUSTID_API_KEY_KEY, api_key)
-            # Clearing the field falls back to the shared default key
-            # (tagger.ACOUSTID_DEFAULT_API_KEY), not to no key at all -
-            # AcoustID still works out of the box either way.
-            tagger.ACOUSTID_API_KEY = api_key or tagger.ACOUSTID_DEFAULT_API_KEY
-            messagebox.showinfo("Saved", "AcoustID API key saved.", parent=self._acoustid_dialog)
-        except Exception as error:
-            messagebox.showerror("Error", f"Could not save the API key: {error}", parent=self._acoustid_dialog)
-
-    def _open_acoustid_registration(self):
-        webbrowser.open("https://acoustid.org/api-key")
-
-    def _show_acoustid_credentials_dialog(self):
-        dialog = tk.Toplevel(self.window)
-        self._style_toplevel(dialog)
-        dialog.title("AcoustID API key")
-        dialog.resizable(False, False)
-        dialog.transient(self.window)
-        dialog.grab_set()
-        self._acoustid_dialog = dialog
-
-        ttk.Label(
-            dialog,
-            text="AcoustID already works out of the box, using a shared key - you only "
-                 "need this if you'd rather use your own (e.g. the shared one is rate-"
-                 "limited). Free - sign in at the link below (MusicBrainz/Google/OpenID) "
-                 "and register an application to get a key, then paste it below.",
-            justify="left",
-        ).pack(anchor="w", fill="x", padx=10, pady=(15, 10))
-
-        ttk.Label(dialog, text="API key:").pack(anchor="w", padx=10)
-        self.acoustid_key_entry = ttk.Entry(dialog, show="*")
-        self.acoustid_key_entry.pack(fill="x", padx=10, pady=(0, 15))
-        self._bind_entry_context_menu(self.acoustid_key_entry)
-        # Only pre-fill with a key the user actually saved themselves - not
-        # the shared fallback tagger.ACOUSTID_API_KEY falls back to, which
-        # would otherwise show up here for every user who never set one.
-        existing_key = tagger.read_credential(tagger.ACOUSTID_API_KEY_KEY)
-        if existing_key:
-            self.acoustid_key_entry.insert(0, existing_key)
-
-        acoustid_buttons_frame = ttk.Frame(dialog)
-        acoustid_buttons_frame.pack(fill="x", padx=10, pady=(0, 10))
-        ttk.Button(
-            acoustid_buttons_frame, text="Save", command=self._save_acoustid_credentials,
-        ).pack(side="left", fill="x", expand=True, padx=(0, 5))
-        ttk.Button(
-            acoustid_buttons_frame, text="Get an API key", command=self._open_acoustid_registration,
-        ).pack(side="left", fill="x", expand=True)
 
         ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=(0, 15))
         dialog.bind("<Escape>", lambda _event: dialog.destroy())
