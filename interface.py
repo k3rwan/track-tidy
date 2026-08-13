@@ -418,6 +418,57 @@ class TaggerInterface:
         tagger.save_setting("auto_convert_wav_to_aiff", enabled)
         self._sync_convert_checkboxes_state()
 
+    def _reset_settings_to_default(self):
+        """Restores every Settings-tab option to its out-of-the-box value.
+        Deliberately bypasses the individual _on_X_changed() handlers -
+        several of them (auto-convert, iTunes/Spotify exclusivity) pop up
+        an explanatory messagebox on every change, which would mean a wall
+        of unwanted dialogs to click through here. Credentials (SoundCloud/
+        Spotify/AcoustID) are untouched - resetting "settings" shouldn't
+        force re-entering those."""
+        if not messagebox.askyesno(
+            "Reset settings",
+            "Reset all settings to their default values?\n\n"
+            "Your saved SoundCloud/Spotify/AcoustID credentials won't be affected.",
+            parent=self.window,
+        ):
+            return
+
+        for key, value in (
+            ("theme", "light"),
+            ("use_itunes", True),
+            ("use_spotify", False),
+            ("use_soundcloud", True),
+            ("use_acoustid_fallback", True),
+            ("auto_convert_mp3", False),
+            ("auto_convert_wav_to_aiff", True),
+            ("show_log_section", False),
+        ):
+            tagger.save_setting(key, value)
+
+        tagger.USE_ITUNES = True
+        tagger.USE_SPOTIFY = False
+        tagger.USE_SOUNDCLOUD = True
+        tagger.USE_ACOUSTID_FALLBACK = True
+        tagger.AUTO_CONVERT_MP3 = False
+        tagger.AUTO_CONVERT_WAV_TO_AIFF = True
+
+        self.use_itunes_var.set(True)
+        self.use_spotify_var.set(False)
+        self.use_soundcloud_var.set(True)
+        self.use_acoustid_var.set(True)
+        self.auto_convert_var.set(False)
+        self.auto_convert_wav_aiff_var.set(True)
+        self._sync_convert_checkboxes_state()
+
+        self.show_log_var.set(False)
+        self._on_show_log_changed()
+
+        self.theme_var.set("light")
+        self._apply_theme("light")
+
+        messagebox.showinfo("Settings reset", "All settings have been restored to their defaults.", parent=self.window)
+
     def _on_show_log_changed(self):
         enabled = self.show_log_var.get()
         tagger.save_setting("show_log_section", enabled)
@@ -450,14 +501,31 @@ class TaggerInterface:
     def _on_tab_changed(self, event=None):
         if self._tagger_resize_pending and self.notebook.index("current") == 0:
             self._tagger_resize_pending = False
-            self._adjust_window_height()
+        # The window height is otherwise only ever computed from whichever
+        # tab happened to be active at startup (or the last explicit
+        # resize) - Settings/Extractor's own content can grow past that
+        # (e.g. Settings picking up a new row of controls) without ever
+        # triggering a resize, so widgets packed at the bottom (the footer
+        # links/legal text) end up cramped or overlapping. Recomputing on
+        # every tab switch keeps the window actually fitting whatever's
+        # visible.
+        self._adjust_window_height()
         if self.notebook.index("current") == 2:  # Settings - recheck right away rather than
             self._check_internet_connection()      # waiting for the next background 10s poll
 
     def _style_toplevel(self, dialog):
         """Applies the current theme's background (and title bar) to a dialog
         window (its ttk children already follow the active ttk style
-        automatically)."""
+        automatically).
+
+        Withdraws the window first - a freshly-created Toplevel maps itself
+        immediately, at whatever position Tk defaults to and with no
+        content packed into it yet, so without this a dark-themed dialog
+        briefly flashes as an empty black rectangle in the wrong spot
+        before its widgets and _center_dialog() catch up. The caller's
+        matching _center_dialog() call deiconifies it again once it's
+        actually ready to show."""
+        dialog.withdraw()
         if self.theme_colors:
             dialog.configure(bg=self.theme_colors["bg"])
         dialog.update_idletasks()  # make sure the native HWND exists before DwmSetWindowAttribute
@@ -482,13 +550,20 @@ class TaggerInterface:
     def _center_dialog(self, dialog):
         """Centers a dialog over the main window, clamped to stay fully
         on-screen - a dialog wider/taller than the main window (e.g. the
-        history table) would otherwise end up centered partly off-screen."""
+        history table) would otherwise end up centered partly off-screen.
+
+        Also deiconifies it - the matching partner to _style_toplevel()'s
+        withdraw(), so the dialog only actually becomes visible once it's
+        both fully built and correctly positioned. A dialog that was never
+        withdrawn (no _style_toplevel() call) is unaffected - deiconify()
+        on an already-mapped window is a no-op."""
         dialog.update_idletasks()
         x = self.window.winfo_x() + (self.window.winfo_width() - dialog.winfo_width()) // 2
         y = self.window.winfo_y() + (self.window.winfo_height() - dialog.winfo_height()) // 2
         x = max(0, min(x, dialog.winfo_screenwidth() - dialog.winfo_width()))
         y = max(0, min(y, dialog.winfo_screenheight() - dialog.winfo_height()))
         dialog.geometry(f"+{x}+{y}")
+        dialog.deiconify()
 
     def _make_themed_menu(self, parent):
         """A tk.Menu with the current theme's colors applied - tk.Menu is
@@ -895,6 +970,25 @@ class TaggerInterface:
 
         def _send():
             tagger.send_new_install_notification(reporter_name=reporter_name)
+
+        self._run_in_background(_send)
+
+    def _notify_scan_complete(self, number_new, number_removed, total):
+        """Pings Discord once per finished scan, so the developer knows
+        when the app is actually being used day to day (not just
+        installed) - disclosed alongside the "new install" ping in
+        Settings' legal notice text. Excluded for the developer's own
+        Windows account (see tagger.DISCORD_NOTIFICATION_EXCLUDED_USERS),
+        so day-to-day testing doesn't spam the channel."""
+        try:
+            reporter_name = getpass.getuser()
+        except Exception:
+            reporter_name = ""
+
+        def _send():
+            tagger.send_scan_complete_notification(
+                reporter_name=reporter_name, number_new=number_new, number_removed=number_removed, total=total,
+            )
 
         self._run_in_background(_send)
 
@@ -1417,9 +1511,12 @@ class TaggerInterface:
             ttk.Radiobutton(
                 appearance_frame, text=label, value=value, variable=self.theme_var,
                 command=self._on_theme_changed,
-            ).pack(anchor="w", padx=10, pady=(5, 0) if value == "light" else (0, 5))
+            ).pack(side="left", padx=10, pady=10)
 
-        sources_frame = ttk.LabelFrame(soundcloud_tab, text="Sources")
+        # Sources + AcoustID together: both are really the same kind of
+        # setting (how a cover gets found for a track) - AcoustID used to
+        # be its own separate box, which made it look unrelated.
+        sources_frame = ttk.LabelFrame(soundcloud_tab, text="Cover sources")
         sources_frame.pack(fill="x", padx=10, pady=(0, 10))
         sources_row = ttk.Frame(sources_frame)
         sources_row.pack(fill="x", padx=10, pady=(10, 10))
@@ -1445,18 +1542,16 @@ class TaggerInterface:
             credentials_row, text="Spotify credentials...", command=self._show_spotify_credentials_dialog,
         ).pack(side="left", fill="x", expand=True)
 
-        acoustid_frame = ttk.LabelFrame(soundcloud_tab, text="Audio recognition (for badly-named tracks)")
-        acoustid_frame.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Separator(sources_frame, orient="horizontal").pack(fill="x", padx=10, pady=(0, 10))
         ttk.Checkbutton(
-            acoustid_frame,
-            text="Identify tracks iTunes/Spotify/SoundCloud can't find by name, from the audio itself (AcoustID)",
+            sources_frame,
+            text="Identify badly-named tracks from the audio itself (AcoustID)",
             variable=self.use_acoustid_var, command=self._on_use_acoustid_changed,
-        ).pack(anchor="w", padx=10, pady=(10, 5))
-        ttk.Button(
-            acoustid_frame, text="AcoustID API key...", command=self._show_acoustid_credentials_dialog,
-        ).pack(fill="x", padx=10, pady=(0, 10))
+        ).pack(anchor="w", padx=10, pady=(0, 10))
 
-        behavior_frame = ttk.LabelFrame(soundcloud_tab, text="Behavior")
+        # Renamed from "Behavior" - now holds only actual file-handling
+        # toggles, not one-off maintenance actions (those moved to "App").
+        behavior_frame = ttk.LabelFrame(soundcloud_tab, text="File handling")
         behavior_frame.pack(fill="x", padx=10, pady=(0, 10))
         self.auto_convert_checkbox = ttk.Checkbutton(
             behavior_frame, text="Convert everything to MP3 (320 kbps)", variable=self.auto_convert_var,
@@ -1472,15 +1567,23 @@ class TaggerInterface:
             behavior_frame, text="Show log section", variable=self.show_log_var,
             command=self._on_show_log_changed,
         ).pack(anchor="w", padx=10, pady=(0, 10))
-        update_history_row = ttk.Frame(soundcloud_tab)
-        update_history_row.pack(fill="x", padx=10, pady=(0, 10))
+
+        # Maintenance actions, clearly grouped as their own section instead
+        # of floating unframed below "Behavior" (where they looked like
+        # they were part of it, even though they're one-off actions, not
+        # settings).
+        app_frame = ttk.LabelFrame(soundcloud_tab, text="App")
+        app_frame.pack(fill="x", padx=10, pady=(0, 10))
         self.check_update_button = ttk.Button(
-            update_history_row, text="Check for updates", command=self._check_for_update_manual,
+            app_frame, text="Check for updates", command=self._check_for_update_manual,
         )
-        self.check_update_button.pack(fill="x", pady=(0, 5))
+        self.check_update_button.pack(fill="x", padx=10, pady=(10, 5))
         ttk.Button(
-            update_history_row, text="View processing history", command=self._show_history_window,
-        ).pack(fill="x")
+            app_frame, text="View processing history", command=self._show_history_window,
+        ).pack(fill="x", padx=10, pady=(0, 5))
+        ttk.Button(
+            app_frame, text="Reset all settings to default", command=self._reset_settings_to_default,
+        ).pack(fill="x", padx=10, pady=(0, 10))
 
         self.internet_status_label = ttk.Label(
             soundcloud_tab, text="● Checking connection...", foreground="#999999",
@@ -1498,7 +1601,9 @@ class TaggerInterface:
                 "mutagen (GPL-2.0-or-later) and FFmpeg (GPLv3).\n"
                 "The first time it's launched on a new Windows account, it sends your "
                 "Windows username to the developer (via Discord) so they know a new "
-                "person is using it - this happens once."
+                "person is using it - this happens once. It also notifies the developer "
+                "(Windows username + file counts, no track/file names) each time a scan "
+                "finishes."
             ),
             justify="left",
             foreground="#888888",
@@ -1740,55 +1845,6 @@ class TaggerInterface:
         ).pack(side="left", fill="x", expand=True)
 
         self._update_spotify_save_state()
-
-        ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=(0, 15))
-        dialog.bind("<Escape>", lambda _event: dialog.destroy())
-
-        self._center_dialog(dialog)
-
-    def _save_acoustid_credentials(self):
-        api_key = self.acoustid_key_entry.get().strip()
-        try:
-            tagger.write_credential(tagger.ACOUSTID_API_KEY_KEY, api_key)
-            tagger.ACOUSTID_API_KEY = api_key or None
-            messagebox.showinfo("Saved", "AcoustID API key saved.", parent=self._acoustid_dialog)
-        except Exception as error:
-            messagebox.showerror("Error", f"Could not save the API key: {error}", parent=self._acoustid_dialog)
-
-    def _open_acoustid_registration(self):
-        webbrowser.open("https://acoustid.org/api-key")
-
-    def _show_acoustid_credentials_dialog(self):
-        dialog = tk.Toplevel(self.window)
-        self._style_toplevel(dialog)
-        dialog.title("AcoustID API key")
-        dialog.resizable(False, False)
-        dialog.transient(self.window)
-        dialog.grab_set()
-        self._acoustid_dialog = dialog
-
-        ttk.Label(
-            dialog,
-            text="Free - sign in at the link below (MusicBrainz/Google/OpenID) and "
-                 "register an application to get a key, then paste it below.",
-            justify="left",
-        ).pack(anchor="w", fill="x", padx=10, pady=(15, 10))
-
-        ttk.Label(dialog, text="API key:").pack(anchor="w", padx=10)
-        self.acoustid_key_entry = ttk.Entry(dialog, show="*")
-        self.acoustid_key_entry.pack(fill="x", padx=10, pady=(0, 15))
-        self._bind_entry_context_menu(self.acoustid_key_entry)
-        if tagger.ACOUSTID_API_KEY:
-            self.acoustid_key_entry.insert(0, tagger.ACOUSTID_API_KEY)
-
-        acoustid_buttons_frame = ttk.Frame(dialog)
-        acoustid_buttons_frame.pack(fill="x", padx=10, pady=(0, 10))
-        ttk.Button(
-            acoustid_buttons_frame, text="Save", command=self._save_acoustid_credentials,
-        ).pack(side="left", fill="x", expand=True, padx=(0, 5))
-        ttk.Button(
-            acoustid_buttons_frame, text="Get an API key", command=self._open_acoustid_registration,
-        ).pack(side="left", fill="x", expand=True)
 
         ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=(0, 15))
         dialog.bind("<Escape>", lambda _event: dialog.destroy())
@@ -2206,14 +2262,24 @@ class TaggerInterface:
     def _compute_cover_summary(self):
         """Counts, among all currently scanned tracks, how many got a cover
         from each source, how many kept their original one, and how many
-        have none at all - independent of whether Apply has run yet."""
+        have none at all - independent of whether Apply has run yet.
+        acoustid_count is a separate, overlapping tally (not another
+        "source" like the others) - AcoustID never provides the cover
+        itself, only identifies the correct Artist/Title from the audio so
+        the iTunes/Spotify/SoundCloud search above can find one; a track it
+        identified still gets counted under whichever of those actually
+        supplied the cover (or "no cover" if none did)."""
         itunes_count = 0
         spotify_count = 0
         soundcloud_count = 0
         kept_existing_count = 0
         no_cover_count = 0
+        acoustid_count = 0
 
         for info in self.scanned_plan:
+            if info.get("acoustid_identified"):
+                acoustid_count += 1
+
             source = info.get("cover_source")
             if source == "iTunes":
                 itunes_count += 1
@@ -2226,7 +2292,7 @@ class TaggerInterface:
             else:
                 no_cover_count += 1
 
-        return itunes_count, spotify_count, soundcloud_count, kept_existing_count, no_cover_count
+        return itunes_count, spotify_count, soundcloud_count, kept_existing_count, no_cover_count, acoustid_count
 
     def _show_scan_summary_dialog(self, no_cover_infos=None):
         """Cover-source breakdown shown right after a scan finds new files -
@@ -2234,7 +2300,7 @@ class TaggerInterface:
         A single dialog: "OK" alone, or "OK" plus a second button straight
         into fixing Artist/Title for no-cover tracks when there are any -
         not a separate yes/no confirmation chained after this one."""
-        itunes_count, spotify_count, soundcloud_count, kept_existing_count, no_cover_count = (
+        itunes_count, spotify_count, soundcloud_count, kept_existing_count, no_cover_count, acoustid_count = (
             self._compute_cover_summary()
         )
 
@@ -2252,13 +2318,38 @@ class TaggerInterface:
             padding=(20, 20, 20, 5),
         ).pack()
 
-        summary_text = (
-            f"Cover from iTunes: {itunes_count}\n"
-            f"Cover from Spotify: {spotify_count}\n"
-            f"Cover from SoundCloud: {soundcloud_count}\n"
-            f"Kept original cover: {kept_existing_count}\n"
-            f"No cover at all: {no_cover_count}"
-        )
+        # Only list sources that were actually enabled - a "Cover from
+        # Spotify: 0" line next to enabled sources reads as "Spotify was
+        # searched and came up empty", which is wrong when it wasn't
+        # searched at all (see enabled_cover_sources()).
+        source_counts = {"iTunes": itunes_count, "Spotify": spotify_count, "SoundCloud": soundcloud_count}
+        enabled_sources = tagger.enabled_cover_sources()
+        lines = [f"Cover from {name}: {source_counts[name]}" for name in enabled_sources]
+        lines.append(f"Kept original cover: {kept_existing_count}")
+        lines.append(f"No cover at all: {no_cover_count}")
+        summary_text = "\n".join(lines)
+
+        if no_cover_count:
+            if not enabled_sources:
+                summary_text += (
+                    "\n\nNo cover source is enabled in Settings - enable iTunes, "
+                    "Spotify and/or SoundCloud to find covers automatically."
+                )
+            elif len(enabled_sources) < 3:
+                disabled_sources = [
+                    name for name in ("iTunes", "Spotify", "SoundCloud") if name not in enabled_sources
+                ]
+                summary_text += (
+                    f"\n\nOnly searched {', '.join(enabled_sources)} - {', '.join(disabled_sources)} "
+                    f"{'is' if len(disabled_sources) == 1 else 'are'} disabled in Settings."
+                )
+        if acoustid_count:
+            # Not another bucket alongside the ones above (those already add
+            # up to every scanned track) - these overlap with them, since
+            # AcoustID only identifies Artist/Title, it doesn't supply the
+            # cover itself (see _compute_cover_summary).
+            unit = "track" if acoustid_count == 1 else "tracks"
+            summary_text += f"\n\nIdentified via audio (AcoustID): {acoustid_count} {unit}"
         ttk.Label(dialog, text=summary_text, justify="left", foreground="#555555").pack(padx=20, pady=(0, 15))
 
         button_row = ttk.Frame(dialog)
@@ -2350,8 +2441,10 @@ class TaggerInterface:
             if no_cover_infos:
                 self._append_to_journal(f"{len(no_cover_infos)} track(s) currently have no cover match.")
 
-            if number_new > 0 and not self.cancel_requested.is_set():
-                self._show_scan_summary_dialog(no_cover_infos=no_cover_infos)
+            if not self.cancel_requested.is_set():
+                self._notify_scan_complete(number_new, len(removed_files), len(self.scanned_plan))
+                if number_new > 0:
+                    self._show_scan_summary_dialog(no_cover_infos=no_cover_infos)
 
         self._check_for_duplicates()
 
@@ -2406,6 +2499,17 @@ class TaggerInterface:
             dialog, text="Correct the Artist/Title below, then click Search to try again.",
             padding=(10, 10, 10, 5),
         ).pack(anchor="w")
+
+        enabled_sources = tagger.enabled_cover_sources()
+        if len(enabled_sources) < 3:
+            disabled_sources = [name for name in ("iTunes", "Spotify", "SoundCloud") if name not in enabled_sources]
+            note_text = (
+                "No cover source is enabled in Settings - searching again won't find anything."
+                if not enabled_sources
+                else f"Only searching {', '.join(enabled_sources)} - "
+                f"{', '.join(disabled_sources)} {'is' if len(disabled_sources) == 1 else 'are'} disabled in Settings."
+            )
+            ttk.Label(dialog, text=note_text, padding=(10, 0, 10, 5), foreground="#888888").pack(anchor="w")
 
         canvas_frame = ttk.Frame(dialog)
         canvas_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
@@ -2559,15 +2663,29 @@ class TaggerInterface:
 
     def _build_row_values(self, info):
         """Builds the tuple of displayed values for a row (image handled separately)."""
-        needs_conversion = info["format"] != "MP3"
+        # AIFF is treated like MP3 here - already taggable and lossless, it
+        # never defaults to converting (see _finish_scan) and isn't offered
+        # a convert checkbox at all, same plain "AIFF" display as "MP3".
+        needs_conversion = info["format"] not in ("MP3", "AIFF")
         # What "convert" actually resolves to for THIS file - MP3 for most
         # formats, but WAV can go to AIFF instead (see AUTO_CONVERT_WAV_TO_AIFF /
         # _resolve_conversion_target) purely for cover-art compatibility
         # with software that doesn't read artwork from WAV (e.g. Rekordbox).
         target_format = (tagger._resolve_conversion_target(info["file"]) or "mp3").upper()
 
+        # AcoustID identifies a track from the audio itself, not the
+        # filename/tags - a real, if uncommon, way for it to be confidently
+        # (high score) wrong: two different tracks/remixes in similar
+        # genres (e.g. house/techno) can fingerprint close enough to
+        # collide. Flagged here so the user knows to double check it
+        # before trusting Apply - cleared once they've actually reviewed
+        # it (title_override no longer None, whether they kept it or
+        # corrected it).
+        acoustid_marker = " 🎧" if info.get("acoustid_identified") and info["title_override"] is None else ""
+
         if info.get("processed"):
             displayed_title = info["title_override"] or info["detected_title"] or "?"
+            displayed_title += acoustid_marker
             displayed_artist = info["artist_override"]
             if displayed_artist is None:
                 displayed_artist = info["detected_artist"] if info["detected_artist"] else "(empty)"
@@ -2585,7 +2703,7 @@ class TaggerInterface:
         if info["title_override"] is not None:
             displayed_title = info["title_override"]
         elif apply:
-            displayed_title = info["detected_title"] or "?"
+            displayed_title = (info["detected_title"] or "?") + acoustid_marker
         else:
             displayed_title = info["current_title"] or "(empty)"
 
@@ -2666,14 +2784,16 @@ class TaggerInterface:
         self.table.heading("artist", text="Artist" + artist_arrow)
 
     def _set_all_convert_state(self, checked):
-        """Sets 'convert' for all WAV/AIFF files not yet processed - every
-        other non-MP3 format has no choice (it MUST convert to be taggable
-        at all, see open_audio_file), so it's left forced on regardless,
-        same restriction as the per-row toggle in _handle_table_click."""
+        """Sets 'convert' for all WAV files not yet processed - AIFF is
+        already taggable/lossless and isn't offered a choice here (see
+        _build_row_values), and every other non-MP3 format has no choice
+        either (it MUST convert to be taggable at all, see open_audio_file),
+        so those are left forced on regardless, same restriction as the
+        per-row toggle in _handle_table_click."""
         self.all_convert_state = checked
 
         for info in self.scanned_plan:
-            if not info.get("processed") and info["format"] in ("WAV", "AIFF"):
+            if not info.get("processed") and info["format"] == "WAV":
                 info["convert"] = checked
                 self.table.item(info["file"], values=self._build_row_values(info))
 
@@ -2720,8 +2840,8 @@ class TaggerInterface:
             self._refresh_row(info)  # the image also changes based on current/suggested
             self._update_apply_button_label()
         elif column_id == f"#{COLUMNS.index('format') + 1}":
-            if info["format"] not in ("WAV", "AIFF"):
-                return  # every other non-MP3 format has no choice - it MUST convert to be taggable at all
+            if info["format"] != "WAV":
+                return  # AIFF has no checkbox (see _build_row_values); every other non-MP3 format has no choice - it MUST convert to be taggable at all
             info["convert"] = not info["convert"]
             self.table.item(item_id, values=self._build_row_values(info))
 
