@@ -1028,6 +1028,11 @@ def _move_bare_feature_credit_to_artist(artist, title):
 def parse_filename(file_name):
     base_name = os.path.basename(file_name)
     name_no_ext = os.path.splitext(base_name)[0]
+    # Normalize en dash (–) and em dash (—) to a plain hyphen before any
+    # splitting below - some sources (e.g. Vinyl On Demand releases) use
+    # them instead of "-" as the Artist/Title separator, and every split
+    # pattern in this function only recognizes a literal ASCII hyphen.
+    name_no_ext = name_no_ext.replace("–", "-").replace("—", "-")
     name_no_ext = re.sub(r"^\d{1,3}\s*[.\-]\s*", "", name_no_ext)  # drop a leading track number like "01. ", "01-" or "076 - "
 
     if name_no_ext == name_no_ext.lower():
