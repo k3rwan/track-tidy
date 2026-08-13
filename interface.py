@@ -2576,7 +2576,10 @@ class TaggerInterface:
 
     def _build_row_values(self, info):
         """Builds the tuple of displayed values for a row (image handled separately)."""
-        needs_conversion = info["format"] != "MP3"
+        # AIFF is treated like MP3 here - already taggable and lossless, it
+        # never defaults to converting (see _finish_scan) and isn't offered
+        # a convert checkbox at all, same plain "AIFF" display as "MP3".
+        needs_conversion = info["format"] not in ("MP3", "AIFF")
         # What "convert" actually resolves to for THIS file - MP3 for most
         # formats, but WAV can go to AIFF instead (see AUTO_CONVERT_WAV_TO_AIFF /
         # _resolve_conversion_target) purely for cover-art compatibility
@@ -2683,14 +2686,16 @@ class TaggerInterface:
         self.table.heading("artist", text="Artist" + artist_arrow)
 
     def _set_all_convert_state(self, checked):
-        """Sets 'convert' for all WAV/AIFF files not yet processed - every
-        other non-MP3 format has no choice (it MUST convert to be taggable
-        at all, see open_audio_file), so it's left forced on regardless,
-        same restriction as the per-row toggle in _handle_table_click."""
+        """Sets 'convert' for all WAV files not yet processed - AIFF is
+        already taggable/lossless and isn't offered a choice here (see
+        _build_row_values), and every other non-MP3 format has no choice
+        either (it MUST convert to be taggable at all, see open_audio_file),
+        so those are left forced on regardless, same restriction as the
+        per-row toggle in _handle_table_click."""
         self.all_convert_state = checked
 
         for info in self.scanned_plan:
-            if not info.get("processed") and info["format"] in ("WAV", "AIFF"):
+            if not info.get("processed") and info["format"] == "WAV":
                 info["convert"] = checked
                 self.table.item(info["file"], values=self._build_row_values(info))
 
@@ -2737,8 +2742,8 @@ class TaggerInterface:
             self._refresh_row(info)  # the image also changes based on current/suggested
             self._update_apply_button_label()
         elif column_id == f"#{COLUMNS.index('format') + 1}":
-            if info["format"] not in ("WAV", "AIFF"):
-                return  # every other non-MP3 format has no choice - it MUST convert to be taggable at all
+            if info["format"] != "WAV":
+                return  # AIFF has no checkbox (see _build_row_values); every other non-MP3 format has no choice - it MUST convert to be taggable at all
             info["convert"] = not info["convert"]
             self.table.item(item_id, values=self._build_row_values(info))
 
