@@ -1468,6 +1468,27 @@ def strip_parentheses(text):
     return cleaned
 
 
+def compute_search_titles(title):
+    """
+    Derives (search_title, remix_qualified_title) from a track's title, for
+    the cover search only - never written to the file's own tags.
+
+    remix_qualified_title keeps a parenthetical qualifier attached ONLY when
+    it's a genuinely NAMED remix/edit/bootleg credit (see
+    title_has_named_qualifier) - otherwise it's identical to search_title.
+    A purely generic label like "(Original Mix)"/"(Extended Mix)" adds no
+    real specificity, and used to be kept anyway: SoundCloud's looser
+    title_words_overlap() check (search_cover_soundcloud) then treated
+    "mix"/"original" as meaningfully shared words against a COMPLETELY
+    different song that happened to carry the same generic label,
+    producing a confident but wrong cover match.
+    """
+    search_title = strip_parentheses(title)
+    if title_has_named_qualifier(title):
+        return search_title, strip_trailing_noise_words(title)
+    return search_title, search_title
+
+
 FUVICLAN_PATTERN = re.compile(r"by\s*fuvi\s*clan", re.IGNORECASE)
 
 
@@ -1568,9 +1589,7 @@ def search_cover_manual(artist, title, soundcloud_token, spotify_token=None, log
     if not artist or not title:
         return None, None, None, None
 
-    search_title = strip_parentheses(title)
-    has_parenthetical = search_title != title
-    remix_qualified_title = strip_trailing_noise_words(title) if has_parenthetical else search_title
+    search_title, remix_qualified_title = compute_search_titles(title)
 
     for source, enabled in (
         ("itunes", USE_ITUNES),
@@ -1639,9 +1658,7 @@ def _prepare_scan(file_name, log=safe_print, on_new_mention=None):
 
     search_title = remix_qualified_title = None
     if detected_artist and detected_title:
-        search_title = strip_parentheses(detected_title)
-        has_parenthetical = search_title != detected_title
-        remix_qualified_title = strip_trailing_noise_words(detected_title) if has_parenthetical else search_title
+        search_title, remix_qualified_title = compute_search_titles(detected_title)
     elif not detected_artist:
         # scan_one_file()/scan_files() both skip iTunes/Spotify/SoundCloud
         # entirely without an artist to search with (see search_title being
@@ -1693,11 +1710,7 @@ def _try_acoustid_correction(prepared, log=safe_print):
     artist, title = identified
     prepared["detected_artist"] = artist
     prepared["detected_title"] = title
-    prepared["search_title"] = strip_parentheses(title)
-    has_parenthetical = prepared["search_title"] != title
-    prepared["remix_qualified_title"] = (
-        strip_trailing_noise_words(title) if has_parenthetical else prepared["search_title"]
-    )
+    prepared["search_title"], prepared["remix_qualified_title"] = compute_search_titles(title)
     # Marks this result as NOT filename/tag-derived - the UI mustn't
     # re-run resolve_artist_title() on it later (e.g. to pick up a "to
     # remove" mentions-list change mid-scan, see _add_scan_row), since

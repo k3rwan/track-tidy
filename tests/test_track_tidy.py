@@ -187,6 +187,36 @@ class StripHelpersTests(unittest.TestCase):
         )
 
 
+class ComputeSearchTitlesTests(unittest.TestCase):
+    """Reported bug: 'Move (Original Mix)' matched a SoundCloud upload of a
+    COMPLETELY different song, 'Rinketin (Original Mix)', by the same
+    artist duo - both title_words_overlap() checks (search_cover_soundcloud)
+    treated the generic "original"/"mix" words as a meaningful match.
+    remix_qualified_title must drop a purely generic qualifier entirely
+    (falling back to the plain title) - only a genuinely NAMED one
+    (remixer/bootleg credit) is worth keeping attached for the search."""
+
+    def test_generic_qualifier_is_dropped(self):
+        self.assertEqual(
+            tagger.compute_search_titles("Move (Original Mix)"),
+            ("Move", "Move"),
+        )
+
+    def test_named_qualifier_is_kept(self):
+        self.assertEqual(
+            tagger.compute_search_titles("Gimme That Remix (Royale BR Bootleg)"),
+            ("Gimme That Remix", "Gimme That Remix (Royale BR Bootleg)"),
+        )
+
+    def test_no_parenthetical_returns_same_value_twice(self):
+        self.assertEqual(tagger.compute_search_titles("Astronomia"), ("Astronomia", "Astronomia"))
+
+    def test_generic_qualifier_no_longer_overlaps_an_unrelated_title(self):
+        search_title, remix_qualified_title = tagger.compute_search_titles("Move (Original Mix)")
+        self.assertFalse(tagger.title_words_overlap(remix_qualified_title, "Rinketin (Original Mix)"))
+        self.assertEqual(search_title, remix_qualified_title)
+
+
 class TitleHasNamedQualifierTests(unittest.TestCase):
     def test_named_bootleg_credit_is_named(self):
         self.assertTrue(tagger.title_has_named_qualifier("Gimme That Remix (Royale BR Bootleg)"))
