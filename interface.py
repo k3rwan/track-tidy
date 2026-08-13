@@ -2742,8 +2742,14 @@ class TaggerInterface:
             # means checked" - a row that was unchecked (kept as-is) still
             # ends up "processed" once the run reaches it, and showing it
             # checked made every row look selected after Apply even when
-            # most weren't.
-            apply_box = PROCESSED_CHECK if info.get("apply_changes") else EMPTY_BOX
+            # most weren't. An edit made AFTER Apply (fix_pending) reverts
+            # this back to a plain checked box instead - the file's own
+            # tags no longer match what the table shows, so "done" (✔)
+            # would be actively misleading until the next Apply catches up.
+            if info.get("fix_pending"):
+                apply_box = CHECKED_BOX
+            else:
+                apply_box = PROCESSED_CHECK if info.get("apply_changes") else EMPTY_BOX
             return (apply_box, displayed_title, displayed_artist, displayed_format)
 
         apply = info["apply_changes"]
