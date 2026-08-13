@@ -443,6 +443,116 @@ class SearchCoverSoundcloudTests(unittest.TestCase):
         self.assertIsNone(tagger.search_cover_soundcloud("Artist", "Title", None))
 
 
+class IdentifyViaAcoustidTests(unittest.TestCase):
+    """identify_via_acoustid() - last-resort audio-content identification
+    for badly-named files. acoustid.match() itself is faked - no real
+    fpcalc/network involved, same reasoning as the other cover sources."""
+
+    def setUp(self):
+        self._original_api_key = tagger.ACOUSTID_API_KEY
+        self._original_match = tagger.acoustid.match
+        tagger.ACOUSTID_API_KEY = "test-api-key"
+
+    def tearDown(self):
+        tagger.ACOUSTID_API_KEY = self._original_api_key
+        tagger.acoustid.match = self._original_match
+
+    def test_no_api_key_returns_none_without_calling_match(self):
+        tagger.ACOUSTID_API_KEY = None
+        calls = []
+        tagger.acoustid.match = lambda *a, **k: calls.append(1) or []
+        self.assertIsNone(tagger.identify_via_acoustid("song.mp3"))
+        self.assertEqual(calls, [])
+
+    def test_returns_the_best_confident_match(self):
+        tagger.acoustid.match = lambda apikey, path: iter([
+            (0.95, "rec-1", "Real Title", "Real Artist"),
+            (0.6, "rec-2", "Other Title", "Other Artist"),
+        ])
+        self.assertEqual(tagger.identify_via_acoustid("song.mp3"), ("Real Artist", "Real Title"))
+
+    def test_rejects_matches_below_the_score_threshold(self):
+        tagger.acoustid.match = lambda apikey, path: iter([
+            (0.2, "rec-1", "Unsure Title", "Unsure Artist"),
+        ])
+        self.assertIsNone(tagger.identify_via_acoustid("song.mp3"))
+
+    def test_no_results_returns_none(self):
+        tagger.acoustid.match = lambda apikey, path: iter([])
+        self.assertIsNone(tagger.identify_via_acoustid("song.mp3"))
+
+    def test_no_backend_error_returns_none_without_raising(self):
+        def raise_no_backend(apikey, path):
+            raise tagger.acoustid.NoBackendError("fpcalc not found")
+        tagger.acoustid.match = raise_no_backend
+        self.assertIsNone(tagger.identify_via_acoustid("song.mp3"))
+
+    def test_web_service_error_returns_none_without_raising(self):
+        def raise_web_error(apikey, path):
+            raise tagger.acoustid.WebServiceError("network down")
+        tagger.acoustid.match = raise_web_error
+        self.assertIsNone(tagger.identify_via_acoustid("song.mp3"))
+
+
+class TryAcoustidCorrectionTests(unittest.TestCase):
+    """_try_acoustid_correction() - the scan-pipeline glue that applies a
+    confident AcoustID match to a prepared scan's detected_artist/title."""
+
+    def setUp(self):
+        self._original_use_acoustid = tagger.USE_ACOUSTID_FALLBACK
+        self._original_music_folder = tagger.MUSIC_FOLDER
+        self._original_identify = tagger.identify_via_acoustid
+        tagger.USE_ACOUSTID_FALLBACK = True
+        tagger.MUSIC_FOLDER = "/music"
+
+    def tearDown(self):
+        tagger.USE_ACOUSTID_FALLBACK = self._original_use_acoustid
+        tagger.MUSIC_FOLDER = self._original_music_folder
+        tagger.identify_via_acoustid = self._original_identify
+
+    def _prepared(self):
+        return {
+            "file_name": "garbled_track_047.mp3",
+            "detected_artist": None,
+            "detected_title": None,
+            "search_title": None,
+            "remix_qualified_title": None,
+        }
+
+    def test_disabled_returns_false_and_leaves_prepared_untouched(self):
+        tagger.USE_ACOUSTID_FALLBACK = False
+        tagger.identify_via_acoustid = lambda path, log=None: ("Should Not", "Be Used")
+        prepared = self._prepared()
+
+        self.assertFalse(tagger._try_acoustid_correction(prepared))
+        self.assertIsNone(prepared["detected_artist"])
+
+    def test_no_match_returns_false(self):
+        tagger.identify_via_acoustid = lambda path, log=None: None
+        prepared = self._prepared()
+
+        self.assertFalse(tagger._try_acoustid_correction(prepared))
+        self.assertIsNone(prepared["detected_artist"])
+
+    def test_confident_match_updates_prepared_fields(self):
+        tagger.identify_via_acoustid = lambda path, log=None: ("Daft Punk", "One More Time")
+        prepared = self._prepared()
+
+        self.assertTrue(tagger._try_acoustid_correction(prepared))
+        self.assertEqual(prepared["detected_artist"], "Daft Punk")
+        self.assertEqual(prepared["detected_title"], "One More Time")
+        self.assertEqual(prepared["search_title"], "One More Time")
+        self.assertEqual(prepared["remix_qualified_title"], "One More Time")
+
+    def test_confident_match_with_remix_qualifier_computes_search_titles(self):
+        tagger.identify_via_acoustid = lambda path, log=None: ("Artist", "Title (Some Remix)")
+        prepared = self._prepared()
+
+        self.assertTrue(tagger._try_acoustid_correction(prepared))
+        self.assertEqual(prepared["search_title"], "Title")
+        self.assertEqual(prepared["remix_qualified_title"], "Title (Some Remix)")
+
+
 class SearchOneSourceTests(unittest.TestCase):
     """_search_one_source() applies one provider's own query strategy - no
     network involved, so the providers are swapped out with fakes."""

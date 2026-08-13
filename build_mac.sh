@@ -45,6 +45,16 @@ if [ ! -f "ffmpeg" ]; then
     echo
 fi
 
+if [ ! -f "fpcalc" ]; then
+    echo "[WARNING] No 'fpcalc' binary (macOS build, no extension) found next to this script."
+    echo "The optional AcoustID audio-identification fallback won't work without it. Download"
+    echo "a prebuilt binary from https://github.com/acoustid/chromaprint/releases and place it"
+    echo "here as './fpcalc'. UNVERIFIED whether it needs the same dylibbundler treatment as"
+    echo "Homebrew's ffmpeg above (not tested on real macOS) - check with 'otool -L ./fpcalc'"
+    echo "for any /opt/homebrew or /usr/local paths before trusting it works standalone."
+    echo
+fi
+
 echo "Cleaning previous build..."
 rm -rf build dist ./*.spec
 
@@ -100,6 +110,13 @@ if [ -f "ffmpeg" ]; then
     if [ -d "ffmpeg-libs" ]; then
         cp -R ffmpeg-libs "dist/Track-Tidy.app/Contents/MacOS/ffmpeg-libs"
     fi
+fi
+
+if [ -f "fpcalc" ]; then
+    echo
+    echo "Bundling fpcalc into the .app..."
+    cp fpcalc "dist/Track-Tidy.app/Contents/MacOS/fpcalc"
+    chmod +x "dist/Track-Tidy.app/Contents/MacOS/fpcalc"
 fi
 
 echo

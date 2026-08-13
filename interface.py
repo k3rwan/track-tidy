@@ -276,6 +276,7 @@ class TaggerInterface:
         self.use_itunes_var = tk.BooleanVar(value=saved_settings.get("use_itunes", True))
         self.use_spotify_var = tk.BooleanVar(value=saved_settings.get("use_spotify", False))
         self.use_soundcloud_var = tk.BooleanVar(value=saved_settings.get("use_soundcloud", True))
+        self.use_acoustid_var = tk.BooleanVar(value=saved_settings.get("use_acoustid_fallback", True))
         self.auto_convert_var = tk.BooleanVar(value=saved_settings.get("auto_convert_mp3", False))
         self.auto_convert_wav_aiff_var = tk.BooleanVar(value=saved_settings.get("auto_convert_wav_to_aiff", True))
         self.show_log_var = tk.BooleanVar(value=saved_settings.get("show_log_section", False))
@@ -283,6 +284,7 @@ class TaggerInterface:
         tagger.USE_ITUNES = self.use_itunes_var.get()
         tagger.USE_SPOTIFY = self.use_spotify_var.get()
         tagger.USE_SOUNDCLOUD = self.use_soundcloud_var.get()
+        tagger.USE_ACOUSTID_FALLBACK = self.use_acoustid_var.get()
         tagger.AUTO_CONVERT_MP3 = self.auto_convert_var.get()
         tagger.AUTO_CONVERT_WAV_TO_AIFF = self.auto_convert_wav_aiff_var.get()
 
@@ -356,6 +358,11 @@ class TaggerInterface:
         enabled = self.use_soundcloud_var.get()
         tagger.USE_SOUNDCLOUD = enabled
         tagger.save_setting("use_soundcloud", enabled)
+
+    def _on_use_acoustid_changed(self):
+        enabled = self.use_acoustid_var.get()
+        tagger.USE_ACOUSTID_FALLBACK = enabled
+        tagger.save_setting("use_acoustid_fallback", enabled)
 
     def _on_auto_convert_changed(self):
         enabled = self.auto_convert_var.get()
@@ -1438,6 +1445,17 @@ class TaggerInterface:
             credentials_row, text="Spotify credentials...", command=self._show_spotify_credentials_dialog,
         ).pack(side="left", fill="x", expand=True)
 
+        acoustid_frame = ttk.LabelFrame(soundcloud_tab, text="Audio recognition (for badly-named tracks)")
+        acoustid_frame.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Checkbutton(
+            acoustid_frame,
+            text="Identify tracks iTunes/Spotify/SoundCloud can't find by name, from the audio itself (AcoustID)",
+            variable=self.use_acoustid_var, command=self._on_use_acoustid_changed,
+        ).pack(anchor="w", padx=10, pady=(10, 5))
+        ttk.Button(
+            acoustid_frame, text="AcoustID API key...", command=self._show_acoustid_credentials_dialog,
+        ).pack(fill="x", padx=10, pady=(0, 10))
+
         behavior_frame = ttk.LabelFrame(soundcloud_tab, text="Behavior")
         behavior_frame.pack(fill="x", padx=10, pady=(0, 10))
         self.auto_convert_checkbox = ttk.Checkbutton(
@@ -1722,6 +1740,55 @@ class TaggerInterface:
         ).pack(side="left", fill="x", expand=True)
 
         self._update_spotify_save_state()
+
+        ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=(0, 15))
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+
+        self._center_dialog(dialog)
+
+    def _save_acoustid_credentials(self):
+        api_key = self.acoustid_key_entry.get().strip()
+        try:
+            tagger.write_credential(tagger.ACOUSTID_API_KEY_KEY, api_key)
+            tagger.ACOUSTID_API_KEY = api_key or None
+            messagebox.showinfo("Saved", "AcoustID API key saved.", parent=self._acoustid_dialog)
+        except Exception as error:
+            messagebox.showerror("Error", f"Could not save the API key: {error}", parent=self._acoustid_dialog)
+
+    def _open_acoustid_registration(self):
+        webbrowser.open("https://acoustid.org/api-key")
+
+    def _show_acoustid_credentials_dialog(self):
+        dialog = tk.Toplevel(self.window)
+        self._style_toplevel(dialog)
+        dialog.title("AcoustID API key")
+        dialog.resizable(False, False)
+        dialog.transient(self.window)
+        dialog.grab_set()
+        self._acoustid_dialog = dialog
+
+        ttk.Label(
+            dialog,
+            text="Free - sign in at the link below (MusicBrainz/Google/OpenID) and "
+                 "register an application to get a key, then paste it below.",
+            justify="left",
+        ).pack(anchor="w", fill="x", padx=10, pady=(15, 10))
+
+        ttk.Label(dialog, text="API key:").pack(anchor="w", padx=10)
+        self.acoustid_key_entry = ttk.Entry(dialog, show="*")
+        self.acoustid_key_entry.pack(fill="x", padx=10, pady=(0, 15))
+        self._bind_entry_context_menu(self.acoustid_key_entry)
+        if tagger.ACOUSTID_API_KEY:
+            self.acoustid_key_entry.insert(0, tagger.ACOUSTID_API_KEY)
+
+        acoustid_buttons_frame = ttk.Frame(dialog)
+        acoustid_buttons_frame.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Button(
+            acoustid_buttons_frame, text="Save", command=self._save_acoustid_credentials,
+        ).pack(side="left", fill="x", expand=True, padx=(0, 5))
+        ttk.Button(
+            acoustid_buttons_frame, text="Get an API key", command=self._open_acoustid_registration,
+        ).pack(side="left", fill="x", expand=True)
 
         ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=(0, 15))
         dialog.bind("<Escape>", lambda _event: dialog.destroy())
