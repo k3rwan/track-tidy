@@ -3006,8 +3006,10 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
     Processes a list of already-scanned files (see scan_files()).
     Each item in the plan carries its own options:
     convert, update_title, update_artist, update_cover.
-    on_file_processed(identifier, success) is called after each file,
-    whether it was processed successfully or skipped/failed.
+    on_file_processed(identifier, success, reason=None) is called after
+    each file, whether it was processed successfully or skipped/failed -
+    reason is a short human-readable explanation, only set when success
+    is False (e.g. a corrupted file's tags/audio couldn't be read).
     should_cancel() is called before each file; if it returns True,
     processing stops cleanly (remaining files are left untouched).
     """
@@ -3046,7 +3048,7 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
                     if on_progress:
                         on_progress(index, total)
                     if on_file_processed:
-                        on_file_processed(identifier, False)
+                        on_file_processed(identifier, False, "Conversion failed")
                     continue
 
                 full_path = new_path
@@ -3063,7 +3065,7 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
                 if on_progress:
                     on_progress(index, total)
                 if on_file_processed:
-                    on_file_processed(identifier, False)
+                    on_file_processed(identifier, False, "No title to write")
                 continue
 
             log(f"  Artist: '{artist}' | Title: '{title}'")
@@ -3132,7 +3134,7 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
             log(f"  Error processing '{file_name}': {error}\n")
             info["processed"] = True
             if on_file_processed:
-                on_file_processed(identifier, False)
+                on_file_processed(identifier, False, str(error))
 
         if on_progress:
             on_progress(index, total)
