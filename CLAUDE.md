@@ -56,11 +56,19 @@ Instead:
   `gh release create`) from `main`, per the existing approval rule below.
   Version to release as: if `main`'s current `APP_VERSION` is already
   ahead of the last published release tag (Kevin sometimes bumps it
-  right after a release, to mark "this is what's now in development"),
-  release AS that version - don't bump again. Otherwise, bump it +1 on
-  the last segment (e.g. dev is on 0.12, last release was 0.12 -> release
-  as 0.13). Auto-determine which case applies, no need to ask Kevin which
-  number to use.
+  himself right after a release, to mark "this is what's now in
+  development"), release AS that version - don't bump again. Otherwise,
+  bump it +1 on the last segment (e.g. dev is on 0.12, last release was
+  0.12 -> release as 0.13). Auto-determine which case applies, no need
+  to ask Kevin which number to use.
+  **Immediately after every release finishes** (installer built, GitHub
+  release published), bump `main`'s `APP_VERSION` (and `installer.iss`'s
+  `MyAppVersion`) +1 again on the last segment, right away, unprompted -
+  e.g. just released 0.13 -> dev becomes 0.14 - so `main`/Kevin's desktop
+  is always sitting one version ahead of whatever's actually been
+  published. This is a standing rule (confirmed twice - once explicitly
+  asked for, once as a correction after this step was skipped), not a
+  one-off - don't wait to be asked again.
 - Test before committing: `python -m unittest discover -s tests` (run from
   the project root with the venv's Python).
 - For GUI changes, actually launch the app and screenshot it rather than
