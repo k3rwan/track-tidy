@@ -52,6 +52,54 @@ class ParseFilenameTests(unittest.TestCase):
         artist, title = tagger.parse_filename("SCH - Otto.mp3")
         self.assertEqual((artist, title), ("SCH", "Otto"))
 
+    def test_bare_feature_credit_moves_to_artist(self):
+        self.assertEqual(
+            tagger.parse_filename("Chris Brown - Gimme That Remix ft. Lil' Wayne.wav"),
+            ("Chris Brown ft. Lil' Wayne", "Gimme That Remix"),
+        )
+
+    def test_bare_feature_credit_with_trailing_parenthesized_suffix(self):
+        # Reported bug: the trailing "(Royale BR Bootleg)" (already
+        # parenthesized) was misread as the ARTIST by the "Title - Mix -
+        # Artist" special case (triggered by "Remix" appearing in what's
+        # actually the title, not a mix descriptor), and separately risked
+        # being double-wrapped in parens by reformat_trailing_dash_mix.
+        self.assertEqual(
+            tagger.parse_filename("Chris Brown - Gimme That Remix ft. Lil' Wayne - (Royale BR Bootleg).wav"),
+            ("Chris Brown ft. Lil' Wayne", "Gimme That Remix (Royale BR Bootleg)"),
+        )
+
+    def test_bare_feature_credit_before_a_separate_mix_suffix(self):
+        self.assertEqual(
+            tagger.parse_filename("DJ Snake - Turn Down for What ft. Lil Jon (Extended Mix).mp3"),
+            ("DJ Snake ft. Lil Jon", "Turn Down for What (Extended Mix)"),
+        )
+
+    def test_multiple_bare_featured_artists_kept_together(self):
+        self.assertEqual(
+            tagger.parse_filename("Major Lazer - Lean On ft. MO & DJ Snake.mp3"),
+            ("Major Lazer ft. MO & DJ Snake", "Lean On"),
+        )
+
+    def test_already_parenthesized_feature_credit_left_in_title(self):
+        # Distinct from the bare "ft. X" case above - a feat. credit that's
+        # already its own "(feat. X)" group is left as part of the title,
+        # matching strip_feature_suffix()/extract_feature_names()'s existing
+        # (separate) handling of that form for cover-search matching.
+        self.assertEqual(
+            tagger.parse_filename("Artist - Title (feat. Someone).mp3"),
+            ("Artist", "Title (feat. Someone)"),
+        )
+
+    def test_dash_mix_artist_case_still_works_with_unparenthesized_artist(self):
+        # Fix 1's guard (bail out when the last dash-part is parenthesized)
+        # must not break the legitimate "Title - Mix - Artist" case this
+        # was designed for.
+        self.assertEqual(
+            tagger.parse_filename("My City's On Fire - Notre Dame Remix - Jimi Jules.mp3"),
+            ("Jimi Jules", "My City's On Fire (Notre Dame Remix)"),
+        )
+
 
 class CleanTitleTests(unittest.TestCase):
     def setUp(self):
