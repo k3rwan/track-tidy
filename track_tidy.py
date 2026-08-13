@@ -178,7 +178,18 @@ SOUNDCLOUD_CLIENT_ID = read_credential(CLIENT_ID_KEY)
 SOUNDCLOUD_CLIENT_SECRET = read_credential(CLIENT_SECRET_KEY)
 SPOTIFY_CLIENT_ID = read_credential(SPOTIFY_CLIENT_ID_KEY)
 SPOTIFY_CLIENT_SECRET = read_credential(SPOTIFY_CLIENT_SECRET_KEY)
-ACOUSTID_API_KEY = read_credential(ACOUSTID_API_KEY_KEY)
+
+# Fallback AcoustID API key so most users never have to register their own -
+# unlike SoundCloud/Spotify (each user needs their own app credentials),
+# AcoustID API keys are meant to be per-APPLICATION, one key shared by every
+# user of that app, not per-user. base64, not encryption - same reasoning as
+# DISCORD_REPORT_WEBHOOK_URL below: this can't be kept truly secret from
+# this app's own compiled binary, it just keeps it out of a plain `strings`
+# scan. A user's own key (Settings -> "AcoustID API key...") always takes
+# priority over this one when they've set one.
+_ACOUSTID_DEFAULT_API_KEY_B64 = "ZFhKT0c0QTF1bQ=="
+ACOUSTID_DEFAULT_API_KEY = base64.b64decode(_ACOUSTID_DEFAULT_API_KEY_B64).decode("ascii")
+ACOUSTID_API_KEY = read_credential(ACOUSTID_API_KEY_KEY) or ACOUSTID_DEFAULT_API_KEY
 
 
 def load_id_txt_credentials():
