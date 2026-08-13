@@ -58,6 +58,7 @@ from concurrent.futures import ThreadPoolExecutor
 import requests
 import keyring
 import platformdirs
+import acoustid
 from mutagen import File as MutagenFile
 from mutagen.mp3 import MP3
 from mutagen.wave import WAVE
@@ -121,6 +122,7 @@ CLIENT_ID_KEY = "soundcloud_client_id"
 CLIENT_SECRET_KEY = "soundcloud_client_secret"
 SPOTIFY_CLIENT_ID_KEY = "spotify_client_id"
 SPOTIFY_CLIENT_SECRET_KEY = "spotify_client_secret"
+ACOUSTID_API_KEY_KEY = "acoustid_api_key"
 
 # Old plaintext file locations (pre-keyring) - read once at startup as a
 # migration path, then deleted. Not used for anything else.
@@ -176,6 +178,7 @@ SOUNDCLOUD_CLIENT_ID = read_credential(CLIENT_ID_KEY)
 SOUNDCLOUD_CLIENT_SECRET = read_credential(CLIENT_SECRET_KEY)
 SPOTIFY_CLIENT_ID = read_credential(SPOTIFY_CLIENT_ID_KEY)
 SPOTIFY_CLIENT_SECRET = read_credential(SPOTIFY_CLIENT_SECRET_KEY)
+ACOUSTID_API_KEY = read_credential(ACOUSTID_API_KEY_KEY)
 
 
 def load_id_txt_credentials():
@@ -759,6 +762,15 @@ MENTIONS_TO_REMOVE = []
 USE_ITUNES = True
 USE_SPOTIFY = False
 USE_SOUNDCLOUD = True
+
+# Last-resort audio-content identification (AcoustID/Chromaprint) for a file
+# whose filename/tags are too mangled for the normal text-based search to
+# even attempt, or that search comes up empty - never tried otherwise, since
+# it needs to read/analyze the actual audio (much slower than a text search)
+# and would just waste API calls on files the fast path already handles
+# fine. Needs an AcoustID API key configured (see ACOUSTID_API_KEY) - a
+# no-op without one, same as SoundCloud/Spotify with no credentials.
+USE_ACOUSTID_FALLBACK = True
 
 # Whether non-MP3, non-WAV, non-AIFF files get converted to MP3 (320 kbps)
 # automatically (set by the UI). WAV/AIFF are always tagged directly, on or
@@ -1594,6 +1606,39 @@ def _prepare_scan(file_name, log=safe_print, on_new_mention=None):
     }
 
 
+def _try_acoustid_correction(prepared, log=safe_print):
+    """
+    Last resort for a file the text-based search couldn't do anything with
+    (nothing to search - an unparseable filename with no usable tags
+    either - or a search that came up empty): identifies it from the
+    actual audio content via AcoustID instead. On a confident match,
+    updates `prepared`'s detected_artist/detected_title/search_title/
+    remix_qualified_title in place - mirroring _prepare_scan's own
+    computation of the latter two - so the corrected values also end up in
+    the final scan result and can be searched again, not just used here.
+    Returns True if a correction was applied, False otherwise (disabled,
+    unavailable, or no confident match - the caller's original prepared
+    values are left untouched).
+    """
+    if not USE_ACOUSTID_FALLBACK:
+        return False
+
+    full_path = os.path.join(MUSIC_FOLDER, prepared["file_name"])
+    identified = identify_via_acoustid(full_path, log=log)
+    if not identified:
+        return False
+
+    artist, title = identified
+    prepared["detected_artist"] = artist
+    prepared["detected_title"] = title
+    prepared["search_title"] = strip_parentheses(title)
+    has_parenthetical = prepared["search_title"] != title
+    prepared["remix_qualified_title"] = (
+        strip_trailing_noise_words(title) if has_parenthetical else prepared["search_title"]
+    )
+    return True
+
+
 def _finish_scan(prepared, match_result, cover_source, log=safe_print):
     """
     Builds the final info dict for a file, given the (match_result,
@@ -1662,6 +1707,13 @@ def scan_one_file(file_name, soundcloud_token, spotify_token=None, log=safe_prin
     match_result = None
     cover_source = None
     if prepared["detected_artist"] and prepared["search_title"]:
+        found_cover_image, cover_source, returned_artist, returned_title = search_cover_manual(
+            prepared["detected_artist"], prepared["detected_title"], soundcloud_token, spotify_token, log,
+        )
+        if found_cover_image:
+            match_result = (found_cover_image, returned_artist, returned_title)
+
+    if not match_result and _try_acoustid_correction(prepared, log):
         found_cover_image, cover_source, returned_artist, returned_title = search_cover_manual(
             prepared["detected_artist"], prepared["detected_title"], soundcloud_token, spotify_token, log,
         )
@@ -1770,6 +1822,21 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
 
             if not match_result and prepared["detected_artist"] and prepared["search_title"]:
                 for source, enabled in (
+                    ("spotify", USE_SPOTIFY),
+                    ("soundcloud", USE_SOUNDCLOUD and not SOUNDCLOUD_RATE_LIMITED and not SOUNDCLOUD_UNAVAILABLE),
+                ):
+                    if not enabled:
+                        continue
+                    match_result, cover_source = _search_one_source(
+                        source, prepared["detected_artist"], prepared["search_title"],
+                        prepared["remix_qualified_title"], spotify_token, soundcloud_token, log,
+                    )
+                    if match_result:
+                        break
+
+            if not match_result and _try_acoustid_correction(prepared, log):
+                for source, enabled in (
+                    ("itunes", USE_ITUNES),
                     ("spotify", USE_SPOTIFY),
                     ("soundcloud", USE_SOUNDCLOUD and not SOUNDCLOUD_RATE_LIMITED and not SOUNDCLOUD_UNAVAILABLE),
                 ):
@@ -2437,19 +2504,81 @@ def search_cover_spotify(artist, title, token, log=safe_print):
         return None
 
 
+ACOUSTID_MIN_SCORE = 0.5  # AcoustID scores range 0-1; below this, not worth trusting
+
+
+def identify_via_acoustid(file_path, log=safe_print):
+    """
+    Identifies a track from its actual audio content via AcoustID/
+    Chromaprint, instead of its filename/tags - last resort, only meant to
+    be tried when the normal text-based search (iTunes/Spotify/SoundCloud)
+    already came up empty, or never had anything to search with in the
+    first place (a filename too mangled to parse an artist/title from at
+    all). Returns (artist, title) from the best-scoring match at or above
+    ACOUSTID_MIN_SCORE, or None if unavailable/no confident match - never
+    raises, same philosophy as the other cover sources.
+    """
+    if not ACOUSTID_API_KEY:
+        return None
+
+    acoustid.FPCALC_COMMAND = find_fpcalc()
+    try:
+        results = list(acoustid.match(ACOUSTID_API_KEY, file_path))
+    except acoustid.NoBackendError:
+        log("  [AcoustID] fpcalc not found - check it's bundled or installed.")
+        return None
+    except acoustid.FingerprintGenerationError as error:
+        log(f"  [AcoustID] Could not fingerprint '{file_path}': {error}")
+        return None
+    except acoustid.WebServiceError as error:
+        log(f"  [AcoustID] Lookup failed: {error}")
+        return None
+    except Exception as error:
+        log(f"  [AcoustID] Unexpected error identifying '{file_path}': {error}")
+        return None
+
+    for score, _recording_id, title, artist in results:
+        if not artist or not title:
+            continue
+        if score < ACOUSTID_MIN_SCORE:
+            break  # results are sorted best-first - nothing after this scores any higher
+        log(f"  [AcoustID] Identified as '{artist} - {title}' (score {score:.2f}).")
+        return artist, title
+
+    if results:
+        log(f"  [AcoustID] Best match scored too low to trust (top score: {results[0][0]:.2f}).")
+    else:
+        log("  [AcoustID] No match found.")
+    return None
+
+
 # ============================================================================
 # 12. FORMAT CONVERSION
 # ============================================================================
 
-def find_ffmpeg():
+def _find_bundled_tool(base_name):
     """
-    Looks for ffmpeg.exe next to the app first (bundled with the installer),
-    falling back to the system PATH if it's not there.
+    Looks for a bundled command-line tool (ffmpeg, fpcalc) next to the app
+    first, falling back to the system PATH if it's not there. The bundled
+    binary is named "<base_name>.exe" on Windows (build_all.bat/
+    installer.iss) or plain "<base_name>" with no extension on macOS
+    (build_mac.sh puts it in Contents/MacOS/, alongside the app's own
+    executable - app_base_dir() resolves there too when frozen).
     """
-    bundled_path = os.path.join(app_base_dir(), "ffmpeg.exe")
+    bundled_name = f"{base_name}.exe" if sys.platform == "win32" else base_name
+    bundled_path = os.path.join(app_base_dir(), bundled_name)
     if os.path.exists(bundled_path):
         return bundled_path
-    return "ffmpeg"  # relies on it being installed and in the system PATH
+    return base_name  # relies on it being installed and in the system PATH
+
+
+def find_ffmpeg():
+    return _find_bundled_tool("ffmpeg")
+
+
+def find_fpcalc():
+    """Used by identify_via_acoustid() for AcoustID/Chromaprint audio fingerprinting."""
+    return _find_bundled_tool("fpcalc")
 
 
 def convert_to_mp3(source_path):

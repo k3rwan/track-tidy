@@ -118,6 +118,35 @@ Instead:
   `k3rwan/track-tidy-releases` (public, installer-only, no source code) -
   colleagues download from the second one.
 
+## AcoustID audio-identification fallback
+
+For a file whose filename/tags are too mangled for the normal text search
+to even attempt (or that search comes up empty): `identify_via_acoustid()`
+fingerprints the actual audio (via the bundled `fpcalc.exe`/`fpcalc`,
+Chromaprint) and looks it up against the AcoustID web service, feeding a
+confident result's artist/title back into the normal iTunes/Spotify/
+SoundCloud search (`_try_acoustid_correction()`) rather than fetching
+cover art through AcoustID/MusicBrainz directly - reuses all the existing
+matching logic instead of a second cover-fetching path.
+- Only tried as a last resort (see `USE_ACOUSTID_FALLBACK`, on by
+  default) - it's much slower (real audio analysis + a network call) than
+  the fast text search, so running it for every file would meaningfully
+  slow down a scan for no benefit on files that already match fine.
+- Needs a free AcoustID API key (Settings -> "AcoustID API key..." -
+  register at https://acoustid.org/api-key, Kevin has to do this himself,
+  Claude can't create third-party accounts) - a no-op without one, same
+  as SoundCloud/Spotify with no credentials configured.
+- `fpcalc.exe`/`fpcalc` is bundled the same way as `ffmpeg.exe`/`ffmpeg`
+  (gitignored, not committed - copy the binary from
+  https://github.com/acoustid/chromaprint/releases into the project root
+  before building). `find_ffmpeg()`/`find_fpcalc()` share one helper
+  (`_find_bundled_tool`) that checks the platform-appropriate bundled
+  name first, falling back to PATH.
+- **Not yet verified end to end** - implemented and tested with a real
+  `fpcalc.exe` + mocked AcoustID API responses (no real API key was
+  available to test the live web-service call against). Ask before
+  assuming the live lookup itself has been confirmed working.
+
 ## Cross-platform (Windows/macOS)
 
 Kevin is building this for DJs broadly, many of whom are on macOS, so the
