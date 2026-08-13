@@ -872,8 +872,16 @@ def try_split_title_mix_artist(text):
         return None
 
     title_part, mix_part, artist_part = parts
+    artist_part = artist_part.strip()
+    if artist_part.startswith("(") and artist_part.endswith(")"):
+        # An already-parenthesized last part is a remix/bootleg suffix tag,
+        # never a real artist name (e.g. "Chris Brown - Gimme That Remix
+        # ft. Lil' Wayne - (Royale BR Bootleg)") - bail out and let the
+        # standard "Artist - Title" case + reformat_trailing_dash_mix
+        # handle it instead, rather than misreading it as the artist.
+        return None
     if any(keyword in mix_part.lower() for keyword in DASH_MIX_KEYWORDS):
-        return artist_part.strip(), f"{title_part.strip()} ({mix_part.strip()})"
+        return artist_part, f"{title_part.strip()} ({mix_part.strip()})"
     return None
 
 
@@ -889,8 +897,41 @@ def reformat_trailing_dash_mix(text):
 
     before, after = match.group(1).strip(), match.group(2).strip()
     if any(keyword in after.lower() for keyword in DASH_MIX_KEYWORDS):
-        return f"{before} ({after})"
+        # Already parenthesized (e.g. "... - (Royale BR Bootleg)") -> just
+        # attach it, don't wrap it in a second layer of parens.
+        already_wrapped = after.startswith("(") and after.endswith(")")
+        return f"{before} {after}" if already_wrapped else f"{before} ({after})"
     return text
+
+
+BARE_FEATURE_RE = re.compile(
+    r"\s+(?:feat\.?|ft\.?|featuring)\s+([^()\[\]]+?)(?=\s*[\(\[]|\s*$)",
+    re.IGNORECASE,
+)
+
+
+def _move_bare_feature_credit_to_artist(artist, title):
+    """
+    Moves a bare (unparenthesized) "ft. X" / "feat. X" / "featuring X"
+    credit out of the title and appends it to the artist instead, e.g.
+    "Gimme That Remix ft. Lil' Wayne" (artist "Chris Brown") becomes
+    title "Gimme That Remix", artist "Chris Brown ft. Lil' Wayne" -
+    filenames commonly place it right after the song title even though
+    it describes the artist. Only the BARE form: a credit already wrapped
+    in its own "(feat. X)"/"[ft. X]" is left as part of the title as-is -
+    that's a separate, deliberate case some stores also include in the
+    title, handled for matching purposes by strip_feature_suffix() /
+    extract_feature_names() instead of being rewritten here.
+    """
+    match = BARE_FEATURE_RE.search(title)
+    if not match:
+        return artist, title
+
+    feature_names = match.group(1).strip()
+    new_title = (title[:match.start()] + title[match.end():]).strip()
+    new_title = re.sub(r"\s{2,}", " ", new_title)
+    new_artist = f"{artist} ft. {feature_names}" if artist else feature_names
+    return new_artist, new_title
 
 
 def parse_filename(file_name):
@@ -910,6 +951,8 @@ def parse_filename(file_name):
     name_no_ext = name_no_ext.replace("._", "")
     name_no_ext = clean_title(name_no_ext)
 
+    artist = title = None
+
     # Special case: "Title Artist, Remix (Remixer) Extended"
     remix_match = REMIX_WITH_COMMA_PATTERN.match(name_no_ext)
     if remix_match:
@@ -917,21 +960,24 @@ def parse_filename(file_name):
         artist = remix_match.group("artist").strip()
         remixer = remix_match.group("remixer").strip()
         title = f"{raw_title} ({remixer} Remix)"
-        return artist, title
 
     # Special case: "Title - Mix Info - Artist" (three dash-separated parts)
-    title_mix_artist = try_split_title_mix_artist(name_no_ext)
-    if title_mix_artist:
-        return title_mix_artist
+    if artist is None:
+        title_mix_artist = try_split_title_mix_artist(name_no_ext)
+        if title_mix_artist:
+            artist, title = title_mix_artist
 
     # Standard case: "Artist - Title"
-    match = re.match(r"^(.+?)\s*-\s*(.+)$", name_no_ext)
-    if match:
-        artist = match.group(1).strip()
-        title = reformat_trailing_dash_mix(match.group(2).strip())
-        return artist, title
+    if artist is None:
+        match = re.match(r"^(.+?)\s*-\s*(.+)$", name_no_ext)
+        if match:
+            artist = match.group(1).strip()
+            title = reformat_trailing_dash_mix(match.group(2).strip())
 
-    return None, None
+    if artist is None:
+        return None, None
+
+    return _move_bare_feature_credit_to_artist(artist, title)
 
 
 def resolve_artist_title(file_name, current_artist, current_title):
