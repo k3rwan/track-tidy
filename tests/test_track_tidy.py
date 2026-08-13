@@ -361,6 +361,88 @@ class ITunesRetryTests(unittest.TestCase):
         self.assertEqual(calls["search"], 3)  # initial attempt + 2 retries (max_retries=2)
 
 
+class SearchCoverSoundcloudTests(unittest.TestCase):
+    """search_cover_soundcloud() - no real network, requests.get is faked."""
+
+    def setUp(self):
+        self.original_get = tagger.requests.get
+
+    def tearDown(self):
+        tagger.requests.get = self.original_get
+
+    class FakeResponse:
+        def __init__(self, status_code, payload=None, content=b""):
+            self.status_code = status_code
+            self._payload = payload if payload is not None else []
+            self.content = content
+            self.text = ""
+
+        def json(self):
+            return self._payload
+
+    def _track(self, title, uploader, has_artwork=True):
+        return {
+            "title": title,
+            "user": {"username": uploader},
+            "artwork_url": "https://example.com/cover-large.jpg" if has_artwork else None,
+        }
+
+    def test_checks_candidates_beyond_the_first(self):
+        # Reported bug: the exact "Royale BR" bootleg ranked #2 in real
+        # SoundCloud search results, behind an unrelated plain upload of
+        # the same base song - only checking the top result missed it
+        # entirely.
+        tracks = [
+            self._track("Chris Brown - Gimme That (remix) ft. Lil Wayne", "Polly_Pockety"),
+            self._track("Chris Brown - Gimme That Remix Ft. Lil Wayne - (Royale BR Bootleg)", "Royale BR"),
+        ]
+
+        def fake_get(url, headers=None, params=None, timeout=None):
+            if "api.soundcloud.com" in url:
+                return self.FakeResponse(200, tracks)
+            return self.FakeResponse(200, content=b"fake-image-bytes")
+
+        tagger.requests.get = fake_get
+        result = tagger.search_cover_soundcloud(
+            "Chris Brown ft. Lil' Wayne", "Gimme That Remix (Royale BR Bootleg)", "token",
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result[1], "Royale BR")
+
+    def test_rejects_a_candidate_missing_the_named_qualifier(self):
+        # The #1 (only) candidate shares the base title/artist but doesn't
+        # credit the specific named bootleg anywhere - must be rejected,
+        # not accepted as "close enough".
+        tracks = [self._track("Chris Brown - Gimme That (remix) ft. Lil Wayne", "Polly_Pockety")]
+
+        def fake_get(url, headers=None, params=None, timeout=None):
+            return self.FakeResponse(200, tracks)
+
+        tagger.requests.get = fake_get
+        result = tagger.search_cover_soundcloud(
+            "Chris Brown ft. Lil' Wayne", "Gimme That Remix (Royale BR Bootleg)", "token",
+        )
+
+        self.assertIsNone(result)
+
+    def test_no_named_qualifier_accepts_the_first_good_match(self):
+        tracks = [self._track("Some Song", "Some Artist")]
+
+        def fake_get(url, headers=None, params=None, timeout=None):
+            if "api.soundcloud.com" in url:
+                return self.FakeResponse(200, tracks)
+            return self.FakeResponse(200, content=b"fake-image-bytes")
+
+        tagger.requests.get = fake_get
+        result = tagger.search_cover_soundcloud("Some Artist", "Some Song", "token")
+
+        self.assertIsNotNone(result)
+
+    def test_no_token_returns_none_without_a_request(self):
+        self.assertIsNone(tagger.search_cover_soundcloud("Artist", "Title", None))
+
+
 class SearchOneSourceTests(unittest.TestCase):
     """_search_one_source() applies one provider's own query strategy - no
     network involved, so the providers are swapped out with fakes."""
