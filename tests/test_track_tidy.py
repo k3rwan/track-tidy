@@ -377,10 +377,12 @@ class ITunesRetryTests(unittest.TestCase):
         self.original_get = tagger.requests.get
         self.original_sleep = tagger.time.sleep
         tagger.time.sleep = lambda seconds: None
+        tagger._itunes_rate_limited_until = 0
 
     def tearDown(self):
         tagger.requests.get = self.original_get
         tagger.time.sleep = self.original_sleep
+        tagger._itunes_rate_limited_until = 0
 
     class FakeResponse:
         def __init__(self, status_code, payload=None, content=b""):
@@ -427,6 +429,47 @@ class ITunesRetryTests(unittest.TestCase):
 
         self.assertIsNone(result)
         self.assertEqual(calls["search"], 3)  # initial attempt + 2 retries (max_retries=2)
+
+    def test_persistent_429_trips_the_shared_cooldown(self):
+        # A real large-batch scan hit a genuine, sustained HTTP 429 (not
+        # just transient 403s) - every further iTunes call across the rest
+        # of that scan (other concurrent workers, later sequential
+        # AcoustID-triggered re-searches) should back off immediately
+        # instead of each independently retrying into the same wall.
+        calls = {"search": 0}
+
+        def fake_get(url, params=None, timeout=None):
+            calls["search"] += 1
+            return self.FakeResponse(429)
+
+        tagger.requests.get = fake_get
+        result = tagger.search_cover_itunes("PEATY, Jawora", "One Time")
+
+        self.assertIsNone(result)
+        self.assertEqual(calls["search"], 3)  # this call still does its own retries
+        self.assertGreater(tagger._itunes_rate_limited_until, time.time())
+
+        # A second call, still within the cooldown, is skipped outright -
+        # no further HTTP request at all.
+        result2 = tagger.search_cover_itunes("Someone Else", "Another Title")
+        self.assertIsNone(result2)
+        self.assertEqual(calls["search"], 3)  # unchanged - no new request made
+
+    def test_cooldown_expiring_allows_requests_again(self):
+        tagger._itunes_rate_limited_until = time.time() - 1  # already expired
+
+        def fake_get(url, params=None, timeout=None):
+            return self.FakeResponse(200, {"results": [
+                {
+                    "artistName": "PEATY, Jawora", "trackName": "One Time",
+                    "artworkUrl100": "https://example.com/cover100x100.jpg",
+                },
+            ]}) if "itunes.apple.com" in url else self.FakeResponse(200, content=b"fake-image-bytes")
+
+        tagger.requests.get = fake_get
+        result = tagger.search_cover_itunes("PEATY, Jawora", "One Time")
+
+        self.assertIsNotNone(result)
 
 
 class SearchCoverSoundcloudTests(unittest.TestCase):
