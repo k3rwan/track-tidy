@@ -826,6 +826,42 @@ GENERIC_MIX_LABELS = {
 }
 
 
+def is_named_remix_qualifier(content):
+    """
+    True for a specific/named remix, edit, or bootleg credit (e.g. "Royale
+    BR Bootleg", "Raphael Palacci Remix") - one that names a particular
+    person/version, as opposed to a purely generic, interchangeable label
+    like "Extended Mix" or "Radio Edit" (see GENERIC_MIX_LABELS).
+    """
+    lowered = content.lower().strip()
+    has_named_keyword = any(keyword in lowered for keyword in ("remix", "edit", "reboot", "bootleg"))
+    return has_named_keyword and lowered not in GENERIC_MIX_LABELS
+
+
+def is_generic_mix_qualifier(content):
+    return content.lower().strip() in GENERIC_MIX_LABELS
+
+
+def title_has_named_qualifier(title):
+    """
+    True if `title` contains a parenthesized remix/edit/bootleg credit that
+    NAMES a specific person/version (e.g. "Royale BR Bootleg", "Raphael
+    Palacci Remix") - more than just the bare mix-type keyword on its own.
+    A lone "(Remix)" doesn't count as named (too ambiguous - could be
+    anyone's, unlike a credit with an actual name attached), same as a
+    purely generic label like "(Extended Mix)".
+    """
+    for group in re.findall(r"\(([^)]*)\)", title):
+        lowered = group.lower().strip()
+        if lowered in GENERIC_MIX_LABELS:
+            continue
+        words = lowered.split()
+        has_keyword = any(keyword in words for keyword in ("remix", "edit", "reboot", "bootleg"))
+        if has_keyword and len(words) > 1:
+            return True
+    return False
+
+
 def remove_redundant_generic_mix(text):
     """
     If the text has a specific named remix/edit credit like "(Raphael Palacci
@@ -833,17 +869,9 @@ def remove_redundant_generic_mix(text):
     the generic one is redundant (the named remix already implies it) and
     gets removed automatically.
     """
-    def is_named_remix(content):
-        lowered = content.lower().strip()
-        has_named_keyword = any(keyword in lowered for keyword in ("remix", "edit", "reboot", "bootleg"))
-        return has_named_keyword and lowered not in GENERIC_MIX_LABELS
-
-    def is_generic_mix(content):
-        return content.lower().strip() in GENERIC_MIX_LABELS
-
     def replacement(match):
         first, second = match.group(1), match.group(2)
-        if is_named_remix(first) and is_generic_mix(second):
+        if is_named_remix_qualifier(first) and is_generic_mix_qualifier(second):
             return f"({first})"
         return match.group(0)
 
@@ -1399,19 +1427,35 @@ def _search_one_source(source, artist, search_title, remix_qualified_title, spot
     - iTunes/Spotify: the plain (parens-stripped) title first, then a
       retry with the remix qualifier kept in the query if that misses and
       the two titles actually differ (e.g. a heavily-remixed song where
-      the plain query ranks a different remix first).
+      the plain query ranks a different remix first) - UNLESS the
+      qualifier names a specific remix/edit/bootleg (see
+      title_has_named_qualifier), in which case the qualified title is
+      tried FIRST and alone: a plain-title fallback risks matching a
+      different, unrelated official release that just shares the base
+      title (e.g. an official "(Remix)" single, when what's wanted is
+      someone's unofficial bootleg of it) - better to fall through to
+      SoundCloud, where unofficial reworks actually tend to live, than
+      silently substitute the wrong version's artwork.
     - SoundCloud: goes straight for the remix-qualified title, since
       remixes/edits live there more often than a plain search would find.
     Returns (match_result, source_label) - source_label is None when
     nothing matched.
     """
+    has_named_qualifier = remix_qualified_title != search_title and title_has_named_qualifier(remix_qualified_title)
+
     if source == "itunes":
+        if has_named_qualifier:
+            match_result = search_cover_itunes(artist, remix_qualified_title, log=log, allow_loose_remix_match=True)
+            return match_result, ("iTunes" if match_result else None)
         match_result = search_cover_itunes(artist, search_title, log=log)
         if not match_result and remix_qualified_title != search_title:
             match_result = search_cover_itunes(artist, remix_qualified_title, log=log, allow_loose_remix_match=True)
         return match_result, ("iTunes" if match_result else None)
 
     if source == "spotify":
+        if has_named_qualifier:
+            match_result = search_cover_spotify(artist, remix_qualified_title, spotify_token, log=log)
+            return match_result, ("Spotify" if match_result else None)
         match_result = search_cover_spotify(artist, search_title, spotify_token, log=log)
         if not match_result and remix_qualified_title != search_title:
             match_result = search_cover_spotify(artist, remix_qualified_title, spotify_token, log=log)
