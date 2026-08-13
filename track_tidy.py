@@ -842,15 +842,16 @@ def is_generic_mix_qualifier(content):
     return content.lower().strip() in GENERIC_MIX_LABELS
 
 
-def title_has_named_qualifier(title):
+def find_named_qualifier_groups(title):
     """
-    True if `title` contains a parenthesized remix/edit/bootleg credit that
+    Returns every parenthesized remix/edit/bootleg credit in `title` that
     NAMES a specific person/version (e.g. "Royale BR Bootleg", "Raphael
     Palacci Remix") - more than just the bare mix-type keyword on its own.
     A lone "(Remix)" doesn't count as named (too ambiguous - could be
     anyone's, unlike a credit with an actual name attached), same as a
     purely generic label like "(Extended Mix)".
     """
+    named_groups = []
     for group in re.findall(r"\(([^)]*)\)", title):
         lowered = group.lower().strip()
         if lowered in GENERIC_MIX_LABELS:
@@ -858,8 +859,31 @@ def title_has_named_qualifier(title):
         words = lowered.split()
         has_keyword = any(keyword in words for keyword in ("remix", "edit", "reboot", "bootleg"))
         if has_keyword and len(words) > 1:
-            return True
-    return False
+            named_groups.append(group.strip())
+    return named_groups
+
+
+def title_has_named_qualifier(title):
+    """True if `title` contains at least one named qualifier - see find_named_qualifier_groups()."""
+    return bool(find_named_qualifier_groups(title))
+
+
+def named_qualifier_name_words(title):
+    """
+    Returns the significant "name" words (length >= 3, the mix-type
+    keyword itself excluded) from title's named qualifier(s), e.g. "Royale
+    BR Bootleg" -> {"royale"} ("br" is too short, "bootleg" is the keyword
+    itself, not part of the name). Empty set if there's no named qualifier.
+    Used to verify a candidate cover-search result actually credits the
+    SPECIFIC named remix/bootleg being looked for, not just the base song.
+    """
+    keyword_words = {"remix", "edit", "reboot", "bootleg"}
+    words = set()
+    for group in find_named_qualifier_groups(title):
+        for word in re.findall(r"\w+", group.lower()):
+            if len(word) >= 3 and word not in keyword_words:
+                words.add(word)
+    return words
 
 
 def remove_redundant_generic_mix(text):
@@ -1960,15 +1984,17 @@ def artist_names_match(expected_artist, returned_artist):
     return False
 
 
+def significant_words(text):
+    """Lowercased word set, ignoring short (<3 char) filler words like "a"/"ft"/"the"."""
+    return {w for w in re.findall(r"\w+", text.lower()) if len(w) >= 3}
+
+
 def title_words_overlap(expected_title, returned_title):
     """
     Checks that the returned title shares at least one meaningful word with the
     expected one, to reject a DIFFERENT song by the same (correct) artist
     (e.g. matching "Saint Laurent" when looking for "Je La Connais").
     """
-    def significant_words(text):
-        return {w for w in re.findall(r"\w+", text.lower()) if len(w) >= 3}
-
     expected_words = significant_words(expected_title)
     if not expected_words:
         return True  # nothing meaningful to compare against, don't block on it
@@ -2203,6 +2229,12 @@ def get_soundcloud_token(log=safe_print, on_rate_limited=None):
 
 
 def search_cover_soundcloud(artist, title, token, log=safe_print):
+    """
+    Checks up to 10 candidates, not just the top one - SoundCloud's
+    relevance ranking doesn't always put the exact upload we want first
+    (e.g. a specific named bootleg can easily rank behind more generic
+    uploads of the same base song), same reasoning as search_cover_itunes().
+    """
     if not token:
         return None
 
@@ -2210,7 +2242,7 @@ def search_cover_soundcloud(artist, title, token, log=safe_print):
         response = requests.get(
             "https://api.soundcloud.com/tracks",
             headers={"Authorization": f"OAuth {token}"},
-            params={"q": f"{artist} {title}", "limit": 1},
+            params={"q": f"{artist} {title}", "limit": 10},
             timeout=10,
         )
 
@@ -2223,38 +2255,53 @@ def search_cover_soundcloud(artist, title, token, log=safe_print):
             log(f"  [SoundCloud] No result at all for '{artist} - {title}'")
             return None
 
-        result = results[0]
-        # Same NFD/NFC issue as on the iTunes side - normalize before any
-        # comparison or logging.
-        track_title = unicodedata.normalize("NFC", result.get("title", ""))
-        uploader_name = unicodedata.normalize("NFC", result.get("user", {}).get("username", ""))
+        qualifier_words = named_qualifier_name_words(title)
 
-        artist_ok = (
-            artist_names_match(artist, track_title) or artist_names_match(artist, uploader_name)
-        ) and title_words_overlap(title, track_title)
+        for result in results:
+            # Same NFD/NFC issue as on the iTunes side - normalize before any
+            # comparison or logging.
+            track_title = unicodedata.normalize("NFC", result.get("title", ""))
+            uploader_name = unicodedata.normalize("NFC", result.get("user", {}).get("username", ""))
 
-        swapped_ok = (
-            artist_names_match(title, track_title) or artist_names_match(title, uploader_name)
-        ) and title_words_overlap(artist, track_title)
+            artist_ok = (
+                artist_names_match(artist, track_title) or artist_names_match(artist, uploader_name)
+            ) and title_words_overlap(title, track_title)
 
-        if not (artist_ok or swapped_ok):
-            log(
-                f"  [SoundCloud] Match rejected: expected '{artist} - {title}', "
-                f"got track title '{track_title}' / uploader '{uploader_name}'"
-            )
-            return None
+            swapped_ok = (
+                artist_names_match(title, track_title) or artist_names_match(title, uploader_name)
+            ) and title_words_overlap(artist, track_title)
 
-        cover_url = result.get("artwork_url")
-        if not cover_url:
-            return None
+            if not (artist_ok or swapped_ok):
+                continue
 
-        cover_url_hd = cover_url.replace("-large", "-t500x500")
-        image_response = requests.get(cover_url_hd, timeout=10)
+            # title_words_overlap only requires ONE shared word with the base
+            # title, which a DIFFERENT upload of the same song (e.g. a plain
+            # rip, or someone else's edit) can easily satisfy too - when a
+            # SPECIFIC remix/bootleg was asked for, also require its name to
+            # actually show up somewhere (track title or uploader), not just
+            # the base song.
+            if qualifier_words and not (qualifier_words & significant_words(f"{track_title} {uploader_name}")):
+                continue
 
-        if image_response.status_code == 200:
-            return image_response.content, uploader_name or track_title, track_title
+            cover_url = result.get("artwork_url")
+            if not cover_url:
+                continue
 
-        log(f"  [SoundCloud] Image download failed (HTTP {image_response.status_code}) for '{artist} - {title}'")
+            cover_url_hd = cover_url.replace("-large", "-t500x500")
+            image_response = requests.get(cover_url_hd, timeout=10)
+
+            if image_response.status_code == 200:
+                return image_response.content, uploader_name or track_title, track_title
+
+            log(f"  [SoundCloud] Image download failed (HTTP {image_response.status_code}) for '{artist} - {title}'")
+
+        top_result = results[0]
+        log(
+            f"  [SoundCloud] Match rejected (not an exact match among {len(results)} candidate(s)): "
+            f"expected '{artist} - {title}', got track title "
+            f"'{unicodedata.normalize('NFC', top_result.get('title', ''))}' / uploader "
+            f"'{unicodedata.normalize('NFC', top_result.get('user', {}).get('username', ''))}'"
+        )
         return None
 
     except Exception as error:
