@@ -256,7 +256,9 @@ class TaggerInterface:
         self._tooltip_window = None
         self._tooltip_key = None
         self._pending_double_click_after_id = None
-        self._removal_undo_stack = []  # list of [(original_index, info), ...] per "Remove from list" action
+        # Ctrl+Z stack, most recent last - entries are ("removal", [(original_index, info), ...])
+        # per Delete/"Remove from list" action, or ("edit", {...}) per Title/Artist cell edit.
+        self._undo_stack = []
         self._drag_row_id = None  # row being dragged to reorder, if any
         self._drag_moved = False
         self._table_font = tkfont.nametofont("TkDefaultFont")
@@ -1284,7 +1286,7 @@ class TaggerInterface:
         self.table.bind("<Button-3>", self._show_context_menu)
         self.table.bind("<Delete>", self._delete_selected_rows)
         self.table.bind("<Control-a>", self._select_all_rows)
-        self.table.bind("<Control-z>", self._undo_last_removal)
+        self.table.bind("<Control-z>", self._undo_last_action)
         self.table.bind("<Motion>", self._on_table_hover, add="+")
         self.table.bind("<Leave>", self._on_table_leave, add="+")
 
@@ -3171,7 +3173,7 @@ class TaggerInterface:
 
     def _delete_selected_rows(self, event=None):
         """Removes the selected row(s) from the list only - never touches
-        the actual file on disk. Ctrl+Z (_undo_last_removal) brings them
+        the actual file on disk. Ctrl+Z (_undo_last_action) brings them
         back at their original position."""
         selected_items = self.table.selection()
         if not selected_items:
@@ -3188,19 +3190,25 @@ class TaggerInterface:
         removed = [
             (index, info) for index, info in enumerate(self.scanned_plan) if info["file"] in selected_set
         ]
-        self._removal_undo_stack.append(removed)
+        self._undo_stack.append(("removal", removed))
         self.scanned_plan = [info for info in self.scanned_plan if info["file"] not in selected_set]
 
         self._restripe_rows()
         self._update_apply_button_label()
 
-    def _undo_last_removal(self, event=None):
-        """Ctrl+Z: brings back the most recently removed row(s) (via Delete
-        or "Remove from list"), each at its original position in the list."""
-        if not self._removal_undo_stack:
+    def _undo_last_action(self, event=None):
+        """Ctrl+Z: undoes the most recent removal (Delete/"Remove from
+        list") or Title/Artist cell edit, whichever happened last."""
+        if not self._undo_stack:
             return
-        removed = self._removal_undo_stack.pop()
+        action_type, payload = self._undo_stack.pop()
+        if action_type == "removal":
+            self._undo_removal(payload)
+        else:
+            self._undo_edit(payload)
 
+    def _undo_removal(self, removed):
+        """Brings back removed row(s), each at its original position in the list."""
         for index, info in sorted(removed, key=lambda pair: pair[0]):
             self.scanned_plan.insert(min(index, len(self.scanned_plan)), info)
             image_tk = self._create_thumbnail(info)
@@ -3220,6 +3228,24 @@ class TaggerInterface:
         self._update_apply_button_label()
         unit = "row" if len(removed) == 1 else "rows"
         self._append_to_journal(f"Restored {len(removed)} removed {unit}.")
+
+    def _undo_edit(self, edit_record):
+        """Reverts a committed Title/Artist cell edit back to whatever the
+        field held right before that edit (its own override/manual-flag/
+        fix_pending state at the time - not necessarily the original
+        detected value, if edits were made back to back)."""
+        info = edit_record["info"]
+        if info not in self.scanned_plan:
+            return  # the row was removed since (its own removal is a separate undo step)
+
+        field = edit_record["field"]
+        info[f"{field}_override"] = edit_record["old_override"]
+        info[f"{field}_override_is_manual"] = edit_record["old_override_is_manual"]
+        info["fix_pending"] = edit_record["old_fix_pending"]
+
+        if self.table.exists(info["file"]):
+            self.table.item(info["file"], values=self._build_row_values(info))
+        self._append_to_journal(f"Undid the {field} edit on '{info['file']}'.")
 
     def _move_row(self, info, direction):
         """Moves a row up (direction=-1) or down (direction=+1) in scanned_plan,
@@ -3431,7 +3457,15 @@ class TaggerInterface:
                 return
 
             new_value = edit_entry.get().strip()
-            info[f"{field}_override"] = new_value if new_value else None
+            new_override = new_value if new_value else None
+            if new_override != info.get(f"{field}_override"):
+                self._undo_stack.append(("edit", {
+                    "info": info, "field": field,
+                    "old_override": info.get(f"{field}_override"),
+                    "old_override_is_manual": info.get(f"{field}_override_is_manual"),
+                    "old_fix_pending": info.get("fix_pending"),
+                }))
+            info[f"{field}_override"] = new_override
             info[f"{field}_override_is_manual"] = bool(new_value)
             edit_entry.destroy()
 
