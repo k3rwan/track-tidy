@@ -949,6 +949,33 @@ def try_split_title_mix_artist(text):
     return None
 
 
+# A bare domain-looking token, e.g. "SpotiDownloader.com", "YTMP3.cc" - no
+# spaces, ending in a short dot-suffix. Matches the branding prefix various
+# "download this Spotify/YouTube track" tools stamp onto their output
+# filenames.
+DOWNLOADER_SITE_PREFIX_RE = re.compile(r"^\S+\.\w{2,4}$")
+
+
+def try_split_downloader_site_prefix(text):
+    """
+    Detects the "Site.com - Title - Artist" pattern some track-downloader
+    tools stamp onto their output filenames (exactly two dashes, where the
+    FIRST part looks like a bare website domain, never a real artist
+    name), e.g. "SpotiDownloader.com - Imagination - Samm" ->
+    artist="Samm", title="Imagination". Note this convention puts the
+    TITLE before the ARTIST, the reverse of the usual "Artist - Title".
+    Returns (artist, title), or None if the pattern doesn't match.
+    """
+    parts = re.split(r"\s+-\s+", text)
+    if len(parts) != 3:
+        return None
+
+    site_part, title_part, artist_part = parts
+    if not DOWNLOADER_SITE_PREFIX_RE.match(site_part.strip()):
+        return None
+    return artist_part.strip(), title_part.strip()
+
+
 def reformat_trailing_dash_mix(text):
     """
     If text ends with " - <mix descriptor>" (e.g. "Related - Original Mix"),
@@ -1024,6 +1051,14 @@ def parse_filename(file_name):
         artist = remix_match.group("artist").strip()
         remixer = remix_match.group("remixer").strip()
         title = f"{raw_title} ({remixer} Remix)"
+
+    # Special case: "Site.com - Title - Artist" (a downloader tool's branding
+    # prefix) - checked before the mix-artist case below since it's the more
+    # specific/certain signal of the two.
+    if artist is None:
+        site_title_artist = try_split_downloader_site_prefix(name_no_ext)
+        if site_title_artist:
+            artist, title = site_title_artist
 
     # Special case: "Title - Mix Info - Artist" (three dash-separated parts)
     if artist is None:
