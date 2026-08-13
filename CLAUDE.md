@@ -132,16 +132,14 @@ matching logic instead of a second cover-fetching path.
   default) - it's much slower (real audio analysis + a network call) than
   the fast text search, so running it for every file would meaningfully
   slow down a scan for no benefit on files that already match fine.
-- Works out of the box via a shared, embedded API key
-  (`ACOUSTID_DEFAULT_API_KEY`, base64-obfuscated like
-  `DISCORD_REPORT_WEBHOOK_URL` - same "not real secrecy" caveat) - unlike
+- Works out of the box via a single hardcoded API key
+  (`ACOUSTID_API_KEY` in track_tidy.py, Kevin's own) - unlike
   SoundCloud/Spotify, AcoustID API keys are meant to be per-application,
-  not per-user, so nobody has to register anything. Settings still has an
-  optional "Use my own AcoustID API key..." button (register at
-  https://acoustid.org/api-key) for anyone who wants to override it, e.g.
-  if the shared key ever gets rate-limited from everyone's combined
-  usage - worth keeping an eye on if AcoustID lookups start failing for
-  multiple users at once.
+  not per-user, so nobody registers anything, and there's no per-user
+  override anymore (removed - was Settings' "Use my own AcoustID API
+  key..." button/dialog). Since it's shared by every user, watch for
+  AcoustID lookups starting to fail for multiple users at once - that
+  would mean the key's free-tier rate limit is being hit collectively.
 - `fpcalc.exe`/`fpcalc` is bundled the same way as `ffmpeg.exe`/`ffmpeg`
   (gitignored, not committed - copy the binary from
   https://github.com/acoustid/chromaprint/releases into the project root
