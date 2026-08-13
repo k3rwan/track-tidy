@@ -1265,6 +1265,70 @@ class WriteTagsWavRiffInfoTests(unittest.TestCase):
         self.assertEqual(title, "New Title")
 
 
+class ProcessFilesTests(unittest.TestCase):
+    """Reported bug: a corrupted file ("can't sync to MPEG frame", a real
+    mutagen error for invalid MP3 audio data) raised uncaught from inside
+    the per-file loop, aborting process_files() entirely - every file
+    queued AFTER the bad one silently never got tagged or renamed, with
+    no indication why. Each file must be independent: one failure logs an
+    error and moves on to the next."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_music_folder = tagger.MUSIC_FOLDER
+        tagger.MUSIC_FOLDER = self._tmp_dir.name
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self._good_source = os.path.join(project_root, "fart.wav")
+
+    def tearDown(self):
+        tagger.MUSIC_FOLDER = self._original_music_folder
+        self._tmp_dir.cleanup()
+
+    def _make_plan_entry(self, file_name, artist, title):
+        return {
+            "file": file_name,
+            "artist_override": None,
+            "title_override": None,
+            "detected_artist": artist,
+            "detected_title": title,
+            "current_artist": None,
+            "current_title": None,
+            "current_cover_bytes": None,
+            "has_cover": False,
+            "apply_changes": True,
+            "convert": False,
+            "found_cover_image": None,
+            "processed": False,
+        }
+
+    def test_corrupted_file_does_not_abort_the_rest_of_the_batch(self):
+        corrupted_path = os.path.join(self._tmp_dir.name, "corrupted.mp3")
+        with open(corrupted_path, "wb") as f:
+            f.write(b"ID3" + b"\x00" * 200)  # not valid MP3 audio data
+
+        good_path = os.path.join(self._tmp_dir.name, "good_track.mp3")
+        shutil.copy(self._good_source, good_path)
+
+        plan = [
+            self._make_plan_entry("corrupted.mp3", "Bad Artist", "Bad Title"),
+            self._make_plan_entry("good_track.mp3", "Daft Punk", "One More Time"),
+        ]
+
+        results = []
+        tagger.process_files(
+            plan, log=lambda *_: None, on_file_processed=lambda ident, ok: results.append((ident, ok)),
+        )
+
+        self.assertEqual(results, [("corrupted.mp3", False), ("good_track.mp3", True)])
+        self.assertTrue(plan[0]["processed"])
+        self.assertTrue(plan[1]["processed"])
+
+        remaining_files = set(os.listdir(self._tmp_dir.name))
+        self.assertIn("Daft Punk - One More Time.mp3", remaining_files)
+        # The corrupted file is left alone (not silently deleted/renamed).
+        self.assertIn("corrupted.mp3", remaining_files)
+
+
 class SettingsPersistenceTests(unittest.TestCase):
     def setUp(self):
         self._original_settings_file = tagger.SETTINGS_FILE

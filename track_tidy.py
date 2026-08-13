@@ -3026,21 +3026,39 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
         identifier = file_name  # stable key to find the row again in the UI
         log(f"File: {file_name}")
 
-        full_path = os.path.join(MUSIC_FOLDER, file_name)
-        converted_this_file = False
+        try:
+            full_path = os.path.join(MUSIC_FOLDER, file_name)
+            converted_this_file = False
 
-        target_format = _resolve_conversion_target(file_name) if info.get("convert") else None
-        if target_format:
-            source_extension = os.path.splitext(file_name)[1].lstrip(".").upper()
-            if target_format == "mp3":
-                log(f"  Converting .{source_extension.lower()} -> .mp3 (320 kbps)...")
-                new_path = convert_to_mp3(full_path)
-            else:
-                log(f"  Converting .{source_extension.lower()} -> .aiff...")
-                new_path = convert_wav_to_aiff(full_path)
+            target_format = _resolve_conversion_target(file_name) if info.get("convert") else None
+            if target_format:
+                source_extension = os.path.splitext(file_name)[1].lstrip(".").upper()
+                if target_format == "mp3":
+                    log(f"  Converting .{source_extension.lower()} -> .mp3 (320 kbps)...")
+                    new_path = convert_to_mp3(full_path)
+                else:
+                    log(f"  Converting .{source_extension.lower()} -> .aiff...")
+                    new_path = convert_wav_to_aiff(full_path)
 
-            if not new_path:
-                log("  Conversion failed, file skipped.\n")
+                if not new_path:
+                    log("  Conversion failed, file skipped.\n")
+                    info["processed"] = True
+                    if on_progress:
+                        on_progress(index, total)
+                    if on_file_processed:
+                        on_file_processed(identifier, False)
+                    continue
+
+                full_path = new_path
+                file_name = os.path.relpath(new_path, MUSIC_FOLDER)
+                converted_this_file = True
+                log(f"  Converted to: '{file_name}'")
+
+            artist = info.get("artist_override") or info.get("detected_artist")
+            title = info.get("title_override") or info.get("detected_title")
+
+            if not title:
+                log("  Missing title, file skipped.\n")
                 info["processed"] = True
                 if on_progress:
                     on_progress(index, total)
@@ -3048,79 +3066,73 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
                     on_file_processed(identifier, False)
                 continue
 
-            full_path = new_path
-            file_name = os.path.relpath(new_path, MUSIC_FOLDER)
-            converted_this_file = True
-            log(f"  Converted to: '{file_name}'")
+            log(f"  Artist: '{artist}' | Title: '{title}'")
 
-        artist = info.get("artist_override") or info.get("detected_artist")
-        title = info.get("title_override") or info.get("detected_title")
+            update_title = update_artist = update_cover = info.get("apply_changes", True)
 
-        if not title:
-            log("  Missing title, file skipped.\n")
-            info["processed"] = True
-            if on_progress:
-                on_progress(index, total)
-            if on_file_processed:
-                on_file_processed(identifier, False)
-            continue
+            force_remove_if_missing = bool(detect_fuviclan_mention(file_name))
 
-        log(f"  Artist: '{artist}' | Title: '{title}'")
+            cover_image = info.get("found_cover_image") if update_cover else None
 
-        update_title = update_artist = update_cover = info.get("apply_changes", True)
-
-        force_remove_if_missing = bool(detect_fuviclan_mention(file_name))
-
-        cover_image = info.get("found_cover_image") if update_cover else None
-
-        write_tags(
-            full_path, artist, title, cover_image, force_remove_if_missing,
-            update_title=update_title, update_artist=update_artist, update_cover=update_cover,
-            log=log,
-        )
-
-        if update_title and update_artist:
-            folder_part = os.path.dirname(file_name)
-            extension = os.path.splitext(file_name)[1]
-            new_base_name = sanitize_filename(build_display_name(artist, title)) + extension
-            new_name = os.path.join(folder_part, new_base_name) if folder_part else new_base_name
-            new_full_path = os.path.join(MUSIC_FOLDER, new_name)
-
-            if new_full_path != full_path:
-                os.rename(full_path, new_full_path)
-                log(f"  File renamed: '{new_name}'")
-                file_name = new_name
-
-        info["final_path"] = file_name  # actual current path, useful for a later fix
-
-        # Only log a history entry when tags actually changed (apply_changes
-        # was True) - an unchecked row still reaches this point (e.g. it
-        # just needed converting), but old==new for it, so logging it would
-        # just clutter the history with entries there's nothing to restore.
-        if update_title:
-            log_history_entry(
-                old_file=info["file"],
-                new_file=file_name,
-                old_artist=info.get("current_artist"),
-                old_title=info.get("current_title"),
-                new_artist=artist,
-                new_title=title,
-                cover_updated=bool(update_cover and (cover_image or force_remove_if_missing)),
-                converted=converted_this_file,
-                folder=os.path.abspath(MUSIC_FOLDER) if MUSIC_FOLDER else None,
-                old_cover_bytes=info.get("current_cover_bytes") if info.get("has_cover") else None,
+            write_tags(
+                full_path, artist, title, cover_image, force_remove_if_missing,
+                update_title=update_title, update_artist=update_artist, update_cover=update_cover,
+                log=log,
             )
 
-        if update_cover and cover_image:
-            log("  Tags updated (cover found and added).\n")
-        elif update_cover and force_remove_if_missing:
-            log("  Tags updated (no cover found -> removed).\n")
-        else:
-            log("  Tags updated.\n")
+            if update_title and update_artist:
+                folder_part = os.path.dirname(file_name)
+                extension = os.path.splitext(file_name)[1]
+                new_base_name = sanitize_filename(build_display_name(artist, title)) + extension
+                new_name = os.path.join(folder_part, new_base_name) if folder_part else new_base_name
+                new_full_path = os.path.join(MUSIC_FOLDER, new_name)
 
-        info["processed"] = True
-        if on_file_processed:
-            on_file_processed(identifier, True)
+                if new_full_path != full_path:
+                    os.rename(full_path, new_full_path)
+                    log(f"  File renamed: '{new_name}'")
+                    file_name = new_name
+
+            info["final_path"] = file_name  # actual current path, useful for a later fix
+
+            # Only log a history entry when tags actually changed (apply_changes
+            # was True) - an unchecked row still reaches this point (e.g. it
+            # just needed converting), but old==new for it, so logging it would
+            # just clutter the history with entries there's nothing to restore.
+            if update_title:
+                log_history_entry(
+                    old_file=info["file"],
+                    new_file=file_name,
+                    old_artist=info.get("current_artist"),
+                    old_title=info.get("current_title"),
+                    new_artist=artist,
+                    new_title=title,
+                    cover_updated=bool(update_cover and (cover_image or force_remove_if_missing)),
+                    converted=converted_this_file,
+                    folder=os.path.abspath(MUSIC_FOLDER) if MUSIC_FOLDER else None,
+                    old_cover_bytes=info.get("current_cover_bytes") if info.get("has_cover") else None,
+                )
+
+            if update_cover and cover_image:
+                log("  Tags updated (cover found and added).\n")
+            elif update_cover and force_remove_if_missing:
+                log("  Tags updated (no cover found -> removed).\n")
+            else:
+                log("  Tags updated.\n")
+
+            info["processed"] = True
+            if on_file_processed:
+                on_file_processed(identifier, True)
+
+        except Exception as error:
+            # Never let one bad file (e.g. corrupted audio data mutagen
+            # can't parse - "can't sync to MPEG frame" and similar) abort
+            # the whole batch - every file queued after it would otherwise
+            # silently never get tagged/renamed at all, with nothing in the
+            # log to explain why.
+            log(f"  Error processing '{file_name}': {error}\n")
+            info["processed"] = True
+            if on_file_processed:
+                on_file_processed(identifier, False)
 
         if on_progress:
             on_progress(index, total)
