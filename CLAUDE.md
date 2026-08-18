@@ -184,15 +184,26 @@ Spotify not configured" startup nag) was removed - credentials are now
 always populated (real or the shared default), so it could never fire
 again anyway.
 
-## Spotify removed
+## Spotify - absolute last resort only
 
-Spotify was dropped entirely as a cover source (iTunes + SoundCloud
-cover it well enough) - `USE_SPOTIFY`, `SPOTIFY_CLIENT_ID`/`_SECRET`,
-`get_spotify_token()`, `search_cover_spotify()`, and every Settings UI
-element for it are gone from both track_tidy.py and interface.py. If
-Spotify ever needs to come back, the git history around this removal
-(and the AcoustID/shared-SoundCloud-credentials sections above) shows
-the exact shape a third source integration takes in this codebase.
+Spotify was dropped entirely at first (iTunes + SoundCloud "cover it
+well enough"), then re-added after a real report proved that wrong: a
+French rap track (Alonzo/Tiakola) was on Spotify but in neither iTunes's
+nor SoundCloud's index. Unlike before, it's now wired in ONLY as the
+very last fallback - tried after iTunes, SoundCloud, AND the
+AcoustID-corrected retry of both have all come up empty (end of
+`scan_files()`, and inside `search_cover_manual()` for the "fix Artist/
+Title and search again" dialog / "Rescan" context-menu action) - never
+a normal priority source. `USE_SPOTIFY` (Settings: "Try Spotify as an
+absolute last resort...", on by default) gates it independently of
+iTunes/SoundCloud.
+
+Uses the same shared-embedded-credentials pattern as SoundCloud
+(`SPOTIFY_DEFAULT_CLIENT_ID`/`_SECRET`, Kevin's own app registration,
+base64-obfuscated) with the same accepted ToS risk, confirmed with
+Kevin back when Spotify was first added - re-verified still working
+(HTTP 200) when re-adding it. No Settings UI for a personal override,
+same as SoundCloud.
 
 ## Cross-platform (Windows/macOS)
 

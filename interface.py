@@ -278,6 +278,7 @@ class TaggerInterface:
         self.use_itunes_var = tk.BooleanVar(value=saved_settings.get("use_itunes", True))
         self.use_soundcloud_var = tk.BooleanVar(value=saved_settings.get("use_soundcloud", True))
         self.use_acoustid_var = tk.BooleanVar(value=saved_settings.get("use_acoustid_fallback", True))
+        self.use_spotify_var = tk.BooleanVar(value=saved_settings.get("use_spotify", True))
         self.auto_convert_var = tk.BooleanVar(value=saved_settings.get("auto_convert_mp3", False))
         self.auto_convert_wav_aiff_var = tk.BooleanVar(value=saved_settings.get("auto_convert_wav_to_aiff", True))
         self.show_log_var = tk.BooleanVar(value=saved_settings.get("show_log_section", False))
@@ -285,6 +286,7 @@ class TaggerInterface:
         tagger.USE_ITUNES = self.use_itunes_var.get()
         tagger.USE_SOUNDCLOUD = self.use_soundcloud_var.get()
         tagger.USE_ACOUSTID_FALLBACK = self.use_acoustid_var.get()
+        tagger.USE_SPOTIFY = self.use_spotify_var.get()
         tagger.AUTO_CONVERT_MP3 = self.auto_convert_var.get()
         tagger.AUTO_CONVERT_WAV_TO_AIFF = self.auto_convert_wav_aiff_var.get()
 
@@ -339,6 +341,11 @@ class TaggerInterface:
         enabled = self.use_acoustid_var.get()
         tagger.USE_ACOUSTID_FALLBACK = enabled
         tagger.save_setting("use_acoustid_fallback", enabled)
+
+    def _on_use_spotify_changed(self):
+        enabled = self.use_spotify_var.get()
+        tagger.USE_SPOTIFY = enabled
+        tagger.save_setting("use_spotify", enabled)
 
     def _on_auto_convert_changed(self):
         enabled = self.auto_convert_var.get()
@@ -414,6 +421,7 @@ class TaggerInterface:
             ("use_itunes", True),
             ("use_soundcloud", True),
             ("use_acoustid_fallback", True),
+            ("use_spotify", True),
             ("auto_convert_mp3", False),
             ("auto_convert_wav_to_aiff", True),
             ("show_log_section", False),
@@ -423,12 +431,14 @@ class TaggerInterface:
         tagger.USE_ITUNES = True
         tagger.USE_SOUNDCLOUD = True
         tagger.USE_ACOUSTID_FALLBACK = True
+        tagger.USE_SPOTIFY = True
         tagger.AUTO_CONVERT_MP3 = False
         tagger.AUTO_CONVERT_WAV_TO_AIFF = True
 
         self.use_itunes_var.set(True)
         self.use_soundcloud_var.set(True)
         self.use_acoustid_var.set(True)
+        self.use_spotify_var.set(True)
         self.auto_convert_var.set(False)
         self.auto_convert_wav_aiff_var.set(True)
         self._sync_convert_checkboxes_state()
@@ -1487,6 +1497,11 @@ class TaggerInterface:
             text="Identify badly-named tracks from the audio itself (AcoustID)",
             variable=self.use_acoustid_var, command=self._on_use_acoustid_changed,
         ).pack(anchor="w", padx=10, pady=(0, 10))
+        ttk.Checkbutton(
+            sources_frame,
+            text="Try Spotify as an absolute last resort, if iTunes/SoundCloud/AcoustID all fail",
+            variable=self.use_spotify_var, command=self._on_use_spotify_changed,
+        ).pack(anchor="w", padx=10, pady=(0, 10))
 
         # Renamed from "Behavior" - now holds only actual file-handling
         # toggles, not one-off maintenance actions (those moved to "App").
@@ -2354,10 +2369,15 @@ class TaggerInterface:
                 soundcloud_token = tagger.get_soundcloud_token(
                     log=self._append_to_journal, on_auth_error=self._on_source_auth_error,
                 )
+            spotify_token = None
+            if tagger.USE_SPOTIFY and tagger.SPOTIFY_CLIENT_ID and tagger.SPOTIFY_CLIENT_SECRET:
+                spotify_token = tagger.get_spotify_token(
+                    log=self._append_to_journal, on_auth_error=self._on_source_auth_error,
+                )
             for info, artist, title in to_search:
                 self._append_to_journal(f"Rescanning '{artist} - {title}'...")
                 found_cover_image, cover_source, returned_artist, returned_title = tagger.search_cover_manual(
-                    artist, title, soundcloud_token, log=self._append_to_journal,
+                    artist, title, soundcloud_token, log=self._append_to_journal, spotify_token=spotify_token,
                 )
                 self.message_queue.put((
                     "fix_row_search_result",
