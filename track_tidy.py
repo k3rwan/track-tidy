@@ -1,17 +1,16 @@
 """
 Organizes tags (Artist/Title/Cover) for audio files based on the filename,
-and fetches a cover online from whichever of iTunes/Spotify/SoundCloud are
-enabled (each independently, in that priority order). Any format other than
-MP3 (WAV, FLAC, AAC, M4A, OGG, WMA, AIFF, OPUS...) is converted to MP3
+and fetches a cover online from whichever of iTunes/SoundCloud are enabled
+(each independently, in that priority order). Any format other than MP3
+(WAV, FLAC, AAC, M4A, OGG, WMA, AIFF, OPUS...) is converted to MP3
 (320 kbps) before tagging.
 
 Expected filename format: "Artist - Title.ext"
 
 Contents (in the order they appear below):
     1. Configuration & credentials       - path helpers (app_base_dir,
-                                            user_config_dir); SoundCloud and
-                                            Spotify credentials;
-                                            USE_ITUNES/USE_SPOTIFY/
+                                            user_config_dir); SoundCloud
+                                            credentials; USE_ITUNES/
                                             USE_SOUNDCLOUD; the internet
                                             connectivity check; APP_VERSION,
                                             the update check, and
@@ -29,18 +28,18 @@ Contents (in the order they appear below):
     4. Folder extraction (flatten)        - extract_audio_files, remove_empty_subfolders
     5. Folder listing & duplicates        - list_audio_files, find_dot_underscore_duplicates
     6. Search query cleaning & mentions   - strip_parentheses, FuviClan/parenthetical detection
-    7. Scanning (read-only)               - scan_one_file, scan_files
+    7. Scanning (read-only)               - scan_files
     8. Cover match validation             - artist_names_match, title_words_overlap,
                                             fix_swapped_artist_title
     9. Cover search - iTunes              - search_cover_itunes
     10. Cover search - SoundCloud         - get_soundcloud_token, search_cover_soundcloud
-    11. Cover search - Spotify            - get_spotify_token, search_cover_spotify
-    12. Format conversion                 - find_ffmpeg, convert_to_mp3
-    13. Tag writing                       - open_audio_file, write_tags, fix_title_artist
-    14. Processing (Apply)                - process_files, process_folder, main
+    11. Format conversion                 - find_ffmpeg, convert_to_mp3
+    12. Tag writing                       - open_audio_file, write_tags, fix_title_artist
+    13. Processing (Apply)                - process_files, process_folder, main
 """
 
 import os
+import io
 import socket
 import hashlib
 import uuid
@@ -59,6 +58,7 @@ import requests
 import keyring
 import platformdirs
 import acoustid
+from PIL import Image
 from mutagen import File as MutagenFile
 from mutagen.mp3 import MP3
 from mutagen.wave import WAVE
@@ -113,7 +113,7 @@ def user_config_dir():
     return config_dir
 
 
-# --- SoundCloud/Spotify credentials (via the OS's native credential store -
+# --- SoundCloud credentials (via the OS's native credential store -
 # Windows Credential Manager, macOS Keychain, Secret Service on Linux) ---
 
 KEYRING_SERVICE = "Track-Tidy"
@@ -148,9 +148,9 @@ def read_credential(key):
     which doesn't exist cross-platform) - those are simply left in place,
     unused, and read_credential returns None for them like any other
     missing credential. In practice this means: upgrading from that
-    specific older version asks you to re-enter SoundCloud/Spotify
-    credentials once; upgrading from anything older (plaintext) or newer
-    (already keyring-based) is seamless."""
+    specific older version asks you to re-enter SoundCloud credentials
+    once; upgrading from anything older (plaintext) or newer (already
+    keyring-based) is seamless."""
     try:
         value = keyring.get_password(KEYRING_SERVICE, key)
     except Exception as error:
@@ -173,15 +173,44 @@ def read_credential(key):
     return value.strip() if value else None
 
 
-SOUNDCLOUD_CLIENT_ID = read_credential(CLIENT_ID_KEY)
-SOUNDCLOUD_CLIENT_SECRET = read_credential(CLIENT_SECRET_KEY)
-SPOTIFY_CLIENT_ID = read_credential(SPOTIFY_CLIENT_ID_KEY)
-SPOTIFY_CLIENT_SECRET = read_credential(SPOTIFY_CLIENT_SECRET_KEY)
+# Shared, embedded default app credentials so most users don't have to
+# register their own SoundCloud app - Kevin's own, used as a fallback
+# whenever a user hasn't saved their own credentials in Settings.
+# base64, not encryption - same reasoning as DISCORD_REPORT_WEBHOOK_URL:
+# can't be kept truly secret from this app's own compiled binary, this
+# just keeps it off a plain `strings` scan. Unlike ACOUSTID_API_KEY,
+# distributing an app's client secret like this is against SoundCloud's
+# own developer terms - accepted risk (confirmed with Kevin): if it's
+# ever extracted and abused, SoundCloud could suspend the app
+# credentials entirely, breaking this for every user at once, not just
+# the abuser. Watch for SoundCloud auth suddenly failing for multiple
+# users if that ever happens.
+_SOUNDCLOUD_DEFAULT_CLIENT_ID_B64 = "SECRET_REMOVED"
+_SOUNDCLOUD_DEFAULT_CLIENT_SECRET_B64 = "SECRET_REMOVED"
+SOUNDCLOUD_DEFAULT_CLIENT_ID = base64.b64decode(_SOUNDCLOUD_DEFAULT_CLIENT_ID_B64).decode("ascii")
+SOUNDCLOUD_DEFAULT_CLIENT_SECRET = base64.b64decode(_SOUNDCLOUD_DEFAULT_CLIENT_SECRET_B64).decode("ascii")
+
+SOUNDCLOUD_CLIENT_ID = read_credential(CLIENT_ID_KEY) or SOUNDCLOUD_DEFAULT_CLIENT_ID
+SOUNDCLOUD_CLIENT_SECRET = read_credential(CLIENT_SECRET_KEY) or SOUNDCLOUD_DEFAULT_CLIENT_SECRET
+
+# Same reasoning/risk as SOUNDCLOUD_DEFAULT_CLIENT_ID/_SECRET above, this
+# time against Spotify's developer terms - accepted risk (confirmed with
+# Kevin). Spotify is only ever tried as an absolute last resort (after
+# iTunes, SoundCloud, AND the AcoustID-corrected retry of both have all
+# come up empty - see the end of scan_files()), not a normal priority
+# source, so this should get hit rarely.
+_SPOTIFY_DEFAULT_CLIENT_ID_B64 = "SECRET_REMOVED"
+_SPOTIFY_DEFAULT_CLIENT_SECRET_B64 = "SECRET_REMOVED"
+SPOTIFY_DEFAULT_CLIENT_ID = base64.b64decode(_SPOTIFY_DEFAULT_CLIENT_ID_B64).decode("ascii")
+SPOTIFY_DEFAULT_CLIENT_SECRET = base64.b64decode(_SPOTIFY_DEFAULT_CLIENT_SECRET_B64).decode("ascii")
+
+SPOTIFY_CLIENT_ID = read_credential(SPOTIFY_CLIENT_ID_KEY) or SPOTIFY_DEFAULT_CLIENT_ID
+SPOTIFY_CLIENT_SECRET = read_credential(SPOTIFY_CLIENT_SECRET_KEY) or SPOTIFY_DEFAULT_CLIENT_SECRET
 
 # AcoustID API keys are meant to be per-APPLICATION, one key shared by every
-# user of that app - unlike SoundCloud/Spotify, which need each user's own
-# app credentials, so this one is just hardcoded rather than something
-# every user has to configure.
+# user of that app - unlike SoundCloud, which needs each user's own app
+# credentials, so this one is just hardcoded rather than something every
+# user has to configure.
 ACOUSTID_API_KEY = "REDACTED-ACOUSTID-KEY"
 
 
@@ -218,8 +247,8 @@ def check_internet_connection(timeout=2.5):
     Quick, dependency-free connectivity check - opens a raw TCP connection
     to a well-known, always-up host (Google's public DNS) rather than doing
     a full HTTP request, so it stays fast and doesn't depend on any of the
-    services this app actually talks to (iTunes/Spotify/SoundCloud/GitHub)
-    being reachable specifically.
+    services this app actually talks to (iTunes/SoundCloud/GitHub) being
+    reachable specifically.
     """
     try:
         socket.create_connection(("8.8.8.8", 53), timeout=timeout).close()
@@ -432,17 +461,20 @@ def send_track_report(info, reporter_name=None, timeout=10):
     fix later. Attaches the existing cover (as a thumbnail) and/or the
     online-suggested cover (as the main image) when available, so a missing/
     wrong cover is visible at a glance instead of just implied by text.
-    Returns True on success, False on any failure (never raises - a failed
-    report shouldn't disrupt the user). Also False if called again within
-    REPORT_COOLDOWN_SECONDS of the last report (see the module comment
-    above - the webhook URL can't be kept truly secret from this app's own
-    binary, so this bounds how fast a single client can flood the channel
-    if it's ever extracted).
+
+    Returns (True, None) on success, (False, reason) on any failure (never
+    raises - a failed report shouldn't disrupt the user) - reason is one of
+    "cooldown" (called again within REPORT_COOLDOWN_SECONDS of the last
+    report - see the module comment above), "http_error" (Discord itself
+    rejected the request - webhook revoked, Discord-side rate limit...),
+    or "network_error" (couldn't even reach Discord - a real connectivity
+    problem). Kept distinct so the UI doesn't blame "no internet connection"
+    for what's actually the client-side cooldown or a Discord-side issue.
     """
     global _last_report_time
     now = time.time()
     if now - _last_report_time < REPORT_COOLDOWN_SECONDS:
-        return False
+        return False, "cooldown"
     _last_report_time = now
 
     fields = [
@@ -479,9 +511,11 @@ def send_track_report(info, reporter_name=None, timeout=10):
             )
         else:
             response = requests.post(DISCORD_REPORT_WEBHOOK_URL, json=payload, timeout=timeout)
-        return response.status_code in (200, 204)
+        if response.status_code in (200, 204):
+            return True, None
+        return False, "http_error"
     except Exception:
-        return False
+        return False, "network_error"
 
 
 # Windows usernames that never trigger the automatic "new install"/"scan
@@ -804,13 +838,18 @@ SUPPORTED_EXTENSIONS = (
 # List of mentions to automatically strip out (add more if needed)
 MENTIONS_TO_REMOVE = []
 
-# Which cover sources are enabled (each set independently by the UI) - all
-# three default to what always worked before Spotify existed (iTunes +
-# SoundCloud on, Spotify off). Whichever are enabled are tried in a fixed
-# priority order: iTunes, then Spotify, then SoundCloud - see
-# _search_one_source() / scan_one_file().
+# Which cover sources are enabled (each set independently by the UI) -
+# whichever are enabled are tried in a fixed priority order: iTunes, then
+# Spotify, then SoundCloud - see _search_one_source() / search_cover_manual().
+# iTunes and Spotify are both curated commercial catalogs; SoundCloud is
+# community-uploaded and far more prone to a wrong match (an unrelated
+# repost, a fan edit...) - real report: SoundCloud "succeeded" with a
+# non-official image (a radio freestyle photo) before Spotify ever got a
+# chance to offer the track's actual official cover. SoundCloud stays
+# useful as the final fallback for remixes/edits that live there and
+# nowhere else.
 USE_ITUNES = True
-USE_SPOTIFY = False
+USE_SPOTIFY = True
 USE_SOUNDCLOUD = True
 
 
@@ -831,7 +870,7 @@ def enabled_cover_sources():
 # it needs to read/analyze the actual audio (much slower than a text search)
 # and would just waste API calls on files the fast path already handles
 # fine. Needs an AcoustID API key configured (see ACOUSTID_API_KEY) - a
-# no-op without one, same as SoundCloud/Spotify with no credentials.
+# no-op without one, same as SoundCloud with no credentials.
 USE_ACOUSTID_FALLBACK = True
 
 # Whether non-MP3, non-WAV, non-AIFF files get converted to MP3 (320 kbps)
@@ -1156,6 +1195,7 @@ def resolve_artist_title(file_name, current_artist, current_title):
     recomputing it, so the two never drift apart.
     """
     detected_artist, detected_title = parse_filename(file_name)
+    filename_artist, filename_title = detected_artist, detected_title
 
     if detected_artist is None and detected_title is None:
         if current_artist and current_title:
@@ -1204,8 +1244,28 @@ def resolve_artist_title(file_name, current_artist, current_title):
     # truncated/garbled even when the tags themselves are correct.
     tags_already_present = bool(current_artist and current_title) and not title_looks_combined
     if tags_already_present:
-        detected_artist = current_artist
-        detected_title = clean_title(current_title)
+        # A file's tags sometimes split a NAMED remix credit (e.g. "(Clement
+        # Chapelle Remix)") by moving the remixer into the artist field and
+        # collapsing the title down to a bare generic "(Remix)" - losing the
+        # remixer's name the filename itself still spells out in full. Since
+        # that's strictly less information than the filename has, prefer the
+        # filename's own artist/title in that specific case rather than
+        # trusting the (technically "already present") tags as usual.
+        remixer_lost_in_tags = False
+        if filename_title and title_has_named_qualifier(filename_title) and not title_has_named_qualifier(current_title):
+            for group in find_named_qualifier_groups(filename_title):
+                remixer_name = re.sub(r"\b(?:remix|edit|reboot|bootleg)\b", "", group, flags=re.IGNORECASE)
+                remixer_name = re.sub(r"\s+", " ", remixer_name).strip()
+                if remixer_name and remixer_name.lower() in current_artist.lower():
+                    remixer_lost_in_tags = True
+                    break
+
+        if remixer_lost_in_tags:
+            detected_artist = filename_artist
+            detected_title = clean_title(filename_title)
+        else:
+            detected_artist = current_artist
+            detected_title = clean_title(current_title)
 
     return detected_artist, detected_title, tags_already_present
 
@@ -1552,6 +1612,74 @@ def detect_fuviclan_mention(file_name):
     return match.group(0) if match else None
 
 
+# Perceptual hashes (dHash, 8x8) of known "placeholder" covers - a
+# downloaded file sometimes already has one of these baked in even when
+# its filename doesn't mention the source that added it (unlike the
+# FUVICLAN_PATTERN case above, which relies on the filename saying so).
+# Also checked against a freshly found candidate cover from iTunes/
+# SoundCloud (see is_banned_cover_image's call sites) - a generic
+# "aesthetic"/branding photo a repost account reuses across every one of
+# its uploads can otherwise pass the artist/title text match despite
+# having nothing to do with the actual release.
+BANNED_COVER_HASHES = (
+    # 5 variants of the same "Fuvi Clan" watermark artwork on a different
+    # background - kept as separate entries since the backgrounds differ
+    # enough that a single average hash wouldn't recognize all 5.
+    0x80848E8E8E06B6FE,
+    0xB8962B4D170F8C41,
+    0x8024D4B2E8F1D31C,
+    0xCCAA4D4D960F8A8E,
+    0x0962B4D170F8EE9,
+    # Generic "girl in a pink coat" lifestyle photo, reused by a SoundCloud
+    # "aesthetic playlist" repost account across unrelated tracks.
+    0x30B5A7A4C6891113,
+)
+
+BANNED_COVER_HASH_THRESHOLD = 6  # Hamming distance - see is_banned_cover_image()
+
+
+def _cover_dhash(image_bytes, hash_size=8):
+    """
+    Computes a difference hash (dHash) of an image: resizes down to a tiny
+    grayscale grid and encodes, bit by bit, whether each pixel is brighter
+    than its right neighbor. Small enough a fingerprint that a JPEG
+    re-compression or resize of the SAME image (e.g. re-hosted by a
+    different download source) still lands only a few bits away, while an
+    unrelated image lands dozens of bits away - see
+    BANNED_COVER_HASH_THRESHOLD. Returns None if the bytes aren't a valid
+    image.
+    """
+    try:
+        image = Image.open(io.BytesIO(image_bytes)).convert("L").resize((hash_size + 1, hash_size), Image.LANCZOS)
+    except Exception:
+        return None
+    pixels = list(image.getdata())
+    bits = 0
+    for row in range(hash_size):
+        row_start = row * (hash_size + 1)
+        for col in range(hash_size):
+            bits <<= 1
+            if pixels[row_start + col] > pixels[row_start + col + 1]:
+                bits |= 1
+    return bits
+
+
+def is_banned_cover_image(cover_bytes):
+    """
+    Whether cover_bytes visually matches one of BANNED_COVER_HASHES closely
+    enough to be considered the same placeholder image, not a coincidence.
+    """
+    if not cover_bytes:
+        return False
+    cover_hash = _cover_dhash(cover_bytes)
+    if cover_hash is None:
+        return False
+    return any(
+        bin(cover_hash ^ banned_hash).count("1") <= BANNED_COVER_HASH_THRESHOLD
+        for banned_hash in BANNED_COVER_HASHES
+    )
+
+
 def detect_parenthetical_mentions(text):
     """
     Returns every parenthesized OR bracketed group found in the given text
@@ -1579,11 +1707,12 @@ def detect_parenthetical_mentions(text):
 # 7. SCANNING (READ-ONLY)
 # ============================================================================
 
-def _search_one_source(source, artist, search_title, remix_qualified_title, spotify_token, soundcloud_token, log):
+def _search_one_source(source, artist, search_title, remix_qualified_title, soundcloud_token, spotify_token, log):
     """
     Tries a single cover source, using that provider's own established
     query strategy:
-    - iTunes/Spotify: the plain (parens-stripped) title first, then a
+    - iTunes/Spotify: both curated commercial catalogs, so they share the
+      same strategy - the plain (parens-stripped) title first, then a
       retry with the remix qualifier kept in the query if that misses and
       the two titles actually differ (e.g. a heavily-remixed song where
       the plain query ranks a different remix first) - UNLESS the
@@ -1602,36 +1731,40 @@ def _search_one_source(source, artist, search_title, remix_qualified_title, spot
     """
     has_named_qualifier = remix_qualified_title != search_title and title_has_named_qualifier(remix_qualified_title)
 
-    if source == "itunes":
+    if source in ("itunes", "spotify"):
+        search_function = search_cover_itunes if source == "itunes" else (
+            lambda a, t, log, allow_loose_remix_match=False: search_cover_spotify(a, t, spotify_token, log=log)
+        )
+        label = "iTunes" if source == "itunes" else "Spotify"
         if has_named_qualifier:
-            match_result = search_cover_itunes(artist, remix_qualified_title, log=log, allow_loose_remix_match=True)
-            return match_result, ("iTunes" if match_result else None)
-        match_result = search_cover_itunes(artist, search_title, log=log)
+            match_result = search_function(artist, remix_qualified_title, log=log, allow_loose_remix_match=True)
+            return match_result, (label if match_result else None)
+        match_result = search_function(artist, search_title, log=log)
         if not match_result and remix_qualified_title != search_title:
-            match_result = search_cover_itunes(artist, remix_qualified_title, log=log, allow_loose_remix_match=True)
-        return match_result, ("iTunes" if match_result else None)
-
-    if source == "spotify":
-        if has_named_qualifier:
-            match_result = search_cover_spotify(artist, remix_qualified_title, spotify_token, log=log)
-            return match_result, ("Spotify" if match_result else None)
-        match_result = search_cover_spotify(artist, search_title, spotify_token, log=log)
-        if not match_result and remix_qualified_title != search_title:
-            match_result = search_cover_spotify(artist, remix_qualified_title, spotify_token, log=log)
-        return match_result, ("Spotify" if match_result else None)
+            match_result = search_function(artist, remix_qualified_title, log=log, allow_loose_remix_match=True)
+        return match_result, (label if match_result else None)
 
     # source == "soundcloud"
     match_result = search_cover_soundcloud(artist, remix_qualified_title, soundcloud_token, log=log)
     return match_result, ("SoundCloud" if match_result else None)
 
 
-def search_cover_manual(artist, title, soundcloud_token, spotify_token=None, log=safe_print):
+def search_cover_manual(artist, title, soundcloud_token, log=safe_print, spotify_token=None):
     """
     Searches for a cover using the given artist/title directly, trying
-    every enabled source in priority order and stopping at the first
-    match - shared by scan_one_file() (filename/tag-derived artist/title)
-    and the "fix Artist/Title and search again" flow after a scan finds no
-    match at all (user-corrected artist/title).
+    every enabled source in priority order (iTunes, then Spotify, then
+    SoundCloud) and stopping at the first match - used by the "fix Artist/
+    Title and search again" flow after a scan finds no match at all
+    (user-corrected artist/title), and by "Rescan".
+
+    Spotify comes before SoundCloud despite USE_SPOTIFY's name/history as
+    a "last resort" (see CLAUDE.md) - both iTunes and Spotify are curated
+    commercial catalogs, while SoundCloud is community-uploaded and far
+    more prone to a wrong match (an unrelated repost, a fan edit...) - a
+    real report showed SoundCloud "succeeding" with a non-official image
+    before Spotify ever got a chance to offer the actual correct one.
+    Still opt-in via spotify_token (None to skip it entirely), same as
+    soundcloud_token.
 
     Returns (found_cover_image, cover_source, returned_artist,
     returned_title) - the last three are None if nothing matched.
@@ -1643,13 +1776,13 @@ def search_cover_manual(artist, title, soundcloud_token, spotify_token=None, log
 
     for source, enabled in (
         ("itunes", USE_ITUNES),
-        ("spotify", USE_SPOTIFY),
+        ("spotify", USE_SPOTIFY and bool(spotify_token)),
         ("soundcloud", USE_SOUNDCLOUD and not SOUNDCLOUD_RATE_LIMITED and not SOUNDCLOUD_UNAVAILABLE),
     ):
         if not enabled:
             continue
         match_result, cover_source = _search_one_source(
-            source, artist, search_title, remix_qualified_title, spotify_token, soundcloud_token, log,
+            source, artist, search_title, remix_qualified_title, soundcloud_token, spotify_token, log,
         )
         if match_result:
             found_cover_image, returned_artist, returned_title = match_result
@@ -1669,9 +1802,11 @@ def search_cover_manual_with_tokens(artist, title, log=safe_print, on_auth_error
     if USE_SOUNDCLOUD and SOUNDCLOUD_CLIENT_ID and SOUNDCLOUD_CLIENT_SECRET:
         soundcloud_token = get_soundcloud_token(log=log, on_auth_error=on_auth_error)
 
-    spotify_token = get_spotify_token(log=log, on_auth_error=on_auth_error) if USE_SPOTIFY else None
+    spotify_token = None
+    if USE_SPOTIFY and SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
+        spotify_token = get_spotify_token(log=log, on_auth_error=on_auth_error)
 
-    return search_cover_manual(artist, title, soundcloud_token, spotify_token, log=log)
+    return search_cover_manual(artist, title, soundcloud_token, log=log, spotify_token=spotify_token)
 
 
 def _prepare_scan(file_name, log=safe_print, on_new_mention=None):
@@ -1679,9 +1814,9 @@ def _prepare_scan(file_name, log=safe_print, on_new_mention=None):
     Local-only part of analyzing a file (no network): reads tags, resolves
     artist/title, and detects mentions. Returns a dict with everything
     needed to both run the cover search and build the final info dict -
-    split out from scan_one_file() so scan_files() can prepare every file
-    up front (cheap, sequential) and then search iTunes for all of them
-    concurrently (see ITUNES_SCAN_MAX_WORKERS below).
+    split out so scan_files() can prepare every file up front (cheap,
+    sequential) and then search iTunes for all of them concurrently (see
+    ITUNES_SCAN_MAX_WORKERS below).
     """
     full_path = os.path.join(MUSIC_FOLDER, file_name)
 
@@ -1710,13 +1845,13 @@ def _prepare_scan(file_name, log=safe_print, on_new_mention=None):
     if detected_artist and detected_title:
         search_title, remix_qualified_title = compute_search_titles(detected_title)
     elif not detected_artist:
-        # scan_one_file()/scan_files() both skip iTunes/Spotify/SoundCloud
-        # entirely without an artist to search with (see search_title being
-        # left None) - without this line that skip was completely silent,
-        # leaving no trace of why the file ended up with no cover.
+        # scan_files() skips iTunes/Spotify/SoundCloud entirely without an
+        # artist to search with (see search_title being left None) -
+        # without this line that skip was completely silent, leaving no
+        # trace of why the file ended up with no cover.
         log(
             "  No artist could be determined from the filename or tags - skipping "
-            "iTunes/Spotify/SoundCloud search (correct the Artist/Title and search again)."
+            "iTunes/SoundCloud search (correct the Artist/Title and search again)."
         )
 
     return {
@@ -1773,8 +1908,7 @@ def _try_acoustid_correction(prepared, log=safe_print):
 def _finish_scan(prepared, match_result, cover_source, log=safe_print):
     """
     Builds the final info dict for a file, given the (match_result,
-    cover_source) pair its cover search ended up with - shared by
-    scan_one_file() and scan_files()'s parallel-iTunes path.
+    cover_source) pair its cover search ended up with.
     """
     file_name = prepared["file_name"]
     detected_artist = prepared["detected_artist"]
@@ -1843,33 +1977,6 @@ def _finish_scan(prepared, match_result, cover_source, log=safe_print):
     }
 
 
-def scan_one_file(file_name, soundcloud_token, spotify_token=None, log=safe_print, on_new_mention=None):
-    """
-    Analyzes a single file (path relative to MUSIC_FOLDER): current tags,
-    info detected from the name, and online cover search.
-    Returns the corresponding info dict.
-    """
-    prepared = _prepare_scan(file_name, log=log, on_new_mention=on_new_mention)
-
-    match_result = None
-    cover_source = None
-    if prepared["detected_artist"] and prepared["search_title"]:
-        found_cover_image, cover_source, returned_artist, returned_title = search_cover_manual(
-            prepared["detected_artist"], prepared["detected_title"], soundcloud_token, spotify_token, log,
-        )
-        if found_cover_image:
-            match_result = (found_cover_image, returned_artist, returned_title)
-
-    if not match_result and _try_acoustid_correction(prepared, log):
-        found_cover_image, cover_source, returned_artist, returned_title = search_cover_manual(
-            prepared["detected_artist"], prepared["detected_title"], soundcloud_token, spotify_token, log,
-        )
-        if found_cover_image:
-            match_result = (found_cover_image, returned_artist, returned_title)
-
-    return _finish_scan(prepared, match_result, cover_source, log)
-
-
 SOUNDCLOUD_RATE_LIMITED = False  # set for the current run once a 429 is hit
 SOUNDCLOUD_UNAVAILABLE = False  # set for the current run when no credentials are configured at all
 
@@ -1892,15 +1999,14 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
     to allow a progressive display instead of waiting for the whole thing to finish.
     should_cancel() is checked before each file - if it returns True, the scan
     stops early and returns whatever was scanned so far.
-    on_auth_error(source, message) is called if SoundCloud/Spotify credentials
-    are configured but wrong/expired (distinct from simply missing) - easy to
+    on_auth_error(source, message) is called if SoundCloud credentials are
+    configured but wrong/expired (distinct from simply missing) - easy to
     miss buried in the log since it doesn't stop the scan.
 
     iTunes searches (if enabled) run concurrently across files, up to
     ITUNES_SCAN_MAX_WORKERS at once - iTunes needs no auth/shared token and
-    every request is fully independent, unlike Spotify (shared token) and
-    SoundCloud (shared rate-limit state), which stay sequential exactly as
-    before.
+    every request is fully independent, unlike SoundCloud (shared
+    rate-limit state), which stays sequential exactly as before.
     """
     global SOUNDCLOUD_RATE_LIMITED, SOUNDCLOUD_UNAVAILABLE
     SOUNDCLOUD_RATE_LIMITED = False
@@ -1929,9 +2035,11 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
 
         soundcloud_token = get_soundcloud_token(log=log, on_rate_limited=_mark_rate_limited, on_auth_error=on_auth_error)
 
-    # Only bother authenticating with Spotify if it's actually enabled for
-    # this run - no point for a scan that'll never call it.
-    spotify_token = get_spotify_token(log=log, on_auth_error=on_auth_error) if USE_SPOTIFY else None
+    spotify_token = None
+    if USE_SPOTIFY and SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
+        spotify_token = get_spotify_token(log=log, on_auth_error=on_auth_error)
+    elif USE_SPOTIFY:
+        log("  [Spotify] No credentials configured - skipping Spotify for this scan.")
 
     # Phase 1: prepare every file (local-only: tags, filename parsing) -
     # fast, so should_cancel is checked cheaply between each one.
@@ -1956,8 +2064,10 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
 
     # Phase 3: finish each file in its original order - reuse the iTunes
     # result from phase 2 if there is one, otherwise (or if it found
-    # nothing) fall back to Spotify/SoundCloud sequentially, exactly as
-    # before.
+    # nothing) fall back to Spotify, then SoundCloud (see search_cover_manual
+    # for why Spotify - a curated commercial catalog like iTunes - now
+    # comes before SoundCloud - community-uploaded, far more prone to a
+    # wrong match).
     results = []
     try:
         for prepared in prepared_list:
@@ -1968,36 +2078,38 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
             file_name = prepared["file_name"]
             match_result = None
             cover_source = None
+            has_query = prepared["detected_artist"] and prepared["search_title"]
 
             future = itunes_futures.get(file_name)
             if future:
                 match_result, cover_source = future.result()
 
-            if not match_result and prepared["detected_artist"] and prepared["search_title"]:
-                for source, enabled in (
-                    ("spotify", USE_SPOTIFY),
-                    ("soundcloud", USE_SOUNDCLOUD and not SOUNDCLOUD_RATE_LIMITED and not SOUNDCLOUD_UNAVAILABLE),
-                ):
-                    if not enabled:
-                        continue
-                    match_result, cover_source = _search_one_source(
-                        source, prepared["detected_artist"], prepared["search_title"],
-                        prepared["remix_qualified_title"], spotify_token, soundcloud_token, log,
-                    )
-                    if match_result:
-                        break
+            if not match_result and has_query and USE_SPOTIFY and spotify_token:
+                match_result, cover_source = _search_one_source(
+                    "spotify", prepared["detected_artist"], prepared["search_title"],
+                    prepared["remix_qualified_title"], None, spotify_token, log,
+                )
+
+            if (
+                not match_result and has_query
+                and USE_SOUNDCLOUD and not SOUNDCLOUD_RATE_LIMITED and not SOUNDCLOUD_UNAVAILABLE
+            ):
+                match_result, cover_source = _search_one_source(
+                    "soundcloud", prepared["detected_artist"], prepared["search_title"],
+                    prepared["remix_qualified_title"], soundcloud_token, None, log,
+                )
 
             if not match_result and _try_acoustid_correction(prepared, log):
                 for source, enabled in (
                     ("itunes", USE_ITUNES),
-                    ("spotify", USE_SPOTIFY),
+                    ("spotify", USE_SPOTIFY and bool(spotify_token)),
                     ("soundcloud", USE_SOUNDCLOUD and not SOUNDCLOUD_RATE_LIMITED and not SOUNDCLOUD_UNAVAILABLE),
                 ):
                     if not enabled:
                         continue
                     match_result, cover_source = _search_one_source(
                         source, prepared["detected_artist"], prepared["search_title"],
-                        prepared["remix_qualified_title"], spotify_token, soundcloud_token, log,
+                        prepared["remix_qualified_title"], soundcloud_token, spotify_token, log,
                     )
                     if match_result:
                         break
@@ -2154,22 +2266,52 @@ def strip_sanitized_chars(text):
 
 
 def split_artist_names(text):
-    """Splits a multi-artist string on any common separator (,  &  x  X  vs  feat.  ft.  and)."""
-    parts = re.split(r"\s*(?:,|&|/|\bx\b|\bvs\b|\bfeat\.?\b|\bft\.?\b|\band\b)\s*", text, flags=re.IGNORECASE)
-    return {strip_accents(strip_sanitized_chars(p.strip().lower())) for p in parts if p.strip()}
+    """Splits a multi-artist string on any common separator (,  &  x  X  vs  feat.  ft.  and).
+
+    "feat"/"ft" use \\b...\\b instead of a trailing \\b after the optional
+    "."- a \\b right after a "." that's followed by whitespace is never a
+    real word boundary (neither side is a word character), so \\bfeat\\.?\\b
+    silently fails to consume the period, leaving a stray ". name" fragment
+    behind instead of splitting cleanly (e.g. "Alonzo Feat. Tiakola" ->
+    {"alonzo", ". tiakola"} instead of {"alonzo", "tiakola"}) - found via a
+    real AcoustID-identified artist string ("Alonzo Feat. Tiakola") being
+    rejected as "not the same artist" as a store's own "Alonzo, Tiakola".
+    """
+    parts = re.split(r"\s*(?:,|&|/|\bx\b|\bvs\b|\bfeat\b\.?|\bft\b\.?|\band\b)\s*", text, flags=re.IGNORECASE)
+    names = set()
+    for part in parts:
+        normalized = strip_accents(strip_sanitized_chars(part.strip().lower()))
+        if not normalized:
+            continue
+        # A band's own name is sometimes credited with a leading "The" and
+        # sometimes without (e.g. "The Black Eyed Peas" vs. iTunes's own
+        # "Black Eyed Peas") - real report: that mismatch alone rejected an
+        # otherwise-correct iTunes match, falling through to a much less
+        # reliable SoundCloud search that then matched an unrelated upload.
+        names.add(re.sub(r"^the\s+", "", normalized))
+    return names
 
 
 def artist_sets_match(expected_artist, returned_artist, returned_title=""):
     """
-    Exact match for a list of artists, ignoring order and separator style
-    (e.g. "A, B, C" vs "C & A x B" are considered the same set of artists).
-    If returned_title is given, a featured artist credited only there (e.g.
+    Matches a list of artists, ignoring order and separator style (e.g.
+    "A, B, C" vs "C & A x B" are considered the same set of artists). If
+    returned_title is given, a featured artist credited only there (e.g.
     "Title (feat. X)") is folded into the returned artist set too - some
     stores split primary vs. featured artist across the two fields, while
     our own tags/filename usually list everyone in the artist field.
+
+    Accepts either set being a SUBSET of the other rather than requiring an
+    exact match - a collective/label name (e.g. "Keinemusik") is sometimes
+    listed as one of the artists alongside its own individual members, while
+    a specific release's own credit only lists the members (or vice versa).
+    Rejecting that as a mismatch let a legitimate single lose out to an
+    unrelated compilation whose artist field happened to list every name
+    verbatim, including the collective's.
     """
     returned_names = split_artist_names(returned_artist) | extract_feature_names(returned_title)
-    return split_artist_names(expected_artist) == returned_names
+    expected_names = split_artist_names(expected_artist)
+    return expected_names <= returned_names or returned_names <= expected_names
 
 
 def artist_names_match(expected_artist, returned_artist):
@@ -2267,11 +2409,10 @@ def build_search_query(artist, title):
     """
     Builds a search term from artist+title, replacing punctuation (commas,
     parentheses/brackets) with spaces instead of leaving it in the query as
-    literal characters - both iTunes' and Spotify's relevance ranking seem
-    to penalize that punctuation. A comma-separated multi-artist string or
-    a parenthesized remix name can bury the exact version we want under a
-    heap of same-song alternates, even when it's genuinely in the results.
-    Shared by search_cover_itunes() and search_cover_spotify().
+    literal characters - iTunes' relevance ranking seems to penalize that
+    punctuation. A comma-separated multi-artist string or a parenthesized
+    remix name can bury the exact version we want under a heap of
+    same-song alternates, even when it's genuinely in the results.
     """
     combined = f"{artist} {title}"
     cleaned = re.sub(r"[,()\[\]]", " ", combined)
@@ -2285,7 +2426,7 @@ def build_search_query(artist, title):
 # each retry independently with no awareness that iTunes is already telling
 # everyone to back off. Once that happens, every further iTunes call in this
 # same scan is skipped outright for a cooldown period instead of piling on
-# more doomed requests - they fall through to Spotify/SoundCloud/AcoustID
+# more doomed requests - they fall through to SoundCloud/AcoustID
 # immediately, same as if iTunes just wasn't enabled for those files.
 ITUNES_RATE_LIMIT_COOLDOWN_SECONDS = 30
 _itunes_rate_limited_until = 0
@@ -2394,6 +2535,9 @@ def search_cover_itunes(artist, title, log=safe_print, max_retries=2, allow_loos
             image_response = requests.get(cover_url_hd, timeout=10)
 
             if image_response.status_code == 200:
+                if is_banned_cover_image(image_response.content):
+                    log(f"  [iTunes] Match found for '{artist} - {title}' but its cover is a known placeholder - skipping.")
+                    continue
                 return image_response.content, returned_artist, returned_title
 
             log(f"  [iTunes] Image download failed (HTTP {image_response.status_code}) for '{artist} - {title}'")
@@ -2481,6 +2625,52 @@ def get_soundcloud_token(log=safe_print, on_rate_limited=None, on_auth_error=Non
         return None
 
 
+UNSOLICITED_EDIT_MARKERS = ("slowed", "reverb", "sped up", "speed up", "nightcore", "8d audio")
+
+
+def has_unsolicited_edit_marker(text):
+    """
+    True if text carries a tell-tale fan-edit marker (e.g. "slowed +
+    reverb", "sped up", "nightcore") - SoundCloud is full of these,
+    uploaded by a third party with no connection to the real artist, whose
+    title often just prepends/appends the marker to the real artist/title
+    (e.g. "1997 - Aqua - Barbie Girl [slowed + reverb]" by an unrelated
+    uploader). artist_names_match()'s substring check against a TITLE
+    (meant for a legit repost formatted as "Artist - Title") can't tell
+    that apart from the real thing on its own, so this catches it
+    separately - see its use in search_cover_soundcloud().
+    """
+    lowered = text.lower()
+    return any(marker in lowered for marker in UNSOLICITED_EDIT_MARKERS)
+
+
+MIX_VARIANT_KEYWORDS = ("edit", "reboot", "bootleg", "mashup", "flip", "rework", "vip", "mix", "cover")
+# "remix" alone skips the LEADING \b - a remixer's name is often glued
+# directly onto it with no separator ("GYPZEREMIX", "Lustyremix"), which a
+# leading \b would silently miss (no boundary between two word chars). The
+# trailing \b (nothing glued after it, e.g. before ")"/end-of-string) is
+# kept, so this doesn't swallow an unrelated longer word.
+MIX_VARIANT_RE = re.compile(
+    r"remix\b|\b(?:" + "|".join(MIX_VARIANT_KEYWORDS) + r")\b", re.IGNORECASE,
+)
+
+
+def looks_like_mix_variant(text):
+    """
+    True if text names some kind of remix/edit/mix variant (generic like
+    "Mix" or named like "DJ Name Remix") ANYWHERE in it, not just in a
+    trailing "(...)"/"[...]" group - a messy DJ-mashup-style SoundCloud
+    title can bury it mid-string (e.g. "Soolking ft Sif Lssane(Hkayne)
+    Remix DeejayTM Ca.Va.Pas / Mi Amigo") rather than cleanly at the end.
+    Word-boundary matched so it doesn't fire on an unrelated word merely
+    containing one of these as a substring (e.g. "Remixed" doesn't match
+    "\\bmix\\b"). Used to reject a SoundCloud candidate carrying a variant
+    we never asked for (see its use in search_cover_soundcloud) without
+    also rejecting a harmless descriptive tag like "(Official Audio)".
+    """
+    return bool(MIX_VARIANT_RE.search(text))
+
+
 def search_cover_soundcloud(artist, title, token, log=safe_print):
     """
     Checks up to 10 candidates, not just the top one - SoundCloud's
@@ -2527,6 +2717,27 @@ def search_cover_soundcloud(artist, title, token, log=safe_print):
             if not (artist_ok or swapped_ok):
                 continue
 
+            # Reject an unsolicited fan edit (see has_unsolicited_edit_marker) -
+            # unless we actually asked for one ourselves, in which case it's
+            # not "unsolicited" at all.
+            if (
+                has_unsolicited_edit_marker(f"{track_title} {uploader_name}")
+                and not has_unsolicited_edit_marker(title)
+            ):
+                continue
+
+            # Reject a candidate whose OWN title carries a remix/edit/mix
+            # variant tag (generic or named) we never asked for - real
+            # report: searching for the plain "Mi Amigo" matched a random
+            # account's "Soolking - Mi Amigo (Remix)" upload (wrong cover)
+            # instead of falling through to a plain, correctly-covered
+            # upload further down the results. A harmless descriptive tag
+            # like "(Official Audio)"/"(HQ)" is deliberately left alone
+            # (see looks_like_mix_variant) so this doesn't also reject
+            # otherwise-good legitimate reposts.
+            if not looks_like_mix_variant(title) and looks_like_mix_variant(track_title):
+                continue
+
             # title_words_overlap only requires ONE shared word with the base
             # title, which a DIFFERENT upload of the same song (e.g. a plain
             # rip, or someone else's edit) can easily satisfy too - when a
@@ -2544,6 +2755,9 @@ def search_cover_soundcloud(artist, title, token, log=safe_print):
             image_response = requests.get(cover_url_hd, timeout=10)
 
             if image_response.status_code == 200:
+                if is_banned_cover_image(image_response.content):
+                    log(f"  [SoundCloud] Match found for '{artist} - {title}' but its cover is a known placeholder - skipping.")
+                    continue
                 return image_response.content, uploader_name or track_title, track_title
 
             log(f"  [SoundCloud] Image download failed (HTTP {image_response.status_code}) for '{artist} - {title}'")
@@ -2563,7 +2777,7 @@ def search_cover_soundcloud(artist, title, token, log=safe_print):
 
 
 # ============================================================================
-# 11. COVER SEARCH - SPOTIFY
+# 10.5. COVER SEARCH - SPOTIFY (last resort only - see USE_SPOTIFY)
 # ============================================================================
 
 _cached_spotify_token = None
@@ -2581,12 +2795,11 @@ def invalidate_spotify_token():
 def get_spotify_token(log=safe_print, on_auth_error=None):
     global _cached_spotify_token, _cached_spotify_token_expiry
 
-    # Reuse the cached token if it's still valid (with a 60s safety margin)
     if _cached_spotify_token and time.time() < _cached_spotify_token_expiry - 60:
         return _cached_spotify_token
 
     if not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET:
-        log("  [Spotify] No credentials found (spotifyClientID.txt / spotifyClientSecret.txt missing or empty).")
+        log("  [Spotify] No credentials found.")
         return None
 
     try:
@@ -2611,9 +2824,6 @@ def get_spotify_token(log=safe_print, on_auth_error=None):
 
         message = f"HTTP {response.status_code} - {response.text[:300]}"
         log(f"  [Spotify] Authentication error: {message}")
-        # Distinct from "no credentials" above - these ARE configured,
-        # they're just wrong/expired. Easy to miss buried in the log
-        # since it doesn't stop the scan.
         if on_auth_error:
             on_auth_error("Spotify", message)
         return None
@@ -2626,8 +2836,9 @@ def get_spotify_token(log=safe_print, on_auth_error=None):
 def search_cover_spotify(artist, title, token, log=safe_print):
     """
     Checks up to 10 candidates (not just the top one), mirroring
-    search_cover_itunes() - Spotify's search ranking can also bury the
-    exact version we want under alternates for a heavily-remixed song.
+    search_cover_itunes()/search_cover_soundcloud() - only ever called as
+    the absolute last resort (see USE_SPOTIFY), so being thorough here
+    doesn't cost much - it runs for very few files in a normal scan.
     """
     if not token:
         return None
@@ -2678,6 +2889,9 @@ def search_cover_spotify(artist, title, token, log=safe_print):
             image_response = requests.get(cover_url, timeout=10)
 
             if image_response.status_code == 200:
+                if is_banned_cover_image(image_response.content):
+                    log(f"  [Spotify] Match found for '{artist} - {title}' but its cover is a known placeholder - skipping.")
+                    continue
                 return image_response.content, returned_artist, returned_title
 
             log(f"  [Spotify] Image download failed (HTTP {image_response.status_code}) for '{artist} - {title}'")
@@ -2739,7 +2953,7 @@ def identify_via_acoustid(file_path, log=safe_print):
     """
     Identifies a track from its actual audio content via AcoustID/
     Chromaprint, instead of its filename/tags - last resort, only meant to
-    be tried when the normal text-based search (iTunes/Spotify/SoundCloud)
+    be tried when the normal text-based search (iTunes/SoundCloud)
     already came up empty, or never had anything to search with in the
     first place (a filename too mangled to parse an artist/title from at
     all). Returns (artist, title) from the best-scoring match at or above
@@ -2793,7 +3007,7 @@ def identify_via_acoustid(file_path, log=safe_print):
 
 
 # ============================================================================
-# 12. FORMAT CONVERSION
+# 11. FORMAT CONVERSION
 # ============================================================================
 
 def _find_bundled_tool(base_name):
@@ -2905,7 +3119,7 @@ def _resolve_conversion_target(file_name):
 
 
 # ============================================================================
-# 13. TAG WRITING
+# 12. TAG WRITING
 # ============================================================================
 
 def open_audio_file(file_path):
@@ -2941,9 +3155,10 @@ def effective_cover_bytes(info):
         return info.get("current_cover_bytes")
     if info.get("found_cover_image"):
         return info["found_cover_image"]
-    if detect_fuviclan_mention(info.get("file", "")):
+    current_cover_bytes = info.get("current_cover_bytes")
+    if detect_fuviclan_mention(info.get("file", "")) or is_banned_cover_image(current_cover_bytes):
         return None
-    return info.get("current_cover_bytes")
+    return current_cover_bytes
 
 
 def _write_wav_riff_info(file_path, artist, title, update_artist, update_title, log=safe_print):
@@ -3051,7 +3266,7 @@ def fix_title_artist(info, artist, title):
 
 
 # ============================================================================
-# 14. PROCESSING (APPLY)
+# 13. PROCESSING (APPLY)
 # ============================================================================
 
 def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None, should_cancel=None):
@@ -3125,7 +3340,9 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
 
             update_title = update_artist = update_cover = info.get("apply_changes", True)
 
-            force_remove_if_missing = bool(detect_fuviclan_mention(file_name))
+            force_remove_if_missing = bool(detect_fuviclan_mention(file_name)) or is_banned_cover_image(
+                info.get("current_cover_bytes")
+            )
 
             cover_image = info.get("found_cover_image") if update_cover else None
 
