@@ -173,10 +173,31 @@ def read_credential(key):
     return value.strip() if value else None
 
 
-SOUNDCLOUD_CLIENT_ID = read_credential(CLIENT_ID_KEY)
-SOUNDCLOUD_CLIENT_SECRET = read_credential(CLIENT_SECRET_KEY)
-SPOTIFY_CLIENT_ID = read_credential(SPOTIFY_CLIENT_ID_KEY)
-SPOTIFY_CLIENT_SECRET = read_credential(SPOTIFY_CLIENT_SECRET_KEY)
+# Shared, embedded default app credentials so most users don't have to
+# register their own SoundCloud/Spotify app - Kevin's own, used as a
+# fallback whenever a user hasn't saved their own credentials in Settings.
+# base64, not encryption - same reasoning as DISCORD_REPORT_WEBHOOK_URL:
+# can't be kept truly secret from this app's own compiled binary, this
+# just keeps it off a plain `strings` scan. Unlike ACOUSTID_API_KEY,
+# distributing an app's client secret like this is against SoundCloud/
+# Spotify's own developer terms - accepted risk (confirmed with Kevin):
+# if it's ever extracted and abused, SoundCloud/Spotify could suspend the
+# app credentials entirely, breaking this for every user at once, not
+# just the abuser. Watch for SoundCloud/Spotify auth suddenly failing for
+# multiple users if that ever happens.
+_SOUNDCLOUD_DEFAULT_CLIENT_ID_B64 = "STRsZVVVT0daemVSTlpVaDJUMjk1VVBhRjZhZXo0RjQ="
+_SOUNDCLOUD_DEFAULT_CLIENT_SECRET_B64 = "T25reGVEZVplM3RuTWJqR1kxRlNuZVJLdFIwT2EyMm8="
+_SPOTIFY_DEFAULT_CLIENT_ID_B64 = "Y2ZmNTBlZWJkOTVmNDFhN2I4ZWI0NTRhOTg5ZjEzZGQ="
+_SPOTIFY_DEFAULT_CLIENT_SECRET_B64 = "ZjViZWJhOTE5MTU5NGU1ZmFhMzZhMzZlMDU5YWVjOTg="
+SOUNDCLOUD_DEFAULT_CLIENT_ID = base64.b64decode(_SOUNDCLOUD_DEFAULT_CLIENT_ID_B64).decode("ascii")
+SOUNDCLOUD_DEFAULT_CLIENT_SECRET = base64.b64decode(_SOUNDCLOUD_DEFAULT_CLIENT_SECRET_B64).decode("ascii")
+SPOTIFY_DEFAULT_CLIENT_ID = base64.b64decode(_SPOTIFY_DEFAULT_CLIENT_ID_B64).decode("ascii")
+SPOTIFY_DEFAULT_CLIENT_SECRET = base64.b64decode(_SPOTIFY_DEFAULT_CLIENT_SECRET_B64).decode("ascii")
+
+SOUNDCLOUD_CLIENT_ID = read_credential(CLIENT_ID_KEY) or SOUNDCLOUD_DEFAULT_CLIENT_ID
+SOUNDCLOUD_CLIENT_SECRET = read_credential(CLIENT_SECRET_KEY) or SOUNDCLOUD_DEFAULT_CLIENT_SECRET
+SPOTIFY_CLIENT_ID = read_credential(SPOTIFY_CLIENT_ID_KEY) or SPOTIFY_DEFAULT_CLIENT_ID
+SPOTIFY_CLIENT_SECRET = read_credential(SPOTIFY_CLIENT_SECRET_KEY) or SPOTIFY_DEFAULT_CLIENT_SECRET
 
 # AcoustID API keys are meant to be per-APPLICATION, one key shared by every
 # user of that app - unlike SoundCloud/Spotify, which need each user's own
