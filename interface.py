@@ -229,7 +229,7 @@ class TaggerInterface:
         # down) - otherwise the light/dark flicker during warm-up would be
         # visible for a moment on every launch.
         self.window.withdraw()
-        self.base_title = "Track Tidy"
+        self.base_title = "Track Tidy (beta)"
         self.window.title(self.base_title)
         icon_path = resource_path("track-tidy_icon.ico")
         icon_png_path = resource_path("track-tidy_icon.png")
