@@ -291,7 +291,6 @@ class TaggerInterface:
         tagger.AUTO_CONVERT_WAV_TO_AIFF = self.auto_convert_wav_aiff_var.get()
 
         self._build_interface()
-        self._sync_convert_checkboxes_state()
         self._setup_drag_and_drop()
         self._adjust_window_height()
         self._apply_theme(self.theme_var.get())
@@ -349,16 +348,18 @@ class TaggerInterface:
 
     def _on_auto_convert_changed(self):
         enabled = self.auto_convert_var.get()
-        if enabled:
+        if enabled and self.auto_convert_wav_aiff_var.get():
+            self.auto_convert_wav_aiff_var.set(False)
+            tagger.AUTO_CONVERT_WAV_TO_AIFF = False
+            tagger.save_setting("auto_convert_wav_to_aiff", False)
             messagebox.showinfo(
                 "Convert WAV to AIFF disabled",
                 "\"Convert everything to MP3\" and \"Convert WAV to AIFF\" are two "
                 "different destinies for WAV files, so only one can be on at a time - "
-                "\"Convert WAV to AIFF\" is disabled while this is on. Turn this back "
-                "off to make it available again.",
+                "\"Convert WAV to AIFF\" has been turned off.",
                 parent=self.window,
             )
-        else:
+        elif not enabled:
             wav_fate = (
                 "converted to AIFF" if self.auto_convert_wav_aiff_var.get() else "tagged (and get a cover) in place, kept as WAV"
             )
@@ -371,35 +372,22 @@ class TaggerInterface:
             )
         tagger.AUTO_CONVERT_MP3 = enabled
         tagger.save_setting("auto_convert_mp3", enabled)
-        self._sync_convert_checkboxes_state()
-
-    def _sync_convert_checkboxes_state(self):
-        """"Convert everything to MP3" and "Convert WAV to AIFF" are two
-        different, mutually exclusive destinies for a WAV file - checking
-        either one disables the other (instead of leaving a control up
-        that would either have no effect, in MP3's case, or fight the
-        other setting for no reason) until it's unchecked again."""
-        self.auto_convert_wav_aiff_checkbox.configure(
-            state="disabled" if self.auto_convert_var.get() else "normal"
-        )
-        self.auto_convert_checkbox.configure(
-            state="disabled" if self.auto_convert_wav_aiff_var.get() else "normal"
-        )
 
     def _on_auto_convert_wav_aiff_changed(self):
         enabled = self.auto_convert_wav_aiff_var.get()
-        if enabled:
+        if enabled and self.auto_convert_var.get():
+            self.auto_convert_var.set(False)
+            tagger.AUTO_CONVERT_MP3 = False
+            tagger.save_setting("auto_convert_mp3", False)
             messagebox.showinfo(
                 "Convert everything to MP3 disabled",
                 "\"Convert everything to MP3\" and \"Convert WAV to AIFF\" are two "
                 "different destinies for WAV files, so only one can be on at a time - "
-                "\"Convert everything to MP3\" is disabled while this is on. Turn this "
-                "back off to make it available again.",
+                "\"Convert everything to MP3\" has been turned off.",
                 parent=self.window,
             )
         tagger.AUTO_CONVERT_WAV_TO_AIFF = enabled
         tagger.save_setting("auto_convert_wav_to_aiff", enabled)
-        self._sync_convert_checkboxes_state()
 
     def _reset_settings_to_default(self):
         """Restores every Settings-tab option to its out-of-the-box value.
@@ -441,7 +429,6 @@ class TaggerInterface:
         self.use_spotify_var.set(True)
         self.auto_convert_var.set(False)
         self.auto_convert_wav_aiff_var.set(True)
-        self._sync_convert_checkboxes_state()
 
         self.show_log_var.set(False)
         self._on_show_log_changed()
@@ -1574,12 +1561,16 @@ class TaggerInterface:
         self.legal_notices_link.pack(anchor="w", padx=10, pady=(0, 6), side="bottom")
         self.legal_notices_link.bind("<Button-1>", self._open_legal_notices)
 
+        credit_frame = ttk.Frame(soundcloud_tab)
+        credit_frame.pack(anchor="w", padx=10, pady=(0, 2), side="bottom")
         ttk.Label(
-            soundcloud_tab,
-            text="Developped by KEVZ",
-            foreground="#888888",
-            font=("TkDefaultFont", 8, "bold"),
-        ).pack(anchor="w", padx=10, pady=(0, 2), side="bottom")
+            credit_frame, text="Developped by ", foreground="#888888", font=("TkDefaultFont", 8, "bold"),
+        ).pack(side="left")
+        kevz_credit_label = ttk.Label(
+            credit_frame, text="KEVZ", foreground="#888888", font=("TkDefaultFont", 8, "bold"), cursor="hand2",
+        )
+        kevz_credit_label.pack(side="left")
+        kevz_credit_label.bind("<Button-1>", self._open_kevz_instagram)
 
         ttk.Separator(soundcloud_tab, orient="horizontal").pack(fill="x", padx=10, pady=(20, 10), side="bottom")
 
@@ -1648,6 +1639,9 @@ class TaggerInterface:
             open_with_default_app(path)
         except Exception as error:
             self._append_to_journal(f"Could not open license notices: {error}")
+
+    def _open_kevz_instagram(self, event=None):
+        webbrowser.open("https://www.instagram.com/kevz_fr/")
 
     # --- Extractor tab actions ---
 
