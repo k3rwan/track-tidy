@@ -20,6 +20,7 @@ import sys
 import subprocess
 import tempfile
 import threading
+import time
 import queue
 import webbrowser
 from datetime import datetime
@@ -229,7 +230,7 @@ class TaggerInterface:
         # down) - otherwise the light/dark flicker during warm-up would be
         # visible for a moment on every launch.
         self.window.withdraw()
-        self.base_title = "Track Tidy"
+        self.base_title = "Track Tidy (beta)"
         self.window.title(self.base_title)
         icon_path = resource_path("track-tidy_icon.ico")
         icon_png_path = resource_path("track-tidy_icon.png")
@@ -264,8 +265,11 @@ class TaggerInterface:
         self._drag_moved = False
         self._table_font = tkfont.nametofont("TkDefaultFont")
         self.soundcloud_rate_limit_warned = False
+        self.itunes_rate_limit_warned = False
         self.source_auth_error_warned = {}  # "SoundCloud" -> already warned this scan
         self.mention_counts = {}  # raw mention text -> number of times seen
+        self._pending_scan_reveals = []  # (info, scanned_count, total) queued for _reveal_next_scan_row
+        self._pending_scan_done = None  # (removed_files, number_before), held until reveals catch up
 
         self._native_theme = ttk.Style().theme_use()  # so "light" can restore it later
         self.theme_colors = None  # None while light/native; DARK_COLORS once dark is applied
@@ -275,18 +279,10 @@ class TaggerInterface:
         self.theme_var = tk.StringVar(value=saved_theme)
 
         saved_settings = tagger.load_settings()
-        self.use_itunes_var = tk.BooleanVar(value=saved_settings.get("use_itunes", True))
-        self.use_soundcloud_var = tk.BooleanVar(value=saved_settings.get("use_soundcloud", True))
-        self.use_acoustid_var = tk.BooleanVar(value=saved_settings.get("use_acoustid_fallback", True))
-        self.use_spotify_var = tk.BooleanVar(value=saved_settings.get("use_spotify", True))
         self.auto_convert_var = tk.BooleanVar(value=saved_settings.get("auto_convert_mp3", False))
         self.auto_convert_wav_aiff_var = tk.BooleanVar(value=saved_settings.get("auto_convert_wav_to_aiff", True))
         self.show_log_var = tk.BooleanVar(value=saved_settings.get("show_log_section", False))
         self._tagger_resize_pending = False
-        tagger.USE_ITUNES = self.use_itunes_var.get()
-        tagger.USE_SOUNDCLOUD = self.use_soundcloud_var.get()
-        tagger.USE_ACOUSTID_FALLBACK = self.use_acoustid_var.get()
-        tagger.USE_SPOTIFY = self.use_spotify_var.get()
         tagger.AUTO_CONVERT_MP3 = self.auto_convert_var.get()
         tagger.AUTO_CONVERT_WAV_TO_AIFF = self.auto_convert_wav_aiff_var.get()
 
@@ -301,9 +297,11 @@ class TaggerInterface:
         # early (mainloop() hasn't started yet), so it's deferred.
         self.window.after(100, self._rewarm_theme)
         self._start_message_loop()
+        self._reveal_next_scan_row()
         self._check_for_update_on_startup()
         self._check_internet_connection(is_startup_check=True)
         self._notify_new_install_on_startup()
+        self._check_source_health_on_startup()
 
     # --- Theme & dialog helpers ---
 
@@ -325,26 +323,6 @@ class TaggerInterface:
         choice = self.theme_var.get()
         self._apply_theme(choice)
         tagger.save_setting("theme", choice)
-
-    def _on_use_itunes_changed(self):
-        enabled = self.use_itunes_var.get()
-        tagger.USE_ITUNES = enabled
-        tagger.save_setting("use_itunes", enabled)
-
-    def _on_use_soundcloud_changed(self):
-        enabled = self.use_soundcloud_var.get()
-        tagger.USE_SOUNDCLOUD = enabled
-        tagger.save_setting("use_soundcloud", enabled)
-
-    def _on_use_acoustid_changed(self):
-        enabled = self.use_acoustid_var.get()
-        tagger.USE_ACOUSTID_FALLBACK = enabled
-        tagger.save_setting("use_acoustid_fallback", enabled)
-
-    def _on_use_spotify_changed(self):
-        enabled = self.use_spotify_var.get()
-        tagger.USE_SPOTIFY = enabled
-        tagger.save_setting("use_spotify", enabled)
 
     def _on_auto_convert_changed(self):
         enabled = self.auto_convert_var.get()
@@ -406,27 +384,15 @@ class TaggerInterface:
 
         for key, value in (
             ("theme", "light"),
-            ("use_itunes", True),
-            ("use_soundcloud", True),
-            ("use_acoustid_fallback", True),
-            ("use_spotify", True),
             ("auto_convert_mp3", False),
             ("auto_convert_wav_to_aiff", True),
             ("show_log_section", False),
         ):
             tagger.save_setting(key, value)
 
-        tagger.USE_ITUNES = True
-        tagger.USE_SOUNDCLOUD = True
-        tagger.USE_ACOUSTID_FALLBACK = True
-        tagger.USE_SPOTIFY = True
         tagger.AUTO_CONVERT_MP3 = False
         tagger.AUTO_CONVERT_WAV_TO_AIFF = True
 
-        self.use_itunes_var.set(True)
-        self.use_soundcloud_var.set(True)
-        self.use_acoustid_var.set(True)
-        self.use_spotify_var.set(True)
         self.auto_convert_var.set(False)
         self.auto_convert_wav_aiff_var.set(True)
 
@@ -975,6 +941,31 @@ class TaggerInterface:
         self._run_in_background(_run_check)
         self.window.after(10000, self._check_internet_connection)
 
+    def _check_source_health_on_startup(self):
+        """Runs two background checks at most once every 24h (not every
+        single launch - these force a fresh SoundCloud/Spotify token
+        request each time, which is quota every user shares, so re-running
+        this on every relaunch was pure waste on top of normal scanning
+        usage), since Settings can no longer disable a cover source to work
+        around a silent failure (see the comment above tagger.USE_ITUNES):
+        whether the shared SoundCloud/Spotify/AcoustID credentials still
+        authenticate, and whether iTunes/Spotify's own domains are
+        reachable at all (a restrictive firewall/network filter blocking
+        just those, while general internet access still works, would
+        otherwise look identical to "nothing found" with no explanation)."""
+        last_checked = tagger.load_settings().get("last_source_health_check", 0)
+        if time.time() - last_checked < 24 * 60 * 60:
+            return
+        tagger.save_setting("last_source_health_check", time.time())
+
+        def _run_check():
+            broken_credentials = tagger.check_source_credentials(log=self._append_to_journal)
+            is_online = tagger.check_internet_connection()
+            blocked_sources = tagger.check_restrictive_firewall() if is_online else []
+            self.message_queue.put(("source_health_checked", (broken_credentials, blocked_sources)))
+
+        self._run_in_background(_run_check)
+
     def _refresh_tagger_buttons_for_connectivity(self):
         """Scan/Apply/Reset need internet for cover search, so they're
         disabled while offline - Browse is exempt (still useful to pick a
@@ -1140,7 +1131,10 @@ class TaggerInterface:
         tagger.MUSIC_FOLDER = folder
         self._sync_mentions_to_remove()
         self.soundcloud_rate_limit_warned = False
+        self.itunes_rate_limit_warned = False
         self.source_auth_error_warned = {}
+        self._pending_scan_reveals = []
+        self._pending_scan_done = None
 
         if folder != getattr(self, "last_scanned_folder", None):
             for row in self.table.get_children():
@@ -1181,7 +1175,10 @@ class TaggerInterface:
         tagger.MUSIC_FOLDER = folder
         self.last_scanned_folder = folder
         self.soundcloud_rate_limit_warned = False
+        self.itunes_rate_limit_warned = False
         self.source_auth_error_warned = {}
+        self._pending_scan_reveals = []
+        self._pending_scan_done = None
 
         self.notebook.select(0)
         self._set_buttons_enabled(False)
@@ -1461,33 +1458,6 @@ class TaggerInterface:
                 appearance_frame, text=label, value=value, variable=self.theme_var,
                 command=self._on_theme_changed,
             ).pack(side="left", padx=10, pady=10)
-
-        # Sources + AcoustID together: both are really the same kind of
-        # setting (how a cover gets found for a track) - AcoustID used to
-        # be its own separate box, which made it look unrelated.
-        sources_frame = ttk.LabelFrame(soundcloud_tab, text="Cover sources")
-        sources_frame.pack(fill="x", padx=10, pady=(0, 10))
-        sources_row = ttk.Frame(sources_frame)
-        sources_row.pack(fill="x", padx=10, pady=(10, 10))
-        ttk.Checkbutton(
-            sources_row, text="iTunes", variable=self.use_itunes_var,
-            command=self._on_use_itunes_changed,
-        ).pack(side="left", padx=(0, 15))
-        ttk.Checkbutton(
-            sources_row, text="Spotify", variable=self.use_spotify_var,
-            command=self._on_use_spotify_changed,
-        ).pack(side="left", padx=(0, 15))
-        ttk.Checkbutton(
-            sources_row, text="SoundCloud", variable=self.use_soundcloud_var,
-            command=self._on_use_soundcloud_changed,
-        ).pack(side="left")
-
-        ttk.Separator(sources_frame, orient="horizontal").pack(fill="x", padx=10, pady=(0, 10))
-        ttk.Checkbutton(
-            sources_frame,
-            text="Identify badly-named tracks from the audio itself (AcoustID)",
-            variable=self.use_acoustid_var, command=self._on_use_acoustid_changed,
-        ).pack(anchor="w", padx=10, pady=(0, 10))
 
         # Renamed from "Behavior" - now holds only actual file-handling
         # toggles, not one-off maintenance actions (those moved to "App").
@@ -1871,7 +1841,10 @@ class TaggerInterface:
         tagger.MUSIC_FOLDER = folder
         self._sync_mentions_to_remove()
         self.soundcloud_rate_limit_warned = False
+        self.itunes_rate_limit_warned = False
         self.source_auth_error_warned = {}
+        self._pending_scan_reveals = []
+        self._pending_scan_done = None
 
         if folder != getattr(self, "last_scanned_folder", None):
             for row in self.table.get_children():
@@ -1910,8 +1883,12 @@ class TaggerInterface:
 
             def _on_file_scanned(info):
                 scanned_count["value"] += 1
-                self.message_queue.put(("file_scanned", info))
-                self.message_queue.put(("scan_progress", (scanned_count["value"], total)))
+                # Not displayed the instant it's ready - see
+                # _reveal_next_scan_row(): queued here so the TABLE reveals
+                # tracks no faster than one per second, while the actual
+                # scan (this callback) keeps running at full speed
+                # underneath, unaffected.
+                self.message_queue.put(("file_scanned", (info, scanned_count["value"], total)))
 
             tagger.scan_files(
                 new_files,
@@ -1921,6 +1898,7 @@ class TaggerInterface:
                 on_rate_limited=lambda: self.message_queue.put(("soundcloud_rate_limited", None)),
                 should_cancel=self.cancel_requested.is_set,
                 on_auth_error=self._on_source_auth_error,
+                on_itunes_rate_limited=lambda: self.message_queue.put(("itunes_rate_limited", None)),
             )
 
         except Exception as error:
@@ -1928,6 +1906,37 @@ class TaggerInterface:
             removed_files = set()
 
         self.message_queue.put(("scan_done", (removed_files, number_before)))
+
+    def _reveal_next_scan_row(self):
+        """Ticks once a second, for the app's entire lifetime: pops at most
+        one buffered scan result into the table (see the "file_scanned"
+        handler in _start_message_loop) so tracks visibly appear no faster
+        than one per second, no matter how fast the actual scan (running
+        unaffected in the background) produces them. Only finalizes the
+        scan (see _finalize_scan) once every buffered result has actually
+        been revealed - otherwise the summary/buttons would jump ahead of
+        rows still trickling into view.
+
+        Cancellation bypasses the pacing entirely: once Cancel is clicked,
+        every remaining buffered result is flushed in one go instead of
+        trickling out over however many seconds are left, so the buttons/
+        UI actually respond right away like they did before this pacing
+        was added."""
+        if self.cancel_requested.is_set():
+            while self._pending_scan_reveals:
+                info, scanned_count, total = self._pending_scan_reveals.pop(0)
+                self._add_scan_row(info)
+                self.scan_button.configure(text=f"Scan - {scanned_count}/{total}")
+        elif self._pending_scan_reveals:
+            info, scanned_count, total = self._pending_scan_reveals.pop(0)
+            self._add_scan_row(info)
+            self.scan_button.configure(text=f"Scan - {scanned_count}/{total}")
+
+        if not self._pending_scan_reveals and self._pending_scan_done is not None:
+            content, self._pending_scan_done = self._pending_scan_done, None
+            self._finalize_scan(content)
+
+        self.window.after(1000, self._reveal_next_scan_row)
 
     def _add_scan_row(self, info):
         """Immediately adds a row to the table, ABOVE the previous ones, as soon as a file has just been scanned."""
@@ -2141,11 +2150,6 @@ class TaggerInterface:
         lines.append(f"No cover at all: {no_cover_count}")
         summary_text = "\n".join(lines)
 
-        if no_cover_count and not enabled_sources:
-            summary_text += (
-                "\n\nNo cover source is enabled in Settings - enable iTunes "
-                "and/or SoundCloud to find covers automatically."
-            )
         if acoustid_count:
             # Not another bucket alongside the ones above (those already add
             # up to every scanned track) - these overlap with them, since
@@ -2303,7 +2307,12 @@ class TaggerInterface:
                 self._append_to_journal(f"{len(no_cover_infos)} track(s) currently have no cover match.")
 
             if not self.cancel_requested.is_set():
-                self._notify_scan_complete(number_new, len(removed_files), len(self.scanned_plan))
+                # Skip the Discord ping for a no-op rescan (nothing new,
+                # nothing removed) - otherwise repeatedly clicking Scan on an
+                # already-scanned folder spams the channel with empty
+                # "0 new, 0 removed" notifications.
+                if number_new > 0 or removed_files:
+                    self._notify_scan_complete(number_new, len(removed_files), len(self.scanned_plan))
                 if number_new > 0:
                     self._show_scan_summary_dialog(no_cover_infos=no_cover_infos)
 
@@ -2421,17 +2430,6 @@ class TaggerInterface:
             dialog, text="Correct the Artist/Title below, then click Search to try again.",
             padding=(10, 10, 10, 5),
         ).pack(anchor="w")
-
-        enabled_sources = tagger.enabled_cover_sources()
-        if len(enabled_sources) < 3:
-            disabled_sources = [name for name in ("iTunes", "Spotify", "SoundCloud") if name not in enabled_sources]
-            note_text = (
-                "No cover source is enabled in Settings - searching again won't find anything."
-                if not enabled_sources
-                else f"Only searching {', '.join(enabled_sources)} - "
-                f"{', '.join(disabled_sources)} {'is' if len(disabled_sources) == 1 else 'are'} disabled in Settings."
-            )
-            ttk.Label(dialog, text=note_text, padding=(10, 0, 10, 5), foreground="#888888").pack(anchor="w")
 
         canvas_frame = ttk.Frame(dialog)
         canvas_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
@@ -3752,11 +3750,10 @@ class TaggerInterface:
                         self._show_success_dialog()
 
                 elif message_type == "file_scanned":
-                    self._add_scan_row(content)
-
-                elif message_type == "scan_progress":
-                    scanned_count, total = content
-                    self.scan_button.configure(text=f"Scan - {scanned_count}/{total}")
+                    # Buffered, not shown immediately - see
+                    # _reveal_next_scan_row(), which pops these into the
+                    # table no faster than one per second.
+                    self._pending_scan_reveals.append(content)
 
                 elif message_type == "mention_added":
                     self.mention_counts[content] = self.mention_counts.get(content, 0) + 1
@@ -3781,6 +3778,17 @@ class TaggerInterface:
                             parent=self.window,
                         )
 
+                elif message_type == "itunes_rate_limited":
+                    if not self.itunes_rate_limit_warned:
+                        self.itunes_rate_limit_warned = True
+                        messagebox.showwarning(
+                            "iTunes rate limit reached",
+                            "iTunes' request limit has been reached for now.\n"
+                            f"iTunes will be paused for {tagger.ITUNES_RATE_LIMIT_COOLDOWN_SECONDS}s - "
+                            "the scan will keep going with the other cover sources in the meantime.",
+                            parent=self.window,
+                        )
+
                 elif message_type == "auth_error":
                     source, error_message = content
                     already_warned = self.source_auth_error_warned.get(source, False)
@@ -3795,8 +3803,39 @@ class TaggerInterface:
                             parent=self.window,
                         )
 
+                elif message_type == "source_health_checked":
+                    broken_credentials, blocked_sources = content
+                    if broken_credentials or blocked_sources:
+                        paragraphs = []
+                        if broken_credentials:
+                            names = ", ".join(broken_credentials)
+                            paragraphs.append(
+                                f"{names} authentication failed - the shared app "
+                                f"{'credential' if len(broken_credentials) == 1 else 'credentials'} may have "
+                                "been revoked or expired."
+                            )
+                        if blocked_sources:
+                            names = ", ".join(blocked_sources)
+                            verb = "seems" if len(blocked_sources) == 1 else "seem"
+                            paragraphs.append(
+                                f"{names} {verb} unreachable even though you're online - a firewall or "
+                                "network filter may be blocking it."
+                            )
+                        messagebox.showwarning(
+                            "Cover source issue detected",
+                            "\n\n".join(paragraphs) + "\n\nCover matching may be less reliable until this is fixed.",
+                            parent=self.window,
+                        )
+
                 elif message_type == "scan_done":
-                    self._finalize_scan(content)
+                    # Not finalized right away - the backend scan may well
+                    # have finished before every buffered row has been
+                    # revealed at the paced 1/s rate (see
+                    # _reveal_next_scan_row). Held here and finalized once
+                    # the reveal queue actually catches up, so the summary/
+                    # buttons don't jump ahead of what's still visibly
+                    # trickling into the table.
+                    self._pending_scan_done = content
 
                 elif message_type == "extract_done":
                     folder, moved_count, removed_count, error = content
