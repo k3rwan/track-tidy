@@ -2051,13 +2051,25 @@ class TaggerInterface:
 
     def _compute_processing_summary(self):
         """Counts, among the files actually processed in this session, how
-        many were converted - the cover breakdown itself is shown right
-        after scanning instead (see _compute_cover_summary), since it's
-        already known by then and doesn't change during Apply."""
-        converted_count = sum(
-            1 for info in self.scanned_plan if info.get("processed") and info.get("convert")
-        )
-        return converted_count
+        many were converted to MP3 vs. AIFF - info["convert"] alone doesn't
+        say which (it's just "this file gets converted, whichever format
+        that turns out to be"), so the actual target is re-derived from the
+        current settings via tagger._resolve_conversion_target(), same as
+        process_files() itself used at Apply time. The cover breakdown
+        itself is shown right after scanning instead (see
+        _compute_cover_summary), since it's already known by then and
+        doesn't change during Apply."""
+        mp3_count = 0
+        aiff_count = 0
+        for info in self.scanned_plan:
+            if not (info.get("processed") and info.get("convert")):
+                continue
+            target = tagger._resolve_conversion_target(info["file"])
+            if target == "mp3":
+                mp3_count += 1
+            elif target == "aiff":
+                aiff_count += 1
+        return mp3_count, aiff_count
 
     def _compute_cover_summary(self):
         """Counts, among all currently scanned tracks, how many got a cover
@@ -2222,7 +2234,7 @@ class TaggerInterface:
         except Exception:
             pass  # if the sound file is missing, just show the dialog silently
 
-        converted_count = self._compute_processing_summary()
+        mp3_count, aiff_count = self._compute_processing_summary()
 
         dialog = tk.Toplevel(self.window)
         self._style_toplevel(dialog)
@@ -2238,8 +2250,19 @@ class TaggerInterface:
             padding=(20, 20, 20, 5),
         ).pack()
 
+        # Only a line for a target format that actually happened at least
+        # once - showing "Converted to AIFF: 0" next to "Converted to MP3: 5"
+        # would misleadingly suggest AIFF conversion was tried and failed.
+        lines = []
+        if mp3_count:
+            lines.append(f"Converted to MP3: {mp3_count}")
+        if aiff_count:
+            lines.append(f"Converted to AIFF: {aiff_count}")
+        if not lines:
+            lines.append("No files were converted.")
+
         ttk.Label(
-            dialog, text=f"Converted to MP3: {converted_count}", justify="left", foreground="#555555",
+            dialog, text="\n".join(lines), justify="left", foreground="#555555",
         ).pack(padx=20, pady=(0, 15))
 
         ttk.Button(dialog, text="OK", command=dialog.destroy).pack(pady=(0, 15))
