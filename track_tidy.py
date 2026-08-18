@@ -913,6 +913,17 @@ AUTO_CONVERT_WAV_TO_AIFF = True
 
 VERSION_SUFFIX_RE = re.compile(r"\s*-\s*v\d+\s*$", re.IGNORECASE)
 
+# DJ-pool export convention: "Title - <Camelot key> - <BPM>" (e.g.
+# "Juno - 4A - 122") - the key is always 1-2 digits + A/B, the BPM 2-3
+# digits, both tacked on by the crate/pool software, never part of the
+# real title.
+DJ_POOL_KEY_BPM_SUFFIX_RE = re.compile(r"\s*-\s*\d{1,2}[AB]\s*-\s*\d{2,3}\s*$", re.IGNORECASE)
+
+# Windows' own "(1)"/"(2)" suffix, appended when a file was copied into a
+# folder that already had one with the same name - never part of the real
+# title either.
+DUPLICATE_FILE_MARKER_RE = re.compile(r"\s*\(\d+\)\s*$")
+
 
 def clean_title(text):
     for mention in MENTIONS_TO_REMOVE:
@@ -921,12 +932,20 @@ def clean_title(text):
         text = re.sub(r"\s+\)", ")", text)   # trim leftover space right before ")"
         text = re.sub(r"\s{2,}", " ", text)  # collapse any remaining double spaces
 
-    # A trailing "-v6"/"-v2" etc. is a producer/DJ's own informal working-
-    # version marker (their Nth draft of an edit), not part of the real
-    # title - real report: a WAV tagged/named "... Remix)-v6" should just
-    # be "... Remix)". No real song title plausibly ends this way, so this
-    # is safe to strip unconditionally rather than only for comparisons.
-    text = VERSION_SUFFIX_RE.sub("", text)
+    # Strip trailing junk tacked on by something other than the actual
+    # release (a producer/DJ's own "-v6" working-version marker, a DJ-pool
+    # export's "- <key> - <BPM>", Windows' own "(1)" duplicate-file marker)
+    # - repeated until nothing more changes, since these can stack in any
+    # order (e.g. "... - 4A - 122 (1)" has the duplicate marker AFTER the
+    # key/BPM suffix). No real song title plausibly ends with any of these,
+    # so safe to strip unconditionally rather than only for comparisons.
+    while True:
+        stripped = VERSION_SUFFIX_RE.sub("", text)
+        stripped = DJ_POOL_KEY_BPM_SUFFIX_RE.sub("", stripped)
+        stripped = DUPLICATE_FILE_MARKER_RE.sub("", stripped)
+        if stripped == text:
+            break
+        text = stripped
 
     return text.strip()
 
