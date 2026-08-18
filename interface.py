@@ -264,7 +264,7 @@ class TaggerInterface:
         self._drag_moved = False
         self._table_font = tkfont.nametofont("TkDefaultFont")
         self.soundcloud_rate_limit_warned = False
-        self.source_auth_error_warned = {}  # "SoundCloud"/"Spotify" -> already warned this scan
+        self.source_auth_error_warned = {}  # "SoundCloud" -> already warned this scan
         self.mention_counts = {}  # raw mention text -> number of times seen
 
         self._native_theme = ttk.Style().theme_use()  # so "light" can restore it later
@@ -276,7 +276,6 @@ class TaggerInterface:
 
         saved_settings = tagger.load_settings()
         self.use_itunes_var = tk.BooleanVar(value=saved_settings.get("use_itunes", True))
-        self.use_spotify_var = tk.BooleanVar(value=saved_settings.get("use_spotify", False))
         self.use_soundcloud_var = tk.BooleanVar(value=saved_settings.get("use_soundcloud", True))
         self.use_acoustid_var = tk.BooleanVar(value=saved_settings.get("use_acoustid_fallback", True))
         self.auto_convert_var = tk.BooleanVar(value=saved_settings.get("auto_convert_mp3", False))
@@ -284,7 +283,6 @@ class TaggerInterface:
         self.show_log_var = tk.BooleanVar(value=saved_settings.get("show_log_section", False))
         self._tagger_resize_pending = False
         tagger.USE_ITUNES = self.use_itunes_var.get()
-        tagger.USE_SPOTIFY = self.use_spotify_var.get()
         tagger.USE_SOUNDCLOUD = self.use_soundcloud_var.get()
         tagger.USE_ACOUSTID_FALLBACK = self.use_acoustid_var.get()
         tagger.AUTO_CONVERT_MP3 = self.auto_convert_var.get()
@@ -329,31 +327,8 @@ class TaggerInterface:
 
     def _on_use_itunes_changed(self):
         enabled = self.use_itunes_var.get()
-        if enabled and self.use_spotify_var.get():
-            messagebox.showinfo(
-                "iTunes and Spotify are exclusive",
-                "iTunes and Spotify can't both be enabled as cover sources at "
-                "the same time.\n\nTurn off Spotify first if you want to use iTunes.",
-                parent=self.window,
-            )
-            self.use_itunes_var.set(False)
-            return
         tagger.USE_ITUNES = enabled
         tagger.save_setting("use_itunes", enabled)
-
-    def _on_use_spotify_changed(self):
-        enabled = self.use_spotify_var.get()
-        if enabled and self.use_itunes_var.get():
-            # iTunes and Spotify are exclusive - Spotify silently wins here,
-            # since checking it is the more deliberate action (iTunes is the
-            # default already on, so unchecking it would take an extra step
-            # otherwise). Re-checking iTunes afterward is what explains the
-            # exclusivity, in _on_use_itunes_changed().
-            self.use_itunes_var.set(False)
-            tagger.USE_ITUNES = False
-            tagger.save_setting("use_itunes", False)
-        tagger.USE_SPOTIFY = enabled
-        tagger.save_setting("use_spotify", enabled)
 
     def _on_use_soundcloud_changed(self):
         enabled = self.use_soundcloud_var.get()
@@ -422,15 +397,14 @@ class TaggerInterface:
     def _reset_settings_to_default(self):
         """Restores every Settings-tab option to its out-of-the-box value.
         Deliberately bypasses the individual _on_X_changed() handlers -
-        several of them (auto-convert, iTunes/Spotify exclusivity) pop up
-        an explanatory messagebox on every change, which would mean a wall
-        of unwanted dialogs to click through here. Credentials (SoundCloud/
-        Spotify/AcoustID) are untouched - resetting "settings" shouldn't
-        force re-entering those."""
+        several of them (auto-convert) pop up an explanatory messagebox on
+        every change, which would mean a wall of unwanted dialogs to click
+        through here. Credentials (SoundCloud/AcoustID) are untouched -
+        resetting "settings" shouldn't force re-entering those."""
         if not messagebox.askyesno(
             "Reset settings",
             "Reset all settings to their default values?\n\n"
-            "Your saved SoundCloud/Spotify/AcoustID credentials won't be affected.",
+            "Your saved SoundCloud/AcoustID credentials won't be affected.",
             parent=self.window,
         ):
             return
@@ -438,7 +412,6 @@ class TaggerInterface:
         for key, value in (
             ("theme", "light"),
             ("use_itunes", True),
-            ("use_spotify", False),
             ("use_soundcloud", True),
             ("use_acoustid_fallback", True),
             ("auto_convert_mp3", False),
@@ -448,14 +421,12 @@ class TaggerInterface:
             tagger.save_setting(key, value)
 
         tagger.USE_ITUNES = True
-        tagger.USE_SPOTIFY = False
         tagger.USE_SOUNDCLOUD = True
         tagger.USE_ACOUSTID_FALLBACK = True
         tagger.AUTO_CONVERT_MP3 = False
         tagger.AUTO_CONVERT_WAV_TO_AIFF = True
 
         self.use_itunes_var.set(True)
-        self.use_spotify_var.set(False)
         self.use_soundcloud_var.set(True)
         self.use_acoustid_var.set(True)
         self.auto_convert_var.set(False)
@@ -1506,10 +1477,6 @@ class TaggerInterface:
             command=self._on_use_itunes_changed,
         ).pack(side="left", padx=(0, 15))
         ttk.Checkbutton(
-            sources_row, text="Spotify", variable=self.use_spotify_var,
-            command=self._on_use_spotify_changed,
-        ).pack(side="left", padx=(0, 15))
-        ttk.Checkbutton(
             sources_row, text="SoundCloud", variable=self.use_soundcloud_var,
             command=self._on_use_soundcloud_changed,
         ).pack(side="left")
@@ -2085,11 +2052,10 @@ class TaggerInterface:
         acoustid_count is a separate, overlapping tally (not another
         "source" like the others) - AcoustID never provides the cover
         itself, only identifies the correct Artist/Title from the audio so
-        the iTunes/Spotify/SoundCloud search above can find one; a track it
+        the iTunes/SoundCloud search above can find one; a track it
         identified still gets counted under whichever of those actually
         supplied the cover (or "no cover" if none did)."""
         itunes_count = 0
-        spotify_count = 0
         soundcloud_count = 0
         kept_existing_count = 0
         no_cover_count = 0
@@ -2102,8 +2068,6 @@ class TaggerInterface:
             source = info.get("cover_source")
             if source == "iTunes":
                 itunes_count += 1
-            elif source == "Spotify":
-                spotify_count += 1
             elif source == "SoundCloud":
                 soundcloud_count += 1
             elif info.get("has_cover"):
@@ -2111,7 +2075,7 @@ class TaggerInterface:
             else:
                 no_cover_count += 1
 
-        return itunes_count, spotify_count, soundcloud_count, kept_existing_count, no_cover_count, acoustid_count
+        return itunes_count, soundcloud_count, kept_existing_count, no_cover_count, acoustid_count
 
     def _show_scan_summary_dialog(self, no_cover_infos=None):
         """Cover-source breakdown shown right after a scan finds new files -
@@ -2119,7 +2083,7 @@ class TaggerInterface:
         A single dialog: "OK" alone, or "OK" plus a second button straight
         into fixing Artist/Title for no-cover tracks when there are any -
         not a separate yes/no confirmation chained after this one."""
-        itunes_count, spotify_count, soundcloud_count, kept_existing_count, no_cover_count, acoustid_count = (
+        itunes_count, soundcloud_count, kept_existing_count, no_cover_count, acoustid_count = (
             self._compute_cover_summary()
         )
 
@@ -2138,10 +2102,10 @@ class TaggerInterface:
         ).pack()
 
         # Only list sources that were actually enabled - a "Cover from
-        # Spotify: 0" line next to enabled sources reads as "Spotify was
-        # searched and came up empty", which is wrong when it wasn't
+        # SoundCloud: 0" line next to enabled sources reads as "SoundCloud
+        # was searched and came up empty", which is wrong when it wasn't
         # searched at all (see enabled_cover_sources()).
-        source_counts = {"iTunes": itunes_count, "Spotify": spotify_count, "SoundCloud": soundcloud_count}
+        source_counts = {"iTunes": itunes_count, "SoundCloud": soundcloud_count}
         enabled_sources = tagger.enabled_cover_sources()
         lines = [f"Cover from {name}: {source_counts[name]}" for name in enabled_sources]
         lines.append(f"Kept original cover: {kept_existing_count}")
@@ -2150,8 +2114,8 @@ class TaggerInterface:
 
         if no_cover_count and not enabled_sources:
             summary_text += (
-                "\n\nNo cover source is enabled in Settings - enable iTunes, "
-                "Spotify and/or SoundCloud to find covers automatically."
+                "\n\nNo cover source is enabled in Settings - enable iTunes "
+                "and/or SoundCloud to find covers automatically."
             )
         if acoustid_count:
             # Not another bucket alongside the ones above (those already add
@@ -2344,10 +2308,10 @@ class TaggerInterface:
         (its override if the user corrected it via double-click, otherwise
         the detected one) - no re-entry dialog, since that value is
         already right there. Runs sequentially in one background thread,
-        reusing a single SoundCloud/Spotify token across the batch, same
-        as a real scan (see scan_files) - firing one independent thread
-        per row would multiply token fetches and hit iTunes/SoundCloud
-        with an unthrottled burst instead. Reuses
+        reusing a single SoundCloud token across the batch, same as a real
+        scan (see scan_files) - firing one independent thread per row
+        would multiply token fetches and hit iTunes/SoundCloud with an
+        unthrottled burst instead. Reuses
         _apply_fix_row_search_result to update the table, which already
         tolerates no "Fix no cover" dialog being open."""
         to_search = []
@@ -2376,15 +2340,10 @@ class TaggerInterface:
                 soundcloud_token = tagger.get_soundcloud_token(
                     log=self._append_to_journal, on_auth_error=self._on_source_auth_error,
                 )
-            spotify_token = (
-                tagger.get_spotify_token(log=self._append_to_journal, on_auth_error=self._on_source_auth_error)
-                if tagger.USE_SPOTIFY else None
-            )
-
             for info, artist, title in to_search:
                 self._append_to_journal(f"Rescanning '{artist} - {title}'...")
                 found_cover_image, cover_source, returned_artist, returned_title = tagger.search_cover_manual(
-                    artist, title, soundcloud_token, spotify_token, log=self._append_to_journal,
+                    artist, title, soundcloud_token, log=self._append_to_journal,
                 )
                 self.message_queue.put((
                     "fix_row_search_result",
@@ -2411,8 +2370,8 @@ class TaggerInterface:
         ).pack(anchor="w")
 
         enabled_sources = tagger.enabled_cover_sources()
-        if len(enabled_sources) < 3:
-            disabled_sources = [name for name in ("iTunes", "Spotify", "SoundCloud") if name not in enabled_sources]
+        if len(enabled_sources) < 2:
+            disabled_sources = [name for name in ("iTunes", "SoundCloud") if name not in enabled_sources]
             note_text = (
                 "No cover source is enabled in Settings - searching again won't find anything."
                 if not enabled_sources
@@ -2819,9 +2778,9 @@ class TaggerInterface:
         dialog.resizable(False, False)
         dialog.transient(self.window)
 
-        # Covers are typically already small (iTunes/Spotify/SoundCloud
-        # artwork rarely exceeds ~600px) - cap the popup size without
-        # upscaling anything past its native resolution.
+        # Covers are typically already small (iTunes/SoundCloud artwork
+        # rarely exceeds ~600px) - cap the popup size without upscaling
+        # anything past its native resolution.
         max_size = (500, 500)
 
         image_label = ttk.Label(dialog)
@@ -3807,7 +3766,7 @@ class TaggerInterface:
                             messagebox.showwarning(
                                 "No internet connection",
                                 "No internet connection was detected.\n\nOnline cover search "
-                                "(iTunes/Spotify/SoundCloud) won't be available until your "
+                                "(iTunes/SoundCloud) won't be available until your "
                                 "connection is restored.",
                                 parent=self.window,
                             )
