@@ -3,6 +3,46 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.18]
+
+### Added
+- Startup checks (once every 24h): whether the shared SoundCloud/Spotify/
+  AcoustID credentials still authenticate, and whether iTunes/Spotify are
+  blocked by a restrictive firewall/network filter - both pop up a
+  warning if something's wrong.
+- A warning now also pops up when iTunes hits its own rate limit during a
+  scan (mirroring the existing SoundCloud one).
+
+### Changed
+- iTunes, Spotify, SoundCloud, and AcoustID are always on now - Settings
+  no longer offers a way to disable any of them.
+- Scan results now reveal into the table no faster than one per second
+  (display pacing only - the actual scan still runs unthrottled in the
+  background), instead of dozens of rows dumping in at once. Clicking
+  Cancel bypasses the pacing and flushes everything instantly.
+- Removed the client-side cooldown between "Report track" actions.
+- Window title now shows "Track Tidy (beta)".
+
+### Fixed
+- A bare "(Remix)" is now treated as a generic, interchangeable mix
+  label, same as "(Extended Mix)" - fixes titles where the store's
+  actual release uses a plain "(Remix)" tag instead of the file's own
+  wording.
+- Fixed a title/artist mangling bug from a bare "-vN" version suffix
+  with no leading space, which was mistaken for a real "Artist - Title"
+  separator.
+- Titles are now cleaned of DJ-pool "- <key> - <BPM>" suffixes, Windows'
+  "(N)" duplicate-file marker, and a bare "M1"/"M2" mix-number marker -
+  none of which are ever part of the real release.
+- The Discord "Scan complete" notification is no longer sent for a no-op
+  rescan (nothing new, nothing removed).
+- SoundCloud/Spotify token rate limits now use a real timed cooldown
+  (Spotify reads the server's actual Retry-After header; SoundCloud gets
+  a self-imposed estimate, since it sends no such signal) instead of
+  immediately retrying and re-tripping the limit.
+- Removed a leftover debug log line that was printed for every scanned
+  file.
+
 ## [0.17]
 
 ### Changed
