@@ -1839,6 +1839,12 @@ class TaggerInterface:
             self.apply_button.configure(text="Cancel", command=self._request_cancel, state="normal")
         self._set_tabs_locked(not enabled)
 
+    def _is_run_active(self):
+        """Whether a scan or apply run is currently in progress - see
+        _refresh_tagger_buttons_for_connectivity for why browse_button's
+        state doubles as this flag."""
+        return str(self.browse_button.cget("state")) == "disabled"
+
     def _set_tabs_locked(self, locked):
         """Prevents switching tabs while a scan or a processing run is in progress."""
         current_index = self.notebook.index("current")
@@ -2314,6 +2320,14 @@ class TaggerInterface:
         unthrottled burst instead. Reuses
         _apply_fix_row_search_result to update the table, which already
         tolerates no "Fix no cover" dialog being open."""
+        if self._is_run_active():
+            messagebox.showinfo(
+                "Scan in progress",
+                "Wait for the current scan/apply to finish before rescanning tracks manually.",
+                parent=self.window,
+            )
+            return
+
         to_search = []
         skipped = 0
         for info in infos:
@@ -2450,6 +2464,14 @@ class TaggerInterface:
         self._center_dialog(dialog)
 
     def _search_fix_row(self, info, artist_entry, title_entry, search_button, status_label):
+        if self._is_run_active():
+            messagebox.showinfo(
+                "Scan in progress",
+                "Wait for the current scan/apply to finish before searching manually.",
+                parent=search_button.winfo_toplevel(),
+            )
+            return
+
         artist = artist_entry.get().strip()
         title = title_entry.get().strip()
         if not artist or not title:

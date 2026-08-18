@@ -2143,15 +2143,24 @@ def split_artist_names(text):
 
 def artist_sets_match(expected_artist, returned_artist, returned_title=""):
     """
-    Exact match for a list of artists, ignoring order and separator style
-    (e.g. "A, B, C" vs "C & A x B" are considered the same set of artists).
-    If returned_title is given, a featured artist credited only there (e.g.
+    Matches a list of artists, ignoring order and separator style (e.g.
+    "A, B, C" vs "C & A x B" are considered the same set of artists). If
+    returned_title is given, a featured artist credited only there (e.g.
     "Title (feat. X)") is folded into the returned artist set too - some
     stores split primary vs. featured artist across the two fields, while
     our own tags/filename usually list everyone in the artist field.
+
+    Accepts either set being a SUBSET of the other rather than requiring an
+    exact match - a collective/label name (e.g. "Keinemusik") is sometimes
+    listed as one of the artists alongside its own individual members, while
+    a specific release's own credit only lists the members (or vice versa).
+    Rejecting that as a mismatch let a legitimate single lose out to an
+    unrelated compilation whose artist field happened to list every name
+    verbatim, including the collective's.
     """
     returned_names = split_artist_names(returned_artist) | extract_feature_names(returned_title)
-    return split_artist_names(expected_artist) == returned_names
+    expected_names = split_artist_names(expected_artist)
+    return expected_names <= returned_names or returned_names <= expected_names
 
 
 def artist_names_match(expected_artist, returned_artist):
