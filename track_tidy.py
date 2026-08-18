@@ -446,13 +446,6 @@ _DISCORD_REPORT_WEBHOOK_URL_B64 = (
 )
 DISCORD_REPORT_WEBHOOK_URL = base64.b64decode(_DISCORD_REPORT_WEBHOOK_URL_B64).decode("ascii")
 
-# Client-side cooldown between track reports - if the webhook URL is ever
-# extracted, this at least stops a single client from flooding the Discord
-# channel via _report_track's normal call path.
-REPORT_COOLDOWN_SECONDS = 15
-_last_report_time = 0
-
-
 def send_track_report(info, reporter_name=None, timeout=10):
     """
     Posts this track's info to a Discord webhook, so the developer gets a
@@ -464,19 +457,11 @@ def send_track_report(info, reporter_name=None, timeout=10):
 
     Returns (True, None) on success, (False, reason) on any failure (never
     raises - a failed report shouldn't disrupt the user) - reason is one of
-    "cooldown" (called again within REPORT_COOLDOWN_SECONDS of the last
-    report - see the module comment above), "http_error" (Discord itself
-    rejected the request - webhook revoked, Discord-side rate limit...),
-    or "network_error" (couldn't even reach Discord - a real connectivity
-    problem). Kept distinct so the UI doesn't blame "no internet connection"
-    for what's actually the client-side cooldown or a Discord-side issue.
+    "http_error" (Discord itself rejected the request - webhook revoked,
+    Discord-side rate limit...) or "network_error" (couldn't even reach
+    Discord - a real connectivity problem). Kept distinct so the UI doesn't
+    blame "no internet connection" for what's actually a Discord-side issue.
     """
-    global _last_report_time
-    now = time.time()
-    if now - _last_report_time < REPORT_COOLDOWN_SECONDS:
-        return False, "cooldown"
-    _last_report_time = now
-
     fields = [
         {"name": "Reported by", "value": reporter_name or "(unknown)", "inline": False},
         {"name": "File", "value": info.get("file") or "(unknown)", "inline": False},
