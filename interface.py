@@ -1514,15 +1514,6 @@ class TaggerInterface:
             command=self._on_use_soundcloud_changed,
         ).pack(side="left")
 
-        credentials_row = ttk.Frame(sources_frame)
-        credentials_row.pack(fill="x", padx=10, pady=(0, 10))
-        ttk.Button(
-            credentials_row, text="SoundCloud credentials...", command=self._show_soundcloud_credentials_dialog,
-        ).pack(side="left", fill="x", expand=True, padx=(0, 5))
-        ttk.Button(
-            credentials_row, text="Spotify credentials...", command=self._show_spotify_credentials_dialog,
-        ).pack(side="left", fill="x", expand=True)
-
         ttk.Separator(sources_frame, orient="horizontal").pack(fill="x", padx=10, pady=(0, 10))
         ttk.Checkbutton(
             sources_frame,
@@ -1659,121 +1650,6 @@ class TaggerInterface:
 
     # --- Settings tab actions ---
 
-    def _update_soundcloud_save_state(self, event=None):
-        id_value = self.sc_client_id_entry.get().strip()
-        secret_value = self.sc_client_secret_entry.get().strip()
-        both_filled = bool(id_value) and bool(secret_value)
-        both_empty = not id_value and not secret_value
-        self.sc_save_button.configure(state="normal" if (both_filled or both_empty) else "disabled")
-
-    def _save_soundcloud_credentials(self):
-        client_id = self.sc_client_id_entry.get().strip()
-        client_secret = self.sc_client_secret_entry.get().strip()
-
-        try:
-            tagger.write_credential(tagger.CLIENT_ID_KEY, client_id)
-            tagger.write_credential(tagger.CLIENT_SECRET_KEY, client_secret)
-
-            # Clearing a field falls back to the shared default credential,
-            # not to no credential at all - SoundCloud still works out of
-            # the box either way.
-            tagger.SOUNDCLOUD_CLIENT_ID = client_id or tagger.SOUNDCLOUD_DEFAULT_CLIENT_ID
-            tagger.SOUNDCLOUD_CLIENT_SECRET = client_secret or tagger.SOUNDCLOUD_DEFAULT_CLIENT_SECRET
-            tagger.invalidate_soundcloud_token()  # in case the credentials changed
-
-            messagebox.showinfo("Saved", "SoundCloud credentials saved.", parent=self._soundcloud_dialog)
-        except Exception as error:
-            messagebox.showerror("Error", f"Could not save credentials: {error}", parent=self._soundcloud_dialog)
-
-    def _open_soundcloud_registration(self):
-        webbrowser.open("https://soundcloud.com/you/apps")
-
-    def _show_soundcloud_credentials_dialog(self):
-        dialog = tk.Toplevel(self.window)
-        self._style_toplevel(dialog)
-        dialog.title("SoundCloud credentials")
-        dialog.resizable(False, False)
-        dialog.transient(self.window)
-        dialog.grab_set()
-        self._soundcloud_dialog = dialog
-
-        ttk.Label(
-            dialog,
-            text="SoundCloud already works out of the box, using a shared app - you only "
-                 "need this if you'd rather use your own (Artist Pro account required). "
-                 "Paste the Client ID / Client Secret you get from that page below.",
-            justify="left",
-            wraplength=440,
-        ).pack(anchor="w", padx=10, pady=(15, 10))
-
-        ttk.Label(dialog, text="Client ID:").pack(anchor="w", padx=10)
-        self.sc_client_id_entry = ttk.Entry(dialog)
-        self.sc_client_id_entry.pack(fill="x", padx=10, pady=(0, 10))
-        self.sc_client_id_entry.bind("<KeyRelease>", self._update_soundcloud_save_state)
-        self._bind_entry_context_menu(self.sc_client_id_entry)
-        # Only pre-fill with a credential the user actually saved themselves
-        # - not the shared default tagger.SOUNDCLOUD_CLIENT_ID falls back to,
-        # which would otherwise show up here for every user who never set one.
-        existing_client_id = tagger.read_credential(tagger.CLIENT_ID_KEY)
-        if existing_client_id:
-            self.sc_client_id_entry.insert(0, existing_client_id)
-
-        ttk.Label(dialog, text="Client Secret:").pack(anchor="w", padx=10)
-        self.sc_client_secret_entry = ttk.Entry(dialog, show="*")
-        self.sc_client_secret_entry.pack(fill="x", padx=10, pady=(0, 15))
-        self.sc_client_secret_entry.bind("<KeyRelease>", self._update_soundcloud_save_state)
-        self._bind_entry_context_menu(self.sc_client_secret_entry)
-        existing_client_secret = tagger.read_credential(tagger.CLIENT_SECRET_KEY)
-        if existing_client_secret:
-            self.sc_client_secret_entry.insert(0, existing_client_secret)
-
-        soundcloud_buttons_frame = ttk.Frame(dialog)
-        soundcloud_buttons_frame.pack(fill="x", padx=10, pady=(0, 10))
-        self.sc_save_button = ttk.Button(
-            soundcloud_buttons_frame, text="Save", command=self._save_soundcloud_credentials
-        )
-        self.sc_save_button.pack(side="left", fill="x", expand=True, padx=(0, 5))
-        ttk.Button(
-            soundcloud_buttons_frame, text="Register a SoundCloud app",
-            command=self._open_soundcloud_registration,
-        ).pack(side="left", fill="x", expand=True)
-
-        self._update_soundcloud_save_state()
-
-        ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=(0, 15))
-        dialog.bind("<Escape>", lambda _event: dialog.destroy())
-
-        self._center_dialog(dialog)
-
-    def _update_spotify_save_state(self, event=None):
-        id_value = self.sp_client_id_entry.get().strip()
-        secret_value = self.sp_client_secret_entry.get().strip()
-        both_filled = bool(id_value) and bool(secret_value)
-        both_empty = not id_value and not secret_value
-        self.sp_save_button.configure(state="normal" if (both_filled or both_empty) else "disabled")
-
-    def _save_spotify_credentials(self):
-        client_id = self.sp_client_id_entry.get().strip()
-        client_secret = self.sp_client_secret_entry.get().strip()
-
-        try:
-            tagger.write_credential(tagger.SPOTIFY_CLIENT_ID_KEY, client_id)
-            tagger.write_credential(tagger.SPOTIFY_CLIENT_SECRET_KEY, client_secret)
-
-            # Clearing a field falls back to the shared default credential,
-            # not to no credential at all - Spotify still works out of the
-            # box either way.
-            tagger.SPOTIFY_CLIENT_ID = client_id or tagger.SPOTIFY_DEFAULT_CLIENT_ID
-            tagger.SPOTIFY_CLIENT_SECRET = client_secret or tagger.SPOTIFY_DEFAULT_CLIENT_SECRET
-            tagger.invalidate_spotify_token()  # in case the credentials changed
-
-            messagebox.showinfo("Saved", "Spotify credentials saved.", parent=self._spotify_dialog)
-        except Exception as error:
-            messagebox.showerror("Error", f"Could not save credentials: {error}", parent=self._spotify_dialog)
-
-    def _open_spotify_registration(self):
-        webbrowser.open("https://developer.spotify.com/dashboard")
-
     def _open_legal_notices(self, event=None):
         """Opens THIRD-PARTY-NOTICES.md, installed next to the app - only
         present from v0.10 onward (see installer.iss), so this falls back
@@ -1791,64 +1667,6 @@ class TaggerInterface:
             open_with_default_app(path)
         except Exception as error:
             self._append_to_journal(f"Could not open license notices: {error}")
-
-    def _show_spotify_credentials_dialog(self):
-        dialog = tk.Toplevel(self.window)
-        self._style_toplevel(dialog)
-        dialog.title("Spotify credentials")
-        dialog.resizable(False, False)
-        dialog.transient(self.window)
-        dialog.grab_set()
-        self._spotify_dialog = dialog
-
-        ttk.Label(
-            dialog,
-            text="Spotify already works out of the box, using a shared app - you only "
-                 "need this if you'd rather use your own (free, at the link below). Any "
-                 "Redirect URI works (it's never actually used) - paste the Client ID / "
-                 "Client Secret you get from that page below.",
-            justify="left",
-            wraplength=440,
-        ).pack(anchor="w", padx=10, pady=(15, 10))
-
-        ttk.Label(dialog, text="Client ID:").pack(anchor="w", padx=10)
-        self.sp_client_id_entry = ttk.Entry(dialog)
-        self.sp_client_id_entry.pack(fill="x", padx=10, pady=(0, 10))
-        self.sp_client_id_entry.bind("<KeyRelease>", self._update_spotify_save_state)
-        self._bind_entry_context_menu(self.sp_client_id_entry)
-        # Only pre-fill with a credential the user actually saved themselves
-        # - not the shared default tagger.SPOTIFY_CLIENT_ID falls back to,
-        # which would otherwise show up here for every user who never set one.
-        existing_client_id = tagger.read_credential(tagger.SPOTIFY_CLIENT_ID_KEY)
-        if existing_client_id:
-            self.sp_client_id_entry.insert(0, existing_client_id)
-
-        ttk.Label(dialog, text="Client Secret:").pack(anchor="w", padx=10)
-        self.sp_client_secret_entry = ttk.Entry(dialog, show="*")
-        self.sp_client_secret_entry.pack(fill="x", padx=10, pady=(0, 15))
-        self.sp_client_secret_entry.bind("<KeyRelease>", self._update_spotify_save_state)
-        self._bind_entry_context_menu(self.sp_client_secret_entry)
-        existing_client_secret = tagger.read_credential(tagger.SPOTIFY_CLIENT_SECRET_KEY)
-        if existing_client_secret:
-            self.sp_client_secret_entry.insert(0, existing_client_secret)
-
-        spotify_buttons_frame = ttk.Frame(dialog)
-        spotify_buttons_frame.pack(fill="x", padx=10, pady=(0, 10))
-        self.sp_save_button = ttk.Button(
-            spotify_buttons_frame, text="Save", command=self._save_spotify_credentials
-        )
-        self.sp_save_button.pack(side="left", fill="x", expand=True, padx=(0, 5))
-        ttk.Button(
-            spotify_buttons_frame, text="Register a Spotify app",
-            command=self._open_spotify_registration,
-        ).pack(side="left", fill="x", expand=True)
-
-        self._update_spotify_save_state()
-
-        ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=(0, 15))
-        dialog.bind("<Escape>", lambda _event: dialog.destroy())
-
-        self._center_dialog(dialog)
 
     # --- Extractor tab actions ---
 
