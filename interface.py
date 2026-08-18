@@ -267,6 +267,8 @@ class TaggerInterface:
         self.itunes_rate_limit_warned = False
         self.source_auth_error_warned = {}  # "SoundCloud" -> already warned this scan
         self.mention_counts = {}  # raw mention text -> number of times seen
+        self._pending_scan_reveals = []  # (info, scanned_count, total) queued for _reveal_next_scan_row
+        self._pending_scan_done = None  # (removed_files, number_before), held until reveals catch up
 
         self._native_theme = ttk.Style().theme_use()  # so "light" can restore it later
         self.theme_colors = None  # None while light/native; DARK_COLORS once dark is applied
@@ -294,6 +296,7 @@ class TaggerInterface:
         # early (mainloop() hasn't started yet), so it's deferred.
         self.window.after(100, self._rewarm_theme)
         self._start_message_loop()
+        self._reveal_next_scan_row()
         self._check_for_update_on_startup()
         self._check_internet_connection(is_startup_check=True)
         self._notify_new_install_on_startup()
@@ -1121,6 +1124,8 @@ class TaggerInterface:
         self.soundcloud_rate_limit_warned = False
         self.itunes_rate_limit_warned = False
         self.source_auth_error_warned = {}
+        self._pending_scan_reveals = []
+        self._pending_scan_done = None
 
         if folder != getattr(self, "last_scanned_folder", None):
             for row in self.table.get_children():
@@ -1163,6 +1168,8 @@ class TaggerInterface:
         self.soundcloud_rate_limit_warned = False
         self.itunes_rate_limit_warned = False
         self.source_auth_error_warned = {}
+        self._pending_scan_reveals = []
+        self._pending_scan_done = None
 
         self.notebook.select(0)
         self._set_buttons_enabled(False)
@@ -1827,6 +1834,8 @@ class TaggerInterface:
         self.soundcloud_rate_limit_warned = False
         self.itunes_rate_limit_warned = False
         self.source_auth_error_warned = {}
+        self._pending_scan_reveals = []
+        self._pending_scan_done = None
 
         if folder != getattr(self, "last_scanned_folder", None):
             for row in self.table.get_children():
@@ -1865,8 +1874,12 @@ class TaggerInterface:
 
             def _on_file_scanned(info):
                 scanned_count["value"] += 1
-                self.message_queue.put(("file_scanned", info))
-                self.message_queue.put(("scan_progress", (scanned_count["value"], total)))
+                # Not displayed the instant it's ready - see
+                # _reveal_next_scan_row(): queued here so the TABLE reveals
+                # tracks no faster than one per second, while the actual
+                # scan (this callback) keeps running at full speed
+                # underneath, unaffected.
+                self.message_queue.put(("file_scanned", (info, scanned_count["value"], total)))
 
             tagger.scan_files(
                 new_files,
@@ -1884,6 +1897,37 @@ class TaggerInterface:
             removed_files = set()
 
         self.message_queue.put(("scan_done", (removed_files, number_before)))
+
+    def _reveal_next_scan_row(self):
+        """Ticks once a second, for the app's entire lifetime: pops at most
+        one buffered scan result into the table (see the "file_scanned"
+        handler in _start_message_loop) so tracks visibly appear no faster
+        than one per second, no matter how fast the actual scan (running
+        unaffected in the background) produces them. Only finalizes the
+        scan (see _finalize_scan) once every buffered result has actually
+        been revealed - otherwise the summary/buttons would jump ahead of
+        rows still trickling into view.
+
+        Cancellation bypasses the pacing entirely: once Cancel is clicked,
+        every remaining buffered result is flushed in one go instead of
+        trickling out over however many seconds are left, so the buttons/
+        UI actually respond right away like they did before this pacing
+        was added."""
+        if self.cancel_requested.is_set():
+            while self._pending_scan_reveals:
+                info, scanned_count, total = self._pending_scan_reveals.pop(0)
+                self._add_scan_row(info)
+                self.scan_button.configure(text=f"Scan - {scanned_count}/{total}")
+        elif self._pending_scan_reveals:
+            info, scanned_count, total = self._pending_scan_reveals.pop(0)
+            self._add_scan_row(info)
+            self.scan_button.configure(text=f"Scan - {scanned_count}/{total}")
+
+        if not self._pending_scan_reveals and self._pending_scan_done is not None:
+            content, self._pending_scan_done = self._pending_scan_done, None
+            self._finalize_scan(content)
+
+        self.window.after(1000, self._reveal_next_scan_row)
 
     def _add_scan_row(self, info):
         """Immediately adds a row to the table, ABOVE the previous ones, as soon as a file has just been scanned."""
@@ -3697,11 +3741,10 @@ class TaggerInterface:
                         self._show_success_dialog()
 
                 elif message_type == "file_scanned":
-                    self._add_scan_row(content)
-
-                elif message_type == "scan_progress":
-                    scanned_count, total = content
-                    self.scan_button.configure(text=f"Scan - {scanned_count}/{total}")
+                    # Buffered, not shown immediately - see
+                    # _reveal_next_scan_row(), which pops these into the
+                    # table no faster than one per second.
+                    self._pending_scan_reveals.append(content)
 
                 elif message_type == "mention_added":
                     self.mention_counts[content] = self.mention_counts.get(content, 0) + 1
@@ -3776,7 +3819,14 @@ class TaggerInterface:
                         )
 
                 elif message_type == "scan_done":
-                    self._finalize_scan(content)
+                    # Not finalized right away - the backend scan may well
+                    # have finished before every buffered row has been
+                    # revealed at the paced 1/s rate (see
+                    # _reveal_next_scan_row). Held here and finalized once
+                    # the reveal queue actually catches up, so the summary/
+                    # buttons don't jump ahead of what's still visibly
+                    # trickling into the table.
+                    self._pending_scan_done = content
 
                 elif message_type == "extract_done":
                     folder, moved_count, removed_count, error = content
