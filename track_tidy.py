@@ -924,6 +924,15 @@ DJ_POOL_KEY_BPM_SUFFIX_RE = re.compile(r"\s*-\s*\d{1,2}[AB]\s*-\s*\d{2,3}\s*$", 
 # title either.
 DUPLICATE_FILE_MARKER_RE = re.compile(r"\s*\(\d+\)\s*$")
 
+# A DJ's own bare mix-number marker (e.g. "... (Nabler Edit) M1") - no
+# dash, just a trailing space before it, so kept case-SENSITIVE (unlike
+# the other patterns above) to stay narrow: a real title is far less
+# likely to end in an uppercase "M" + digit(s) than in some lowercase
+# word that happens to fit the same shape. Real report verified live
+# against the actual SoundCloud upload: its real title has no "M1" at
+# all, confirming it's the filer's own addition, not part of the release.
+MIX_NUMBER_SUFFIX_RE = re.compile(r"\s+M\d{1,2}\s*$")
+
 
 def clean_title(text):
     for mention in MENTIONS_TO_REMOVE:
@@ -933,16 +942,18 @@ def clean_title(text):
         text = re.sub(r"\s{2,}", " ", text)  # collapse any remaining double spaces
 
     # Strip trailing junk tacked on by something other than the actual
-    # release (a producer/DJ's own "-v6" working-version marker, a DJ-pool
-    # export's "- <key> - <BPM>", Windows' own "(1)" duplicate-file marker)
-    # - repeated until nothing more changes, since these can stack in any
-    # order (e.g. "... - 4A - 122 (1)" has the duplicate marker AFTER the
-    # key/BPM suffix). No real song title plausibly ends with any of these,
-    # so safe to strip unconditionally rather than only for comparisons.
+    # release (a producer/DJ's own "-v6" working-version marker or bare
+    # "M1" mix-number marker, a DJ-pool export's "- <key> - <BPM>",
+    # Windows' own "(1)" duplicate-file marker) - repeated until nothing
+    # more changes, since these can stack in any order (e.g. "... - 4A -
+    # 122 (1)" has the duplicate marker AFTER the key/BPM suffix). No real
+    # song title plausibly ends with any of these, so safe to strip
+    # unconditionally rather than only for comparisons.
     while True:
         stripped = VERSION_SUFFIX_RE.sub("", text)
         stripped = DJ_POOL_KEY_BPM_SUFFIX_RE.sub("", stripped)
         stripped = DUPLICATE_FILE_MARKER_RE.sub("", stripped)
+        stripped = MIX_NUMBER_SUFFIX_RE.sub("", stripped)
         if stripped == text:
             break
         text = stripped
