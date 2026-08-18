@@ -698,12 +698,10 @@ class SearchOneSourceTests(unittest.TestCase):
 
     def setUp(self):
         self._original_itunes = tagger.search_cover_itunes
-        self._original_spotify = tagger.search_cover_spotify
         self._original_soundcloud = tagger.search_cover_soundcloud
 
     def tearDown(self):
         tagger.search_cover_itunes = self._original_itunes
-        tagger.search_cover_spotify = self._original_spotify
         tagger.search_cover_soundcloud = self._original_soundcloud
 
     def test_itunes_tries_plain_title_first(self):
@@ -716,7 +714,7 @@ class SearchOneSourceTests(unittest.TestCase):
         tagger.search_cover_itunes = fake_itunes
 
         match_result, source = tagger._search_one_source(
-            "itunes", "Artist", "Title", "Title", None, None, print
+            "itunes", "Artist", "Title", "Title", None, print
         )
         self.assertEqual(source, "iTunes")
         self.assertEqual(calls, ["Title"])
@@ -732,7 +730,7 @@ class SearchOneSourceTests(unittest.TestCase):
         tagger.search_cover_itunes = fake_itunes
 
         match_result, source = tagger._search_one_source(
-            "itunes", "Artist", "Title", "Title (Remix)", None, None, print
+            "itunes", "Artist", "Title", "Title (Remix)", None, print
         )
         self.assertEqual(calls, ["Title", "Title (Remix)"])
         self.assertEqual(source, "iTunes")
@@ -755,7 +753,7 @@ class SearchOneSourceTests(unittest.TestCase):
         tagger.search_cover_itunes = fake_itunes
 
         match_result, source = tagger._search_one_source(
-            "itunes", "Artist", "Title", "Title (Royale BR Bootleg)", None, None, print
+            "itunes", "Artist", "Title", "Title (Royale BR Bootleg)", None, print
         )
         self.assertEqual(calls, ["Title (Royale BR Bootleg)"])
         self.assertIsNone(match_result)
@@ -766,27 +764,11 @@ class SearchOneSourceTests(unittest.TestCase):
         tagger.search_cover_itunes = lambda artist, title, log=None, **k: calls.append(title) or None
 
         match_result, source = tagger._search_one_source(
-            "itunes", "Artist", "Title", "Title", None, None, print
+            "itunes", "Artist", "Title", "Title", None, print
         )
         self.assertEqual(calls, ["Title"])
         self.assertIsNone(match_result)
         self.assertIsNone(source)
-
-    def test_spotify_tries_plain_then_remix_qualified_title(self):
-        calls = []
-
-        def fake_spotify(artist, title, token, log=None):
-            calls.append(title)
-            return (b"cover", artist, title) if title == "Title (Remix)" else None
-
-        tagger.search_cover_spotify = fake_spotify
-
-        match_result, source = tagger._search_one_source(
-            "spotify", "Artist", "Title", "Title (Remix)", "token", None, print
-        )
-        self.assertEqual(calls, ["Title", "Title (Remix)"])
-        self.assertEqual(source, "Spotify")
-        self.assertIsNotNone(match_result)
 
     def test_soundcloud_uses_remix_qualified_title_directly(self):
         calls = []
@@ -798,7 +780,7 @@ class SearchOneSourceTests(unittest.TestCase):
         tagger.search_cover_soundcloud = fake_soundcloud
 
         match_result, source = tagger._search_one_source(
-            "soundcloud", "Artist", "Title", "Title (Remix)", None, "token", print
+            "soundcloud", "Artist", "Title", "Title (Remix)", "token", print
         )
         # SoundCloud goes straight for the remix-qualified title - no
         # separate plain-title attempt first.
@@ -808,33 +790,25 @@ class SearchOneSourceTests(unittest.TestCase):
 
 
 class TokenAuthErrorCallbackTests(unittest.TestCase):
-    """get_soundcloud_token()/get_spotify_token() call on_auth_error(source,
-    message) specifically when credentials ARE configured but authentication
-    fails (e.g. a revoked/wrong client) - distinct from simply missing
-    credentials, and (for SoundCloud) distinct from a 429 rate limit, neither
-    of which should trigger it."""
+    """get_soundcloud_token() calls on_auth_error(source, message)
+    specifically when credentials ARE configured but authentication fails
+    (e.g. a revoked/wrong client) - distinct from simply missing
+    credentials, and distinct from a 429 rate limit, neither of which
+    should trigger it."""
 
     def setUp(self):
         self._original_sc_id = tagger.SOUNDCLOUD_CLIENT_ID
         self._original_sc_secret = tagger.SOUNDCLOUD_CLIENT_SECRET
-        self._original_spotify_id = tagger.SPOTIFY_CLIENT_ID
-        self._original_spotify_secret = tagger.SPOTIFY_CLIENT_SECRET
         self._original_post = tagger.requests.post
         tagger.SOUNDCLOUD_CLIENT_ID = "bad-id"
         tagger.SOUNDCLOUD_CLIENT_SECRET = "bad-secret"
-        tagger.SPOTIFY_CLIENT_ID = "bad-id"
-        tagger.SPOTIFY_CLIENT_SECRET = "bad-secret"
         tagger.invalidate_soundcloud_token()
-        tagger.invalidate_spotify_token()
 
     def tearDown(self):
         tagger.SOUNDCLOUD_CLIENT_ID = self._original_sc_id
         tagger.SOUNDCLOUD_CLIENT_SECRET = self._original_sc_secret
-        tagger.SPOTIFY_CLIENT_ID = self._original_spotify_id
-        tagger.SPOTIFY_CLIENT_SECRET = self._original_spotify_secret
         tagger.requests.post = self._original_post
         tagger.invalidate_soundcloud_token()
-        tagger.invalidate_spotify_token()
 
     class FakeResponse:
         def __init__(self, status_code, text=""):
@@ -866,16 +840,6 @@ class TokenAuthErrorCallbackTests(unittest.TestCase):
         tagger.get_soundcloud_token(log=lambda *_: None, on_auth_error=lambda s, m: calls.append((s, m)))
         self.assertEqual(calls, [])
 
-    def test_spotify_401_triggers_callback(self):
-        tagger.requests.post = lambda *a, **k: self.FakeResponse(401, '{"error":"invalid_client"}')
-        calls = []
-        result = tagger.get_spotify_token(log=lambda *_: None, on_auth_error=lambda s, m: calls.append((s, m)))
-
-        self.assertIsNone(result)
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][0], "Spotify")
-        self.assertIn("401", calls[0][1])
-
 
 class SearchCoverManualTests(unittest.TestCase):
     """search_cover_manual() - the "fix Artist/Title and search again" flow
@@ -886,12 +850,10 @@ class SearchCoverManualTests(unittest.TestCase):
         self._original_itunes = tagger.search_cover_itunes
         self._original_soundcloud = tagger.search_cover_soundcloud
         self._original_use_itunes = tagger.USE_ITUNES
-        self._original_use_spotify = tagger.USE_SPOTIFY
         self._original_use_soundcloud = tagger.USE_SOUNDCLOUD
         self._original_soundcloud_rate_limited = tagger.SOUNDCLOUD_RATE_LIMITED
         self._original_soundcloud_unavailable = tagger.SOUNDCLOUD_UNAVAILABLE
         tagger.USE_ITUNES = True
-        tagger.USE_SPOTIFY = False
         tagger.USE_SOUNDCLOUD = True
         # search_cover_manual() doesn't reset these itself (only scan_files()
         # does, at the start of each run) - force known-good values so a
@@ -905,7 +867,6 @@ class SearchCoverManualTests(unittest.TestCase):
         tagger.search_cover_itunes = self._original_itunes
         tagger.search_cover_soundcloud = self._original_soundcloud
         tagger.USE_ITUNES = self._original_use_itunes
-        tagger.USE_SPOTIFY = self._original_use_spotify
         tagger.USE_SOUNDCLOUD = self._original_use_soundcloud
         tagger.SOUNDCLOUD_RATE_LIMITED = self._original_soundcloud_rate_limited
         tagger.SOUNDCLOUD_UNAVAILABLE = self._original_soundcloud_unavailable
@@ -1063,12 +1024,11 @@ class ListAudioFilesTests(unittest.TestCase):
 
 class ScanFilesParallelITunesTests(unittest.TestCase):
     """scan_files() searches iTunes for every file concurrently (bounded by
-    ITUNES_SCAN_MAX_WORKERS), while Spotify/SoundCloud stay sequential."""
+    ITUNES_SCAN_MAX_WORKERS), while SoundCloud stays sequential."""
 
     def setUp(self):
         self._original_music_folder = tagger.MUSIC_FOLDER
         self._original_use_itunes = tagger.USE_ITUNES
-        self._original_use_spotify = tagger.USE_SPOTIFY
         self._original_use_soundcloud = tagger.USE_SOUNDCLOUD
         self._original_itunes_search = tagger.search_cover_itunes
         self._original_soundcloud_search = tagger.search_cover_soundcloud
@@ -1084,7 +1044,6 @@ class ScanFilesParallelITunesTests(unittest.TestCase):
                 f.write("x")
 
         tagger.USE_ITUNES = True
-        tagger.USE_SPOTIFY = False
         tagger.USE_SOUNDCLOUD = True
         # scan_files() skips SoundCloud entirely (SOUNDCLOUD_UNAVAILABLE) when
         # no Client ID/Secret are configured - fake ones (plus a mocked
@@ -1099,7 +1058,6 @@ class ScanFilesParallelITunesTests(unittest.TestCase):
     def tearDown(self):
         tagger.MUSIC_FOLDER = self._original_music_folder
         tagger.USE_ITUNES = self._original_use_itunes
-        tagger.USE_SPOTIFY = self._original_use_spotify
         tagger.USE_SOUNDCLOUD = self._original_use_soundcloud
         tagger.search_cover_itunes = self._original_itunes_search
         tagger.search_cover_soundcloud = self._original_soundcloud_search
