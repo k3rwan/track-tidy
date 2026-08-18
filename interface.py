@@ -1665,13 +1665,121 @@ class TaggerInterface:
     # --- Folder / mention actions ---
 
     def _choose_folder(self):
-        """Windows' native folder-browser dialog (which askdirectory uses)
-        never shows files, only folders - a Tk/Windows limitation, not
-        something this app can turn on. As the next best thing, log how
-        many audio files are actually in the chosen folder right away,
-        instead of only finding out once Scan is clicked."""
-        folder = filedialog.askdirectory(title="Choose the audio files folder")
-        if folder:
+        """Custom folder-browser dialog - Windows' native one (which
+        filedialog.askdirectory uses) never shows files while navigating,
+        only folders, a Tk/Windows limitation this app can't turn on. This
+        one lists both, so a folder's contents (and which files in it are
+        actually audio) are visible before picking it."""
+        start = self.folder_variable.get().strip() or os.path.expanduser("~")
+        if not os.path.isdir(start):
+            start = os.path.expanduser("~")
+
+        dialog = tk.Toplevel(self.window)
+        self._style_toplevel(dialog)
+        dialog.title("Choose the audio files folder")
+        dialog.geometry("640x480")
+        dialog.transient(self.window)
+        dialog.grab_set()
+
+        current_path = tk.StringVar(value=os.path.abspath(start))
+
+        path_row = ttk.Frame(dialog)
+        path_row.pack(fill="x", padx=10, pady=10)
+        up_button = ttk.Button(path_row, text="↑ Up", width=6, command=lambda: go_up())
+        up_button.pack(side="left")
+        path_entry = ttk.Entry(path_row, textvariable=current_path)
+        path_entry.pack(side="left", fill="x", expand=True, padx=(5, 0))
+        self._bind_entry_context_menu(path_entry)
+
+        list_frame = ttk.Frame(dialog)
+        list_frame.pack(fill="both", expand=True, padx=10, pady=(0, 5))
+
+        tree = ttk.Treeview(list_frame, show="tree", selectmode="browse", style="Table.Treeview")
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        tree.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="left", fill="y")
+
+        if self.theme_colors:
+            tree.tag_configure(
+                "odd_row", background=self.theme_colors["tree_odd_row"], foreground=self.theme_colors["tree_fg"],
+            )
+            tree.tag_configure(
+                "even_row", background=self.theme_colors["tree_bg"], foreground=self.theme_colors["tree_fg"],
+            )
+            tree.tag_configure("dim", foreground=self.theme_colors.get("dim_fg", "#888888"))
+        else:
+            tree.tag_configure("odd_row", background="#e9e9e9", foreground="black")
+            tree.tag_configure("even_row", background="white", foreground="black")
+            tree.tag_configure("dim", foreground="#888888")
+
+        count_label = ttk.Label(dialog, text="")
+        count_label.pack(fill="x", padx=10, pady=(0, 5))
+
+        button_row = ttk.Frame(dialog)
+        button_row.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Button(button_row, text="Cancel", command=dialog.destroy).pack(side="right")
+        select_button = ttk.Button(button_row, text="Select this folder", command=lambda: confirm())
+        select_button.pack(side="right", padx=(0, 5))
+
+        def populate(path):
+            tree.delete(*tree.get_children())
+            try:
+                entries = sorted(os.listdir(path), key=str.lower)
+            except OSError as error:
+                count_label.configure(text=f"Can't open this folder: {error}")
+                select_button.configure(state="disabled")
+                return
+
+            select_button.configure(state="normal")
+            audio_count = 0
+            row_index = 0
+            for name in entries:
+                full_path = os.path.join(path, name)
+                if os.path.isdir(full_path):
+                    tag = "odd_row" if row_index % 2 else "even_row"
+                    tree.insert("", "end", iid=full_path, text=f"\U0001F4C1 {name}", tags=(tag,))
+                    row_index += 1
+                elif name.lower().endswith(tagger.EXTRACTABLE_AUDIO_EXTENSIONS):
+                    audio_count += 1
+                    tag = "odd_row" if row_index % 2 else "even_row"
+                    tree.insert("", "end", iid=full_path, text=f"\U0001F3B5 {name}", tags=(tag,))
+                    row_index += 1
+                else:
+                    tag = "dim"
+                    tree.insert("", "end", iid=full_path, text=name, tags=(tag,))
+                    row_index += 1
+
+            unit = "audio file" if audio_count == 1 else "audio files"
+            count_label.configure(text=f"{audio_count} {unit} in this folder")
+
+        def navigate(path):
+            path = os.path.abspath(path)
+            if os.path.isdir(path):
+                current_path.set(path)
+                populate(path)
+
+        def go_up():
+            navigate(os.path.dirname(current_path.get().rstrip(os.sep)))
+
+        def on_double_click(event):
+            item = tree.focus()
+            if item and os.path.isdir(item):
+                navigate(item)
+
+        def on_path_entry_return(event):
+            navigate(path_entry.get().strip())
+
+        tree.bind("<Double-1>", on_double_click)
+        path_entry.bind("<Return>", on_path_entry_return)
+
+        def confirm():
+            folder = current_path.get().strip()
+            if not os.path.isdir(folder):
+                messagebox.showerror("Invalid folder", "This folder doesn't exist.", parent=dialog)
+                return
+            dialog.destroy()
+
             self.folder_variable.set(folder)
             self._refresh_tagger_buttons_for_connectivity()
 
@@ -1679,6 +1787,10 @@ class TaggerInterface:
             file_count = len(tagger.list_audio_files())
             unit = "audio file" if file_count == 1 else "audio files"
             self._append_to_journal(f"Selected folder contains {file_count} {unit}.")
+
+        populate(current_path.get())
+        self._center_dialog(dialog)
+        dialog.wait_window()
 
     def _add_mention(self, event=None):
         """Manual entries go straight into the 'To remove' list (press Enter to confirm)."""
