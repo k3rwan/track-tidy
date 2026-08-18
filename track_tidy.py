@@ -39,6 +39,7 @@ Contents (in the order they appear below):
 """
 
 import os
+import io
 import socket
 import hashlib
 import uuid
@@ -57,6 +58,7 @@ import requests
 import keyring
 import platformdirs
 import acoustid
+from PIL import Image
 from mutagen import File as MutagenFile
 from mutagen.mp3 import MP3
 from mutagen.wave import WAVE
@@ -1558,6 +1560,67 @@ def detect_fuviclan_mention(file_name):
     return match.group(0) if match else None
 
 
+# Perceptual hashes (dHash, 8x8) of known "placeholder" covers - a
+# downloaded file sometimes already has one of these baked in even when
+# its filename doesn't mention the source that added it (unlike the
+# FUVICLAN_PATTERN case above, which relies on the filename saying so).
+# Sourced from 5 real Kevin-supplied files, all carrying some variant of
+# the same "Fuvi Clan" watermark artwork on a different background - kept
+# as separate entries rather than one merged hash since the backgrounds
+# differ enough that a single average hash wouldn't recognize all 5.
+BANNED_COVER_HASHES = (
+    0x80848E8E8E06B6FE,
+    0xB8962B4D170F8C41,
+    0x8024D4B2E8F1D31C,
+    0xCCAA4D4D960F8A8E,
+    0x0962B4D170F8EE9,
+)
+
+BANNED_COVER_HASH_THRESHOLD = 6  # Hamming distance - see is_banned_cover_image()
+
+
+def _cover_dhash(image_bytes, hash_size=8):
+    """
+    Computes a difference hash (dHash) of an image: resizes down to a tiny
+    grayscale grid and encodes, bit by bit, whether each pixel is brighter
+    than its right neighbor. Small enough a fingerprint that a JPEG
+    re-compression or resize of the SAME image (e.g. re-hosted by a
+    different download source) still lands only a few bits away, while an
+    unrelated image lands dozens of bits away - see
+    BANNED_COVER_HASH_THRESHOLD. Returns None if the bytes aren't a valid
+    image.
+    """
+    try:
+        image = Image.open(io.BytesIO(image_bytes)).convert("L").resize((hash_size + 1, hash_size), Image.LANCZOS)
+    except Exception:
+        return None
+    pixels = list(image.getdata())
+    bits = 0
+    for row in range(hash_size):
+        row_start = row * (hash_size + 1)
+        for col in range(hash_size):
+            bits <<= 1
+            if pixels[row_start + col] > pixels[row_start + col + 1]:
+                bits |= 1
+    return bits
+
+
+def is_banned_cover_image(cover_bytes):
+    """
+    Whether cover_bytes visually matches one of BANNED_COVER_HASHES closely
+    enough to be considered the same placeholder image, not a coincidence.
+    """
+    if not cover_bytes:
+        return False
+    cover_hash = _cover_dhash(cover_bytes)
+    if cover_hash is None:
+        return False
+    return any(
+        bin(cover_hash ^ banned_hash).count("1") <= BANNED_COVER_HASH_THRESHOLD
+        for banned_hash in BANNED_COVER_HASHES
+    )
+
+
 def detect_parenthetical_mentions(text):
     """
     Returns every parenthesized OR bracketed group found in the given text
@@ -2797,9 +2860,10 @@ def effective_cover_bytes(info):
         return info.get("current_cover_bytes")
     if info.get("found_cover_image"):
         return info["found_cover_image"]
-    if detect_fuviclan_mention(info.get("file", "")):
+    current_cover_bytes = info.get("current_cover_bytes")
+    if detect_fuviclan_mention(info.get("file", "")) or is_banned_cover_image(current_cover_bytes):
         return None
-    return info.get("current_cover_bytes")
+    return current_cover_bytes
 
 
 def _write_wav_riff_info(file_path, artist, title, update_artist, update_title, log=safe_print):
@@ -2981,7 +3045,9 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
 
             update_title = update_artist = update_cover = info.get("apply_changes", True)
 
-            force_remove_if_missing = bool(detect_fuviclan_mention(file_name))
+            force_remove_if_missing = bool(detect_fuviclan_mention(file_name)) or is_banned_cover_image(
+                info.get("current_cover_bytes")
+            )
 
             cover_image = info.get("found_cover_image") if update_cover else None
 
