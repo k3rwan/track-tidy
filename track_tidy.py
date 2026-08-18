@@ -911,12 +911,23 @@ AUTO_CONVERT_WAV_TO_AIFF = True
 # 2. FILENAME & TITLE CLEANING
 # ============================================================================
 
+VERSION_SUFFIX_RE = re.compile(r"\s*-\s*v\d+\s*$", re.IGNORECASE)
+
+
 def clean_title(text):
     for mention in MENTIONS_TO_REMOVE:
         text = re.sub(re.escape(mention), "", text, flags=re.IGNORECASE)
         text = re.sub(r"\(\s+", "(", text)   # trim leftover space right after "("
         text = re.sub(r"\s+\)", ")", text)   # trim leftover space right before ")"
         text = re.sub(r"\s{2,}", " ", text)  # collapse any remaining double spaces
+
+    # A trailing "-v6"/"-v2" etc. is a producer/DJ's own informal working-
+    # version marker (their Nth draft of an edit), not part of the real
+    # title - real report: a WAV tagged/named "... Remix)-v6" should just
+    # be "... Remix)". No real song title plausibly ends this way, so this
+    # is safe to strip unconditionally rather than only for comparisons.
+    text = VERSION_SUFFIX_RE.sub("", text)
+
     return text.strip()
 
 
@@ -1229,10 +1240,17 @@ def resolve_artist_title(file_name, current_artist, current_title):
     # of trusting the raw tags - this is stronger evidence than a filename.
     # Only do this when the existing (incomplete) artist tag is actually found
     # INSIDE the "before the dash" part, to avoid mangling a normal title that
-    # just happens to contain a dash (e.g. "Some Song - Reprise").
+    # just happens to contain a dash (e.g. "Some Song - Reprise"). Requires a
+    # real " - " (space on both sides), like reformat_trailing_dash_mix()
+    # just below - a bare "-" with no leading space is a version/take suffix
+    # glued onto the title (e.g. "Title (X Remix)-v6"), not an artist/title
+    # separator; real report: "Chango" (the artist) happened to also appear
+    # inside a "(YASMINA, Chango Remix)" credit that IS the actual title,
+    # which a looser dash match mistook for "artist - title" and mangled
+    # into artist="Title (YASMINA, Chango Remix)" / title="v6".
     title_looks_combined = False
     if current_title and current_artist:
-        combined_match = re.match(r"^(.+?)\s*-\s*(.+)$", current_title)
+        combined_match = re.match(r"^(.+?)\s+-\s+(.+)$", current_title)
         if combined_match:
             candidate_artist = combined_match.group(1).strip()
             candidate_artist = re.sub(r"^\d{1,3}\s*[.\-]\s*", "", candidate_artist).strip()
