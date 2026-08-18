@@ -3,6 +3,22 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.17]
+
+### Changed
+- Removed the client-side cooldown between "Report track" actions.
+
+### Fixed
+- iTunes covers no longer come from a various-artists compilation (e.g.
+  a "Best of ..." compilation) when a track only matches there and not
+  on its own release - the real cover source (Spotify/SoundCloud) now
+  gets a chance instead of a generic compilation cover winning first.
+- Exact title matching now treats "Pt.III" and "Pt. III" (a space
+  right after an abbreviating period) as equal - that one-space
+  mismatch between a filename/tag and a store's listing was silently
+  rejecting the real single and letting an unrelated DJ-mix
+  compilation's cover win instead.
+
 ## [0.16]
 
 ### Added
