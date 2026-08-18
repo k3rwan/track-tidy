@@ -1564,16 +1564,23 @@ def detect_fuviclan_mention(file_name):
 # downloaded file sometimes already has one of these baked in even when
 # its filename doesn't mention the source that added it (unlike the
 # FUVICLAN_PATTERN case above, which relies on the filename saying so).
-# Sourced from 5 real Kevin-supplied files, all carrying some variant of
-# the same "Fuvi Clan" watermark artwork on a different background - kept
-# as separate entries rather than one merged hash since the backgrounds
-# differ enough that a single average hash wouldn't recognize all 5.
+# Also checked against a freshly found candidate cover from iTunes/
+# SoundCloud (see is_banned_cover_image's call sites) - a generic
+# "aesthetic"/branding photo a repost account reuses across every one of
+# its uploads can otherwise pass the artist/title text match despite
+# having nothing to do with the actual release.
 BANNED_COVER_HASHES = (
+    # 5 variants of the same "Fuvi Clan" watermark artwork on a different
+    # background - kept as separate entries since the backgrounds differ
+    # enough that a single average hash wouldn't recognize all 5.
     0x80848E8E8E06B6FE,
     0xB8962B4D170F8C41,
     0x8024D4B2E8F1D31C,
     0xCCAA4D4D960F8A8E,
     0x0962B4D170F8EE9,
+    # Generic "girl in a pink coat" lifestyle photo, reused by a SoundCloud
+    # "aesthetic playlist" repost account across unrelated tracks.
+    0x30B5A7A4C6891113,
 )
 
 BANNED_COVER_HASH_THRESHOLD = 6  # Hamming distance - see is_banned_cover_image()
@@ -2447,6 +2454,9 @@ def search_cover_itunes(artist, title, log=safe_print, max_retries=2, allow_loos
             image_response = requests.get(cover_url_hd, timeout=10)
 
             if image_response.status_code == 200:
+                if is_banned_cover_image(image_response.content):
+                    log(f"  [iTunes] Match found for '{artist} - {title}' but its cover is a known placeholder - skipping.")
+                    continue
                 return image_response.content, returned_artist, returned_title
 
             log(f"  [iTunes] Image download failed (HTTP {image_response.status_code}) for '{artist} - {title}'")
@@ -2534,6 +2544,25 @@ def get_soundcloud_token(log=safe_print, on_rate_limited=None, on_auth_error=Non
         return None
 
 
+UNSOLICITED_EDIT_MARKERS = ("slowed", "reverb", "sped up", "speed up", "nightcore", "8d audio")
+
+
+def has_unsolicited_edit_marker(text):
+    """
+    True if text carries a tell-tale fan-edit marker (e.g. "slowed +
+    reverb", "sped up", "nightcore") - SoundCloud is full of these,
+    uploaded by a third party with no connection to the real artist, whose
+    title often just prepends/appends the marker to the real artist/title
+    (e.g. "1997 - Aqua - Barbie Girl [slowed + reverb]" by an unrelated
+    uploader). artist_names_match()'s substring check against a TITLE
+    (meant for a legit repost formatted as "Artist - Title") can't tell
+    that apart from the real thing on its own, so this catches it
+    separately - see its use in search_cover_soundcloud().
+    """
+    lowered = text.lower()
+    return any(marker in lowered for marker in UNSOLICITED_EDIT_MARKERS)
+
+
 def search_cover_soundcloud(artist, title, token, log=safe_print):
     """
     Checks up to 10 candidates, not just the top one - SoundCloud's
@@ -2580,6 +2609,15 @@ def search_cover_soundcloud(artist, title, token, log=safe_print):
             if not (artist_ok or swapped_ok):
                 continue
 
+            # Reject an unsolicited fan edit (see has_unsolicited_edit_marker) -
+            # unless we actually asked for one ourselves, in which case it's
+            # not "unsolicited" at all.
+            if (
+                has_unsolicited_edit_marker(f"{track_title} {uploader_name}")
+                and not has_unsolicited_edit_marker(title)
+            ):
+                continue
+
             # title_words_overlap only requires ONE shared word with the base
             # title, which a DIFFERENT upload of the same song (e.g. a plain
             # rip, or someone else's edit) can easily satisfy too - when a
@@ -2597,6 +2635,9 @@ def search_cover_soundcloud(artist, title, token, log=safe_print):
             image_response = requests.get(cover_url_hd, timeout=10)
 
             if image_response.status_code == 200:
+                if is_banned_cover_image(image_response.content):
+                    log(f"  [SoundCloud] Match found for '{artist} - {title}' but its cover is a known placeholder - skipping.")
+                    continue
                 return image_response.content, uploader_name or track_title, track_title
 
             log(f"  [SoundCloud] Image download failed (HTTP {image_response.status_code}) for '{artist} - {title}'")
