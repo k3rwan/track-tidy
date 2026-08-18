@@ -2623,12 +2623,30 @@ def invalidate_soundcloud_token():
     _cached_token_expiry = 0
 
 
+# Unlike iTunes/Spotify, a 429 from SoundCloud's token endpoint carries no
+# Retry-After header or any other signal of how long to wait (checked
+# directly against the live endpoint while it was rate limited - nothing
+# useful in the response headers or body beyond {"error":
+# "rate_limit_exceeded"}) - this cooldown is a self-imposed estimate, not a
+# documented number, chosen longer than ITUNES_RATE_LIMIT_COOLDOWN_SECONDS
+# since an OAuth client_credentials endpoint is typically budgeted more
+# coarsely (e.g. per-hour) than a plain search API. Without it, every new
+# scan/health-check would immediately retry the token endpoint and could
+# keep extending the block instead of letting it clear.
+SOUNDCLOUD_TOKEN_RATE_LIMIT_COOLDOWN_SECONDS = 300
+_soundcloud_token_rate_limited_until = 0
+
+
 def get_soundcloud_token(log=safe_print, on_rate_limited=None, on_auth_error=None):
-    global _cached_soundcloud_token, _cached_token_expiry
+    global _cached_soundcloud_token, _cached_token_expiry, _soundcloud_token_rate_limited_until
 
     # Reuse the cached token if it's still valid (with a 60s safety margin)
     if _cached_soundcloud_token and time.time() < _cached_token_expiry - 60:
         return _cached_soundcloud_token
+
+    if time.time() < _soundcloud_token_rate_limited_until:
+        log("  [SoundCloud] Still rate limited from earlier - skipping the token request.")
+        return None
 
     if not SOUNDCLOUD_CLIENT_ID or not SOUNDCLOUD_CLIENT_SECRET:
         log("  [SoundCloud] No credentials found (clientID.txt / clientSecret.txt missing or empty).")
@@ -2655,10 +2673,10 @@ def get_soundcloud_token(log=safe_print, on_rate_limited=None, on_auth_error=Non
             return _cached_soundcloud_token
 
         if response.status_code == 429:
+            _soundcloud_token_rate_limited_until = time.time() + SOUNDCLOUD_TOKEN_RATE_LIMIT_COOLDOWN_SECONDS
             log(
-                "  [SoundCloud] Rate limit reached (too many token requests). "
-                "Try again later — the app now reuses the same token across scans "
-                "to avoid this."
+                "  [SoundCloud] Rate limit reached (too many token requests) - pausing "
+                f"SoundCloud for {SOUNDCLOUD_TOKEN_RATE_LIMIT_COOLDOWN_SECONDS}s."
             )
             if on_rate_limited:
                 on_rate_limited()
@@ -2844,11 +2862,23 @@ def invalidate_spotify_token():
     _cached_spotify_token_expiry = 0
 
 
+# Unlike SoundCloud, Spotify's Accounts service documents a Retry-After
+# header (seconds) on a 429 from this endpoint - read and honored below
+# instead of guessing, falling back to this only if the header is somehow
+# missing.
+SPOTIFY_TOKEN_RATE_LIMIT_FALLBACK_COOLDOWN_SECONDS = 60
+_spotify_token_rate_limited_until = 0
+
+
 def get_spotify_token(log=safe_print, on_auth_error=None):
-    global _cached_spotify_token, _cached_spotify_token_expiry
+    global _cached_spotify_token, _cached_spotify_token_expiry, _spotify_token_rate_limited_until
 
     if _cached_spotify_token and time.time() < _cached_spotify_token_expiry - 60:
         return _cached_spotify_token
+
+    if time.time() < _spotify_token_rate_limited_until:
+        log("  [Spotify] Still rate limited from earlier - skipping the token request.")
+        return None
 
     if not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET:
         log("  [Spotify] No credentials found.")
@@ -2873,6 +2903,15 @@ def get_spotify_token(log=safe_print, on_auth_error=None):
             _cached_spotify_token = payload.get("access_token")
             _cached_spotify_token_expiry = time.time() + payload.get("expires_in", 3600)
             return _cached_spotify_token
+
+        if response.status_code == 429:
+            try:
+                wait_seconds = int(response.headers.get("Retry-After", ""))
+            except ValueError:
+                wait_seconds = SPOTIFY_TOKEN_RATE_LIMIT_FALLBACK_COOLDOWN_SECONDS
+            _spotify_token_rate_limited_until = time.time() + wait_seconds
+            log(f"  [Spotify] Rate limit reached (too many token requests) - pausing Spotify for {wait_seconds}s.")
+            return None
 
         message = f"HTTP {response.status_code} - {response.text[:300]}"
         log(f"  [Spotify] Authentication error: {message}")
