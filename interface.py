@@ -20,6 +20,7 @@ import sys
 import subprocess
 import tempfile
 import threading
+import time
 import queue
 import webbrowser
 from datetime import datetime
@@ -941,14 +942,22 @@ class TaggerInterface:
         self.window.after(10000, self._check_internet_connection)
 
     def _check_source_health_on_startup(self):
-        """Runs two background checks once per launch, since Settings can no
-        longer disable a cover source to work around a silent failure (see
-        the comment above tagger.USE_ITUNES): whether the shared SoundCloud/
-        Spotify/AcoustID credentials still authenticate, and whether iTunes/
-        Spotify's own domains are reachable at all (a restrictive firewall/
-        network filter blocking just those, while general internet access
-        still works, would otherwise look identical to "nothing found" with
-        no explanation)."""
+        """Runs two background checks at most once every 24h (not every
+        single launch - these force a fresh SoundCloud/Spotify token
+        request each time, which is quota every user shares, so re-running
+        this on every relaunch was pure waste on top of normal scanning
+        usage), since Settings can no longer disable a cover source to work
+        around a silent failure (see the comment above tagger.USE_ITUNES):
+        whether the shared SoundCloud/Spotify/AcoustID credentials still
+        authenticate, and whether iTunes/Spotify's own domains are
+        reachable at all (a restrictive firewall/network filter blocking
+        just those, while general internet access still works, would
+        otherwise look identical to "nothing found" with no explanation)."""
+        last_checked = tagger.load_settings().get("last_source_health_check", 0)
+        if time.time() - last_checked < 24 * 60 * 60:
+            return
+        tagger.save_setting("last_source_health_check", time.time())
+
         def _run_check():
             broken_credentials = tagger.check_source_credentials(log=self._append_to_journal)
             is_online = tagger.check_internet_connection()
