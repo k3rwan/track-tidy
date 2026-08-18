@@ -303,7 +303,6 @@ class TaggerInterface:
         self.window.after(100, self._rewarm_theme)
         self._start_message_loop()
         self._check_for_update_on_startup()
-        self._check_cover_source_credentials_on_startup()
         self._check_internet_connection(is_startup_check=True)
         self._notify_new_install_on_startup()
 
@@ -1131,28 +1130,6 @@ class TaggerInterface:
 
     # --- Startup checks ---
 
-    def _check_cover_source_credentials_on_startup(self):
-        """Nags (once, on startup) about any ENABLED cover source that's
-        missing its credentials - iTunes needs none, so only SoundCloud/
-        Spotify can trigger this."""
-        if tagger.USE_SOUNDCLOUD and (not tagger.SOUNDCLOUD_CLIENT_ID or not tagger.SOUNDCLOUD_CLIENT_SECRET):
-            messagebox.showinfo(
-                "SoundCloud not configured",
-                "SoundCloud is enabled as a cover source in Settings, but no Client ID / "
-                "Client Secret is configured yet - add them in Settings, or turn it off.",
-                parent=self.window,
-            )
-            self.notebook.select(2)  # Settings tab
-
-        if tagger.USE_SPOTIFY and (not tagger.SPOTIFY_CLIENT_ID or not tagger.SPOTIFY_CLIENT_SECRET):
-            messagebox.showinfo(
-                "Spotify not configured",
-                "Spotify is enabled as a cover source in Settings, but no Client ID / "
-                "Client Secret is configured yet - add them in Settings, or turn it off.",
-                parent=self.window,
-            )
-            self.notebook.select(2)  # Settings tab
-
     # --- Drag and drop ---
 
     def _setup_drag_and_drop(self):
@@ -1697,8 +1674,11 @@ class TaggerInterface:
             tagger.write_credential(tagger.CLIENT_ID_KEY, client_id)
             tagger.write_credential(tagger.CLIENT_SECRET_KEY, client_secret)
 
-            tagger.SOUNDCLOUD_CLIENT_ID = client_id or None
-            tagger.SOUNDCLOUD_CLIENT_SECRET = client_secret or None
+            # Clearing a field falls back to the shared default credential,
+            # not to no credential at all - SoundCloud still works out of
+            # the box either way.
+            tagger.SOUNDCLOUD_CLIENT_ID = client_id or tagger.SOUNDCLOUD_DEFAULT_CLIENT_ID
+            tagger.SOUNDCLOUD_CLIENT_SECRET = client_secret or tagger.SOUNDCLOUD_DEFAULT_CLIENT_SECRET
             tagger.invalidate_soundcloud_token()  # in case the credentials changed
 
             messagebox.showinfo("Saved", "SoundCloud credentials saved.", parent=self._soundcloud_dialog)
@@ -1719,7 +1699,8 @@ class TaggerInterface:
 
         ttk.Label(
             dialog,
-            text="SoundCloud requires registering an app yourself (Artist Pro account).\n"
+            text="SoundCloud already works out of the box, using a shared app - you only "
+                 "need this if you'd rather use your own (Artist Pro account required). "
                  "Paste the Client ID / Client Secret you get from that page below.",
             justify="left",
             wraplength=440,
@@ -1730,16 +1711,21 @@ class TaggerInterface:
         self.sc_client_id_entry.pack(fill="x", padx=10, pady=(0, 10))
         self.sc_client_id_entry.bind("<KeyRelease>", self._update_soundcloud_save_state)
         self._bind_entry_context_menu(self.sc_client_id_entry)
-        if tagger.SOUNDCLOUD_CLIENT_ID:
-            self.sc_client_id_entry.insert(0, tagger.SOUNDCLOUD_CLIENT_ID)
+        # Only pre-fill with a credential the user actually saved themselves
+        # - not the shared default tagger.SOUNDCLOUD_CLIENT_ID falls back to,
+        # which would otherwise show up here for every user who never set one.
+        existing_client_id = tagger.read_credential(tagger.CLIENT_ID_KEY)
+        if existing_client_id:
+            self.sc_client_id_entry.insert(0, existing_client_id)
 
         ttk.Label(dialog, text="Client Secret:").pack(anchor="w", padx=10)
         self.sc_client_secret_entry = ttk.Entry(dialog, show="*")
         self.sc_client_secret_entry.pack(fill="x", padx=10, pady=(0, 15))
         self.sc_client_secret_entry.bind("<KeyRelease>", self._update_soundcloud_save_state)
         self._bind_entry_context_menu(self.sc_client_secret_entry)
-        if tagger.SOUNDCLOUD_CLIENT_SECRET:
-            self.sc_client_secret_entry.insert(0, tagger.SOUNDCLOUD_CLIENT_SECRET)
+        existing_client_secret = tagger.read_credential(tagger.CLIENT_SECRET_KEY)
+        if existing_client_secret:
+            self.sc_client_secret_entry.insert(0, existing_client_secret)
 
         soundcloud_buttons_frame = ttk.Frame(dialog)
         soundcloud_buttons_frame.pack(fill="x", padx=10, pady=(0, 10))
@@ -1774,8 +1760,11 @@ class TaggerInterface:
             tagger.write_credential(tagger.SPOTIFY_CLIENT_ID_KEY, client_id)
             tagger.write_credential(tagger.SPOTIFY_CLIENT_SECRET_KEY, client_secret)
 
-            tagger.SPOTIFY_CLIENT_ID = client_id or None
-            tagger.SPOTIFY_CLIENT_SECRET = client_secret or None
+            # Clearing a field falls back to the shared default credential,
+            # not to no credential at all - Spotify still works out of the
+            # box either way.
+            tagger.SPOTIFY_CLIENT_ID = client_id or tagger.SPOTIFY_DEFAULT_CLIENT_ID
+            tagger.SPOTIFY_CLIENT_SECRET = client_secret or tagger.SPOTIFY_DEFAULT_CLIENT_SECRET
             tagger.invalidate_spotify_token()  # in case the credentials changed
 
             messagebox.showinfo("Saved", "Spotify credentials saved.", parent=self._spotify_dialog)
@@ -1814,8 +1803,9 @@ class TaggerInterface:
 
         ttk.Label(
             dialog,
-            text="Spotify requires registering an app yourself (free, at the link below).\n"
-                 "Any Redirect URI works (it's never actually used) - paste the Client ID / "
+            text="Spotify already works out of the box, using a shared app - you only "
+                 "need this if you'd rather use your own (free, at the link below). Any "
+                 "Redirect URI works (it's never actually used) - paste the Client ID / "
                  "Client Secret you get from that page below.",
             justify="left",
             wraplength=440,
@@ -1826,16 +1816,21 @@ class TaggerInterface:
         self.sp_client_id_entry.pack(fill="x", padx=10, pady=(0, 10))
         self.sp_client_id_entry.bind("<KeyRelease>", self._update_spotify_save_state)
         self._bind_entry_context_menu(self.sp_client_id_entry)
-        if tagger.SPOTIFY_CLIENT_ID:
-            self.sp_client_id_entry.insert(0, tagger.SPOTIFY_CLIENT_ID)
+        # Only pre-fill with a credential the user actually saved themselves
+        # - not the shared default tagger.SPOTIFY_CLIENT_ID falls back to,
+        # which would otherwise show up here for every user who never set one.
+        existing_client_id = tagger.read_credential(tagger.SPOTIFY_CLIENT_ID_KEY)
+        if existing_client_id:
+            self.sp_client_id_entry.insert(0, existing_client_id)
 
         ttk.Label(dialog, text="Client Secret:").pack(anchor="w", padx=10)
         self.sp_client_secret_entry = ttk.Entry(dialog, show="*")
         self.sp_client_secret_entry.pack(fill="x", padx=10, pady=(0, 15))
         self.sp_client_secret_entry.bind("<KeyRelease>", self._update_spotify_save_state)
         self._bind_entry_context_menu(self.sp_client_secret_entry)
-        if tagger.SPOTIFY_CLIENT_SECRET:
-            self.sp_client_secret_entry.insert(0, tagger.SPOTIFY_CLIENT_SECRET)
+        existing_client_secret = tagger.read_credential(tagger.SPOTIFY_CLIENT_SECRET_KEY)
+        if existing_client_secret:
+            self.sp_client_secret_entry.insert(0, existing_client_secret)
 
         spotify_buttons_frame = ttk.Frame(dialog)
         spotify_buttons_frame.pack(fill="x", padx=10, pady=(0, 10))
