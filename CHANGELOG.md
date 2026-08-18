@@ -3,6 +3,45 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.16]
+
+### Added
+- Spotify re-added as a cover source (iTunes -> Spotify -> SoundCloud
+  priority) - a French rap track was found to be on Spotify but in
+  neither iTunes's nor SoundCloud's index; SoundCloud was also seen
+  "winning" with a non-official image before Spotify got a chance to
+  offer the real cover.
+- Known placeholder/wrong cover images are now automatically detected
+  and stripped (perceptual-hash blacklist) when no source finds a real
+  cover.
+- A discreet link to Kevz's Instagram on the "Developped by KEVZ"
+  credit.
+
+### Changed
+- SoundCloud no longer accepts fan-edit bootlegs (slowed + reverb,
+  nightcore, sped up, etc.) or unsolicited remix/mashup/cover uploads
+  as a match for the original track.
+- Cover matching no longer rejects a correct release just because a
+  collective/label name appears in one artist credit but not the
+  other, or because of a leading "The" mismatch.
+- The filename's remix title is now preferred over existing tags that
+  already lost the remixer's name (moved into the artist field,
+  title collapsed to a generic "(Remix)").
+- Manual search actions (Rescan, Fix-no-cover search) are now disabled
+  while a scan/apply is running.
+- The two "convert to..." checkboxes in Settings are now truly
+  mutually exclusive, instead of only the other one being greyed out
+  while still silently active underneath.
+- The "Processing complete" summary now reports the real conversion
+  target (MP3 or AIFF) per file instead of always claiming MP3.
+
+### Fixed
+- Fixed a "feat."/"ft." artist-name splitting regex bug that could
+  leave a stray ". name" fragment and break otherwise-correct matches.
+- The report-track failure message no longer blames "no internet"
+  when the actual cause was a short client-side cooldown.
+- Fixed a double-space rendering glitch before the "KEVZ" credit text.
+
 ## [0.15]
 
 ### Added
