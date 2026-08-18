@@ -120,12 +120,16 @@ KEYRING_SERVICE = "Track-Tidy"
 
 CLIENT_ID_KEY = "soundcloud_client_id"
 CLIENT_SECRET_KEY = "soundcloud_client_secret"
+SPOTIFY_CLIENT_ID_KEY = "spotify_client_id"
+SPOTIFY_CLIENT_SECRET_KEY = "spotify_client_secret"
 
 # Old plaintext file locations (pre-keyring) - read once at startup as a
 # migration path, then deleted. Not used for anything else.
 _LEGACY_CREDENTIAL_FILES = {
     CLIENT_ID_KEY: os.path.join(user_config_dir(), "clientID.txt"),
     CLIENT_SECRET_KEY: os.path.join(user_config_dir(), "clientSecret.txt"),
+    SPOTIFY_CLIENT_ID_KEY: os.path.join(user_config_dir(), "spotifyClientID.txt"),
+    SPOTIFY_CLIENT_SECRET_KEY: os.path.join(user_config_dir(), "spotifyClientSecret.txt"),
 }
 
 
@@ -188,6 +192,20 @@ SOUNDCLOUD_DEFAULT_CLIENT_SECRET = base64.b64decode(_SOUNDCLOUD_DEFAULT_CLIENT_S
 
 SOUNDCLOUD_CLIENT_ID = read_credential(CLIENT_ID_KEY) or SOUNDCLOUD_DEFAULT_CLIENT_ID
 SOUNDCLOUD_CLIENT_SECRET = read_credential(CLIENT_SECRET_KEY) or SOUNDCLOUD_DEFAULT_CLIENT_SECRET
+
+# Same reasoning/risk as SOUNDCLOUD_DEFAULT_CLIENT_ID/_SECRET above, this
+# time against Spotify's developer terms - accepted risk (confirmed with
+# Kevin). Spotify is only ever tried as an absolute last resort (after
+# iTunes, SoundCloud, AND the AcoustID-corrected retry of both have all
+# come up empty - see the end of scan_files()), not a normal priority
+# source, so this should get hit rarely.
+_SPOTIFY_DEFAULT_CLIENT_ID_B64 = "SECRET_REMOVED"
+_SPOTIFY_DEFAULT_CLIENT_SECRET_B64 = "SECRET_REMOVED"
+SPOTIFY_DEFAULT_CLIENT_ID = base64.b64decode(_SPOTIFY_DEFAULT_CLIENT_ID_B64).decode("ascii")
+SPOTIFY_DEFAULT_CLIENT_SECRET = base64.b64decode(_SPOTIFY_DEFAULT_CLIENT_SECRET_B64).decode("ascii")
+
+SPOTIFY_CLIENT_ID = read_credential(SPOTIFY_CLIENT_ID_KEY) or SPOTIFY_DEFAULT_CLIENT_ID
+SPOTIFY_CLIENT_SECRET = read_credential(SPOTIFY_CLIENT_SECRET_KEY) or SPOTIFY_DEFAULT_CLIENT_SECRET
 
 # AcoustID API keys are meant to be per-APPLICATION, one key shared by every
 # user of that app - unlike SoundCloud, which needs each user's own app
@@ -832,6 +850,16 @@ def enabled_cover_sources():
         for name, enabled in (("iTunes", USE_ITUNES), ("SoundCloud", USE_SOUNDCLOUD))
         if enabled
     ]
+
+# Absolute last resort, tried only after iTunes, SoundCloud, AND the
+# AcoustID-corrected retry of both have all failed (see the end of
+# scan_files()) - never part of the normal source priority list, unlike
+# iTunes/SoundCloud above. Spotify's own catalog can have a track neither
+# of the others do (confirmed via a real report), but it needs its own
+# credentials (see SPOTIFY_CLIENT_ID) and carries the same shared-secret
+# ToS risk as SOUNDCLOUD_DEFAULT_CLIENT_ID/_SECRET, so it's kept as a
+# rarely-hit fallback rather than a normal source.
+USE_SPOTIFY = True
 
 # Last-resort audio-content identification (AcoustID/Chromaprint) for a file
 # whose filename/tags are too mangled for the normal text-based search to
@@ -1692,13 +1720,18 @@ def _search_one_source(source, artist, search_title, remix_qualified_title, soun
     return match_result, ("SoundCloud" if match_result else None)
 
 
-def search_cover_manual(artist, title, soundcloud_token, log=safe_print):
+def search_cover_manual(artist, title, soundcloud_token, log=safe_print, spotify_token=None):
     """
     Searches for a cover using the given artist/title directly, trying
     every enabled source in priority order and stopping at the first
     match - shared by scan_one_file() (filename/tag-derived artist/title)
     and the "fix Artist/Title and search again" flow after a scan finds no
     match at all (user-corrected artist/title).
+
+    Spotify (see USE_SPOTIFY) is tried last, only if spotify_token was
+    given and iTunes/SoundCloud both missed - an absolute last resort, not
+    a normal priority source, so it's opt-in via the token rather than
+    fetched here unconditionally like the other two.
 
     Returns (found_cover_image, cover_source, returned_artist,
     returned_title) - the last three are None if nothing matched.
@@ -1721,21 +1754,31 @@ def search_cover_manual(artist, title, soundcloud_token, log=safe_print):
             found_cover_image, returned_artist, returned_title = match_result
             return found_cover_image, cover_source, returned_artist, returned_title
 
+    if USE_SPOTIFY and spotify_token:
+        match_result = search_cover_spotify(artist, title, spotify_token, log=log)
+        if match_result:
+            found_cover_image, returned_artist, returned_title = match_result
+            return found_cover_image, "Spotify", returned_artist, returned_title
+
     return None, None, None, None
 
 
 def search_cover_manual_with_tokens(artist, title, log=safe_print, on_auth_error=None):
     """
-    Same as search_cover_manual(), but also fetches the SoundCloud token
-    itself - for a single ad-hoc search (e.g. the "fix Artist/Title and
-    search again" flow after a scan finds nothing) that doesn't go
+    Same as search_cover_manual(), but also fetches the SoundCloud/Spotify
+    tokens itself - for a single ad-hoc search (e.g. the "fix Artist/Title
+    and search again" flow after a scan finds nothing) that doesn't go
     through scan_files()'s full per-run setup.
     """
     soundcloud_token = None
     if USE_SOUNDCLOUD and SOUNDCLOUD_CLIENT_ID and SOUNDCLOUD_CLIENT_SECRET:
         soundcloud_token = get_soundcloud_token(log=log, on_auth_error=on_auth_error)
 
-    return search_cover_manual(artist, title, soundcloud_token, log=log)
+    spotify_token = None
+    if USE_SPOTIFY and SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
+        spotify_token = get_spotify_token(log=log, on_auth_error=on_auth_error)
+
+    return search_cover_manual(artist, title, soundcloud_token, log=log, spotify_token=spotify_token)
 
 
 def _prepare_scan(file_name, log=safe_print, on_new_mention=None):
@@ -1969,6 +2012,14 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
     SOUNDCLOUD_RATE_LIMITED = False
     SOUNDCLOUD_UNAVAILABLE = False
 
+    # Fetched lazily (at most once per scan) only if a file actually makes
+    # it all the way down to the Spotify last-resort attempt below -
+    # authenticating up front like SoundCloud's token would mean an extra
+    # HTTP call on every single scan, even the vast majority that never
+    # need it.
+    spotify_token = None
+    spotify_token_fetched = False
+
     if not file_list:
         return []
 
@@ -2053,6 +2104,21 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
                     )
                     if match_result:
                         break
+
+            if not match_result and USE_SPOTIFY and prepared["detected_artist"] and prepared["detected_title"]:
+                if not spotify_token_fetched:
+                    spotify_token_fetched = True
+                    if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
+                        spotify_token = get_spotify_token(log=log, on_auth_error=on_auth_error)
+                    else:
+                        log("  [Spotify] No credentials configured - skipping.")
+                if spotify_token:
+                    spotify_match = search_cover_spotify(
+                        prepared["detected_artist"], prepared["detected_title"], spotify_token, log,
+                    )
+                    if spotify_match:
+                        match_result = spotify_match
+                        cover_source = "Spotify"
 
             info = _finish_scan(prepared, match_result, cover_source, log)
             results.append(info)
@@ -2653,6 +2719,140 @@ def search_cover_soundcloud(artist, title, token, log=safe_print):
 
     except Exception as error:
         log(f"  [SoundCloud] Error while searching for cover: {error}")
+        return None
+
+
+# ============================================================================
+# 10.5. COVER SEARCH - SPOTIFY (last resort only - see USE_SPOTIFY)
+# ============================================================================
+
+_cached_spotify_token = None
+_cached_spotify_token_expiry = 0  # Unix timestamp
+
+
+def invalidate_spotify_token():
+    """Forces the next get_spotify_token() call to authenticate again
+    instead of reusing the cached token - e.g. after the credentials change."""
+    global _cached_spotify_token, _cached_spotify_token_expiry
+    _cached_spotify_token = None
+    _cached_spotify_token_expiry = 0
+
+
+def get_spotify_token(log=safe_print, on_auth_error=None):
+    global _cached_spotify_token, _cached_spotify_token_expiry
+
+    if _cached_spotify_token and time.time() < _cached_spotify_token_expiry - 60:
+        return _cached_spotify_token
+
+    if not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET:
+        log("  [Spotify] No credentials found.")
+        return None
+
+    try:
+        credentials = f"{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}"
+        encoded_credentials = base64.b64encode(credentials.encode()).decode()
+
+        response = requests.post(
+            "https://accounts.spotify.com/api/token",
+            headers={
+                "Authorization": f"Basic {encoded_credentials}",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            data={"grant_type": "client_credentials"},
+            timeout=10,
+        )
+
+        if response.status_code == 200:
+            payload = response.json()
+            _cached_spotify_token = payload.get("access_token")
+            _cached_spotify_token_expiry = time.time() + payload.get("expires_in", 3600)
+            return _cached_spotify_token
+
+        message = f"HTTP {response.status_code} - {response.text[:300]}"
+        log(f"  [Spotify] Authentication error: {message}")
+        if on_auth_error:
+            on_auth_error("Spotify", message)
+        return None
+
+    except Exception as error:
+        log(f"  [Spotify] Error during authentication: {error}")
+        return None
+
+
+def search_cover_spotify(artist, title, token, log=safe_print):
+    """
+    Checks up to 10 candidates (not just the top one), mirroring
+    search_cover_itunes()/search_cover_soundcloud() - only ever called as
+    the absolute last resort (see USE_SPOTIFY), so being thorough here
+    doesn't cost much - it runs for very few files in a normal scan.
+    """
+    if not token:
+        return None
+
+    try:
+        response = requests.get(
+            "https://api.spotify.com/v1/search",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"q": build_search_query(artist, title), "type": "track", "limit": 10},
+            timeout=10,
+        )
+
+        if response.status_code != 200:
+            log(f"  [Spotify] Search failed: HTTP {response.status_code} - {response.text[:300]}")
+            return None
+
+        results = response.json().get("tracks", {}).get("items", [])
+        if not results:
+            log(f"  [Spotify] No result at all for '{artist} - {title}'")
+            return None
+
+        title_normalized = strip_feature_suffix(strip_generic_mix_suffix(title))
+
+        for result in results:
+            returned_artist = unicodedata.normalize(
+                "NFC", ", ".join(a.get("name", "") for a in result.get("artists", []))
+            )
+            returned_title = unicodedata.normalize("NFC", result.get("name", ""))
+            returned_title_normalized = strip_feature_suffix(strip_generic_mix_suffix(returned_title))
+
+            artist_ok = (
+                artist_sets_match(artist, returned_artist, returned_title)
+                and exact_match(title_normalized, returned_title_normalized)
+            )
+            swapped_ok = exact_match(title, returned_artist) and artist_sets_match(artist, returned_title_normalized)
+
+            if not (artist_ok or swapped_ok):
+                continue
+
+            images = result.get("album", {}).get("images", [])
+            if not images:
+                log(f"  [Spotify] Match found for '{artist} - {title}' but it has no artwork.")
+                continue
+
+            # Spotify lists images largest-first already; the first one is
+            # typically 640x640, more than enough for an embedded cover.
+            cover_url = images[0].get("url")
+            image_response = requests.get(cover_url, timeout=10)
+
+            if image_response.status_code == 200:
+                if is_banned_cover_image(image_response.content):
+                    log(f"  [Spotify] Match found for '{artist} - {title}' but its cover is a known placeholder - skipping.")
+                    continue
+                return image_response.content, returned_artist, returned_title
+
+            log(f"  [Spotify] Image download failed (HTTP {image_response.status_code}) for '{artist} - {title}'")
+
+        top_result = results[0]
+        top_artist = unicodedata.normalize("NFC", ", ".join(a.get("name", "") for a in top_result.get("artists", [])))
+        top_title = unicodedata.normalize("NFC", top_result.get("name", ""))
+        log(
+            f"  [Spotify] Match rejected (not an exact match among {len(results)} candidate(s)): "
+            f"expected '{artist} - {title}', got '{top_artist} - {top_title}'"
+        )
+        return None
+
+    except Exception as error:
+        log(f"  [Spotify] Error while searching for cover: {error}")
         return None
 
 
