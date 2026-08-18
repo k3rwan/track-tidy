@@ -2432,6 +2432,13 @@ ITUNES_RATE_LIMIT_COOLDOWN_SECONDS = 30
 _itunes_rate_limited_until = 0
 
 
+# iTunes' fixed "various artists" credit on a compilation's collection, in
+# whichever storefront locale search_cover_itunes() queries (hardcoded to
+# "FR" below) - not a per-compilation translation, so this is safe to match
+# literally rather than needing a keyword search.
+ITUNES_VARIOUS_ARTISTS_CREDITS = ("Multi-interprètes",)
+
+
 def search_cover_itunes(artist, title, log=safe_print, max_retries=2, allow_loose_remix_match=False):
     """
     Retries on HTTP 429 (rate limited) with a short backoff before giving up.
@@ -2524,6 +2531,13 @@ def search_cover_itunes(artist, title, log=safe_print, max_retries=2, allow_loos
                 loose_ok = split_artist_names(artist) <= returned_artist_set
 
             if not (artist_ok or swapped_ok or loose_ok):
+                continue
+
+            if result.get("collectionArtistName") in ITUNES_VARIOUS_ARTISTS_CREDITS:
+                log(
+                    f"  [iTunes] Match found for '{artist} - {title}' but it's only on a "
+                    f"various-artists compilation ('{result.get('collectionName')}') - skipping."
+                )
                 continue
 
             cover_url = result.get("artworkUrl100")
