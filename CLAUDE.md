@@ -184,19 +184,26 @@ Spotify not configured" startup nag) was removed - credentials are now
 always populated (real or the shared default), so it could never fire
 again anyway.
 
-## Spotify - absolute last resort only
+## Spotify
 
 Spotify was dropped entirely at first (iTunes + SoundCloud "cover it
 well enough"), then re-added after a real report proved that wrong: a
 French rap track (Alonzo/Tiakola) was on Spotify but in neither iTunes's
-nor SoundCloud's index. Unlike before, it's now wired in ONLY as the
-very last fallback - tried after iTunes, SoundCloud, AND the
-AcoustID-corrected retry of both have all come up empty (end of
-`scan_files()`, and inside `search_cover_manual()` for the "fix Artist/
-Title and search again" dialog / "Rescan" context-menu action) - never
-a normal priority source. `USE_SPOTIFY` (Settings: "Try Spotify as an
-absolute last resort...", on by default) gates it independently of
-iTunes/SoundCloud.
+nor SoundCloud's index.
+
+Initially wired in as an absolute last resort (after iTunes AND
+SoundCloud both missed), but re-ordered again after a second real
+report: for "Soolking - Guerilla", SoundCloud "succeeded" with a non-
+official image (a radio freestyle photo) before Spotify ever got a
+chance to offer the track's actual official cover. iTunes and Spotify
+are both curated commercial catalogs; SoundCloud is community-uploaded
+and far more prone to a wrong match (confirmed repeatedly this
+session: Aqua/Barbie Girl, Black Eyed Peas, Soolking/Mi Amigo, Soolking/
+Guerilla). Current priority order: **iTunes -> Spotify -> SoundCloud**
+(`_search_one_source()` / `search_cover_manual()` / `scan_files()`),
+including through the AcoustID-corrected retry. `USE_SPOTIFY` (Settings:
+"Spotify" checkbox next to iTunes/SoundCloud, on by default) gates it
+independently of the other two.
 
 Uses the same shared-embedded-credentials pattern as SoundCloud
 (`SPOTIFY_DEFAULT_CLIENT_ID`/`_SECRET`, Kevin's own app registration,

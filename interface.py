@@ -1474,12 +1474,12 @@ class TaggerInterface:
             command=self._on_use_itunes_changed,
         ).pack(side="left", padx=(0, 15))
         ttk.Checkbutton(
-            sources_row, text="SoundCloud", variable=self.use_soundcloud_var,
-            command=self._on_use_soundcloud_changed,
-        ).pack(side="left", padx=(0, 15))
-        ttk.Checkbutton(
             sources_row, text="Spotify", variable=self.use_spotify_var,
             command=self._on_use_spotify_changed,
+        ).pack(side="left", padx=(0, 15))
+        ttk.Checkbutton(
+            sources_row, text="SoundCloud", variable=self.use_soundcloud_var,
+            command=self._on_use_soundcloud_changed,
         ).pack(side="left")
 
         ttk.Separator(sources_frame, orient="horizontal").pack(fill="x", padx=10, pady=(0, 10))
@@ -2070,6 +2070,7 @@ class TaggerInterface:
         identified still gets counted under whichever of those actually
         supplied the cover (or "no cover" if none did)."""
         itunes_count = 0
+        spotify_count = 0
         soundcloud_count = 0
         kept_existing_count = 0
         no_cover_count = 0
@@ -2082,6 +2083,8 @@ class TaggerInterface:
             source = info.get("cover_source")
             if source == "iTunes":
                 itunes_count += 1
+            elif source == "Spotify":
+                spotify_count += 1
             elif source == "SoundCloud":
                 soundcloud_count += 1
             elif info.get("has_cover"):
@@ -2089,7 +2092,7 @@ class TaggerInterface:
             else:
                 no_cover_count += 1
 
-        return itunes_count, soundcloud_count, kept_existing_count, no_cover_count, acoustid_count
+        return itunes_count, spotify_count, soundcloud_count, kept_existing_count, no_cover_count, acoustid_count
 
     def _show_scan_summary_dialog(self, no_cover_infos=None):
         """Cover-source breakdown shown right after a scan finds new files -
@@ -2097,7 +2100,7 @@ class TaggerInterface:
         A single dialog: "OK" alone, or "OK" plus a second button straight
         into fixing Artist/Title for no-cover tracks when there are any -
         not a separate yes/no confirmation chained after this one."""
-        itunes_count, soundcloud_count, kept_existing_count, no_cover_count, acoustid_count = (
+        itunes_count, spotify_count, soundcloud_count, kept_existing_count, no_cover_count, acoustid_count = (
             self._compute_cover_summary()
         )
 
@@ -2119,7 +2122,7 @@ class TaggerInterface:
         # SoundCloud: 0" line next to enabled sources reads as "SoundCloud
         # was searched and came up empty", which is wrong when it wasn't
         # searched at all (see enabled_cover_sources()).
-        source_counts = {"iTunes": itunes_count, "SoundCloud": soundcloud_count}
+        source_counts = {"iTunes": itunes_count, "Spotify": spotify_count, "SoundCloud": soundcloud_count}
         enabled_sources = tagger.enabled_cover_sources()
         lines = [f"Cover from {name}: {source_counts[name]}" for name in enabled_sources]
         lines.append(f"Kept original cover: {kept_existing_count}")
@@ -2397,8 +2400,8 @@ class TaggerInterface:
         ).pack(anchor="w")
 
         enabled_sources = tagger.enabled_cover_sources()
-        if len(enabled_sources) < 2:
-            disabled_sources = [name for name in ("iTunes", "SoundCloud") if name not in enabled_sources]
+        if len(enabled_sources) < 3:
+            disabled_sources = [name for name in ("iTunes", "Spotify", "SoundCloud") if name not in enabled_sources]
             note_text = (
                 "No cover source is enabled in Settings - searching again won't find anything."
                 if not enabled_sources
