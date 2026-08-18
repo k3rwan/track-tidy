@@ -3873,13 +3873,6 @@ class TaggerInterface:
                     success, reason = content
                     if success:
                         self._append_to_journal("Track reported, thanks!")
-                    elif reason == "cooldown":
-                        messagebox.showinfo(
-                            "Please wait",
-                            f"Wait a few seconds between reports (max one every "
-                            f"{tagger.REPORT_COOLDOWN_SECONDS}s) and try again.",
-                            parent=self.window,
-                        )
                     elif reason == "http_error":
                         messagebox.showerror(
                             "Report failed", "Discord rejected the report - try again in a moment.",
