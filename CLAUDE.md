@@ -158,6 +158,31 @@ matching logic instead of a second cover-fetching path.
   Artist/Title themselves - don't trust a high score alone as proof of
   correctness.
 
+## Shared SoundCloud/Spotify credentials
+
+Both now work out of the box via embedded default app credentials
+(`SOUNDCLOUD_DEFAULT_CLIENT_ID`/`_SECRET`, `SPOTIFY_DEFAULT_CLIENT_ID`/
+`_SECRET` in track_tidy.py, base64-obfuscated like `ACOUSTID_API_KEY`/
+`DISCORD_REPORT_WEBHOOK_URL` - same "not real secrecy" caveat) - Kevin's
+own app registrations, used as a fallback whenever a user hasn't saved
+their own in Settings. Settings still has "SoundCloud credentials..."/
+"Spotify credentials..." buttons for anyone who wants to use their own
+instead.
+
+**Accepted risk, explicitly confirmed with Kevin (unlike AcoustID):**
+SoundCloud/Spotify's developer terms discourage distributing an app's
+Client Secret to end users - if it's ever extracted from the binary and
+abused, they could suspend/revoke the credentials entirely, breaking
+this for every user at once, not just whoever abused it. Watch for
+SoundCloud/Spotify auth suddenly failing for multiple users at once -
+that's the signal this happened, and it'd need Kevin registering a new
+app and swapping the embedded credentials.
+
+`_check_cover_source_credentials_on_startup()` (the old "SoundCloud/
+Spotify not configured" startup nag) was removed - credentials are now
+always populated (real or the shared default), so it could never fire
+again anyway.
+
 ## Cross-platform (Windows/macOS)
 
 Kevin is building this for DJs broadly, many of whom are on macOS, so the
