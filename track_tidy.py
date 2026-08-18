@@ -1197,6 +1197,7 @@ def resolve_artist_title(file_name, current_artist, current_title):
     recomputing it, so the two never drift apart.
     """
     detected_artist, detected_title = parse_filename(file_name)
+    filename_artist, filename_title = detected_artist, detected_title
 
     if detected_artist is None and detected_title is None:
         if current_artist and current_title:
@@ -1245,8 +1246,28 @@ def resolve_artist_title(file_name, current_artist, current_title):
     # truncated/garbled even when the tags themselves are correct.
     tags_already_present = bool(current_artist and current_title) and not title_looks_combined
     if tags_already_present:
-        detected_artist = current_artist
-        detected_title = clean_title(current_title)
+        # A file's tags sometimes split a NAMED remix credit (e.g. "(Clement
+        # Chapelle Remix)") by moving the remixer into the artist field and
+        # collapsing the title down to a bare generic "(Remix)" - losing the
+        # remixer's name the filename itself still spells out in full. Since
+        # that's strictly less information than the filename has, prefer the
+        # filename's own artist/title in that specific case rather than
+        # trusting the (technically "already present") tags as usual.
+        remixer_lost_in_tags = False
+        if filename_title and title_has_named_qualifier(filename_title) and not title_has_named_qualifier(current_title):
+            for group in find_named_qualifier_groups(filename_title):
+                remixer_name = re.sub(r"\b(?:remix|edit|reboot|bootleg)\b", "", group, flags=re.IGNORECASE)
+                remixer_name = re.sub(r"\s+", " ", remixer_name).strip()
+                if remixer_name and remixer_name.lower() in current_artist.lower():
+                    remixer_lost_in_tags = True
+                    break
+
+        if remixer_lost_in_tags:
+            detected_artist = filename_artist
+            detected_title = clean_title(filename_title)
+        else:
+            detected_artist = current_artist
+            detected_title = clean_title(current_title)
 
     return detected_artist, detected_title, tags_already_present
 
