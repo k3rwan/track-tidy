@@ -2272,8 +2272,18 @@ def strip_sanitized_chars(text):
 
 
 def split_artist_names(text):
-    """Splits a multi-artist string on any common separator (,  &  x  X  vs  feat.  ft.  and)."""
-    parts = re.split(r"\s*(?:,|&|/|\bx\b|\bvs\b|\bfeat\.?\b|\bft\.?\b|\band\b)\s*", text, flags=re.IGNORECASE)
+    """Splits a multi-artist string on any common separator (,  &  x  X  vs  feat.  ft.  and).
+
+    "feat"/"ft" use \\b...\\b instead of a trailing \\b after the optional
+    "."- a \\b right after a "." that's followed by whitespace is never a
+    real word boundary (neither side is a word character), so \\bfeat\\.?\\b
+    silently fails to consume the period, leaving a stray ". name" fragment
+    behind instead of splitting cleanly (e.g. "Alonzo Feat. Tiakola" ->
+    {"alonzo", ". tiakola"} instead of {"alonzo", "tiakola"}) - found via a
+    real AcoustID-identified artist string ("Alonzo Feat. Tiakola") being
+    rejected as "not the same artist" as a store's own "Alonzo, Tiakola".
+    """
+    parts = re.split(r"\s*(?:,|&|/|\bx\b|\bvs\b|\bfeat\b\.?|\bft\b\.?|\band\b)\s*", text, flags=re.IGNORECASE)
     return {strip_accents(strip_sanitized_chars(p.strip().lower())) for p in parts if p.strip()}
 
 
