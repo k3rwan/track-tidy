@@ -2676,6 +2676,33 @@ def has_unsolicited_edit_marker(text):
     return any(marker in lowered for marker in UNSOLICITED_EDIT_MARKERS)
 
 
+MIX_VARIANT_KEYWORDS = ("edit", "reboot", "bootleg", "mashup", "flip", "rework", "vip", "mix", "cover")
+# "remix" alone skips the LEADING \b - a remixer's name is often glued
+# directly onto it with no separator ("GYPZEREMIX", "Lustyremix"), which a
+# leading \b would silently miss (no boundary between two word chars). The
+# trailing \b (nothing glued after it, e.g. before ")"/end-of-string) is
+# kept, so this doesn't swallow an unrelated longer word.
+MIX_VARIANT_RE = re.compile(
+    r"remix\b|\b(?:" + "|".join(MIX_VARIANT_KEYWORDS) + r")\b", re.IGNORECASE,
+)
+
+
+def looks_like_mix_variant(text):
+    """
+    True if text names some kind of remix/edit/mix variant (generic like
+    "Mix" or named like "DJ Name Remix") ANYWHERE in it, not just in a
+    trailing "(...)"/"[...]" group - a messy DJ-mashup-style SoundCloud
+    title can bury it mid-string (e.g. "Soolking ft Sif Lssane(Hkayne)
+    Remix DeejayTM Ca.Va.Pas / Mi Amigo") rather than cleanly at the end.
+    Word-boundary matched so it doesn't fire on an unrelated word merely
+    containing one of these as a substring (e.g. "Remixed" doesn't match
+    "\\bmix\\b"). Used to reject a SoundCloud candidate carrying a variant
+    we never asked for (see its use in search_cover_soundcloud) without
+    also rejecting a harmless descriptive tag like "(Official Audio)".
+    """
+    return bool(MIX_VARIANT_RE.search(text))
+
+
 def search_cover_soundcloud(artist, title, token, log=safe_print):
     """
     Checks up to 10 candidates, not just the top one - SoundCloud's
@@ -2729,6 +2756,18 @@ def search_cover_soundcloud(artist, title, token, log=safe_print):
                 has_unsolicited_edit_marker(f"{track_title} {uploader_name}")
                 and not has_unsolicited_edit_marker(title)
             ):
+                continue
+
+            # Reject a candidate whose OWN title carries a remix/edit/mix
+            # variant tag (generic or named) we never asked for - real
+            # report: searching for the plain "Mi Amigo" matched a random
+            # account's "Soolking - Mi Amigo (Remix)" upload (wrong cover)
+            # instead of falling through to a plain, correctly-covered
+            # upload further down the results. A harmless descriptive tag
+            # like "(Official Audio)"/"(HQ)" is deliberately left alone
+            # (see looks_like_mix_variant) so this doesn't also reject
+            # otherwise-good legitimate reposts.
+            if not looks_like_mix_variant(title) and looks_like_mix_variant(track_title):
                 continue
 
             # title_words_overlap only requires ONE shared word with the base
