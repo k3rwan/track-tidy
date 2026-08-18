@@ -2303,7 +2303,12 @@ class TaggerInterface:
                 self._append_to_journal(f"{len(no_cover_infos)} track(s) currently have no cover match.")
 
             if not self.cancel_requested.is_set():
-                self._notify_scan_complete(number_new, len(removed_files), len(self.scanned_plan))
+                # Skip the Discord ping for a no-op rescan (nothing new,
+                # nothing removed) - otherwise repeatedly clicking Scan on an
+                # already-scanned folder spams the channel with empty
+                # "0 new, 0 removed" notifications.
+                if number_new > 0 or removed_files:
+                    self._notify_scan_complete(number_new, len(removed_files), len(self.scanned_plan))
                 if number_new > 0:
                     self._show_scan_summary_dialog(no_cover_infos=no_cover_infos)
 
