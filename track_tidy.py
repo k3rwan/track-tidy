@@ -446,13 +446,6 @@ _DISCORD_REPORT_WEBHOOK_URL_B64 = (
 )
 DISCORD_REPORT_WEBHOOK_URL = base64.b64decode(_DISCORD_REPORT_WEBHOOK_URL_B64).decode("ascii")
 
-# Client-side cooldown between track reports - if the webhook URL is ever
-# extracted, this at least stops a single client from flooding the Discord
-# channel via _report_track's normal call path.
-REPORT_COOLDOWN_SECONDS = 15
-_last_report_time = 0
-
-
 def send_track_report(info, reporter_name=None, timeout=10):
     """
     Posts this track's info to a Discord webhook, so the developer gets a
@@ -464,19 +457,11 @@ def send_track_report(info, reporter_name=None, timeout=10):
 
     Returns (True, None) on success, (False, reason) on any failure (never
     raises - a failed report shouldn't disrupt the user) - reason is one of
-    "cooldown" (called again within REPORT_COOLDOWN_SECONDS of the last
-    report - see the module comment above), "http_error" (Discord itself
-    rejected the request - webhook revoked, Discord-side rate limit...),
-    or "network_error" (couldn't even reach Discord - a real connectivity
-    problem). Kept distinct so the UI doesn't blame "no internet connection"
-    for what's actually the client-side cooldown or a Discord-side issue.
+    "http_error" (Discord itself rejected the request - webhook revoked,
+    Discord-side rate limit...) or "network_error" (couldn't even reach
+    Discord - a real connectivity problem). Kept distinct so the UI doesn't
+    blame "no internet connection" for what's actually a Discord-side issue.
     """
-    global _last_report_time
-    now = time.time()
-    if now - _last_report_time < REPORT_COOLDOWN_SECONDS:
-        return False, "cooldown"
-    _last_report_time = now
-
     fields = [
         {"name": "Reported by", "value": reporter_name or "(unknown)", "inline": False},
         {"name": "File", "value": info.get("file") or "(unknown)", "inline": False},
@@ -2186,9 +2171,18 @@ def strip_accents(text):
 
 
 def exact_match(text_a, text_b):
-    """Case/whitespace/accent-insensitive EXACT match (not the looser substring/word-based checks below)."""
+    """
+    Case/whitespace/accent-insensitive EXACT match (not the looser
+    substring/word-based checks below). Also treats "Pt.III" and "Pt. III"
+    (a space right after an abbreviating period) as the same - a store's
+    listing and a filename/tag frequently disagree on that one space alone
+    (e.g. "Pt. III" vs "Pt.III", "Vol. 2" vs "Vol.2"), which would otherwise
+    reject an exact release over pure punctuation.
+    """
     def normalize(text):
-        return strip_accents(re.sub(r"\s+", " ", text.strip().lower()))
+        text = re.sub(r"\s+", " ", text.strip().lower())
+        text = re.sub(r"\.\s+", ".", text)
+        return strip_accents(text)
     return normalize(text_a) == normalize(text_b)
 
 
@@ -2432,6 +2426,13 @@ ITUNES_RATE_LIMIT_COOLDOWN_SECONDS = 30
 _itunes_rate_limited_until = 0
 
 
+# iTunes' fixed "various artists" credit on a compilation's collection, in
+# whichever storefront locale search_cover_itunes() queries (hardcoded to
+# "FR" below) - not a per-compilation translation, so this is safe to match
+# literally rather than needing a keyword search.
+ITUNES_VARIOUS_ARTISTS_CREDITS = ("Multi-interprètes",)
+
+
 def search_cover_itunes(artist, title, log=safe_print, max_retries=2, allow_loose_remix_match=False):
     """
     Retries on HTTP 429 (rate limited) with a short backoff before giving up.
@@ -2524,6 +2525,13 @@ def search_cover_itunes(artist, title, log=safe_print, max_retries=2, allow_loos
                 loose_ok = split_artist_names(artist) <= returned_artist_set
 
             if not (artist_ok or swapped_ok or loose_ok):
+                continue
+
+            if result.get("collectionArtistName") in ITUNES_VARIOUS_ARTISTS_CREDITS:
+                log(
+                    f"  [iTunes] Match found for '{artist} - {title}' but it's only on a "
+                    f"various-artists compilation ('{result.get('collectionName')}') - skipping."
+                )
                 continue
 
             cover_url = result.get("artworkUrl100")
