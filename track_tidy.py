@@ -461,17 +461,20 @@ def send_track_report(info, reporter_name=None, timeout=10):
     fix later. Attaches the existing cover (as a thumbnail) and/or the
     online-suggested cover (as the main image) when available, so a missing/
     wrong cover is visible at a glance instead of just implied by text.
-    Returns True on success, False on any failure (never raises - a failed
-    report shouldn't disrupt the user). Also False if called again within
-    REPORT_COOLDOWN_SECONDS of the last report (see the module comment
-    above - the webhook URL can't be kept truly secret from this app's own
-    binary, so this bounds how fast a single client can flood the channel
-    if it's ever extracted).
+
+    Returns (True, None) on success, (False, reason) on any failure (never
+    raises - a failed report shouldn't disrupt the user) - reason is one of
+    "cooldown" (called again within REPORT_COOLDOWN_SECONDS of the last
+    report - see the module comment above), "http_error" (Discord itself
+    rejected the request - webhook revoked, Discord-side rate limit...),
+    or "network_error" (couldn't even reach Discord - a real connectivity
+    problem). Kept distinct so the UI doesn't blame "no internet connection"
+    for what's actually the client-side cooldown or a Discord-side issue.
     """
     global _last_report_time
     now = time.time()
     if now - _last_report_time < REPORT_COOLDOWN_SECONDS:
-        return False
+        return False, "cooldown"
     _last_report_time = now
 
     fields = [
@@ -508,9 +511,11 @@ def send_track_report(info, reporter_name=None, timeout=10):
             )
         else:
             response = requests.post(DISCORD_REPORT_WEBHOOK_URL, json=payload, timeout=timeout)
-        return response.status_code in (200, 204)
+        if response.status_code in (200, 204):
+            return True, None
+        return False, "http_error"
     except Exception:
-        return False
+        return False, "network_error"
 
 
 # Windows usernames that never trigger the automatic "new install"/"scan
