@@ -1564,8 +1564,8 @@ class TaggerInterface:
         credit_frame = ttk.Frame(soundcloud_tab)
         credit_frame.pack(anchor="w", padx=10, pady=(0, 2), side="bottom")
         ttk.Label(
-            credit_frame, text="Developped by ", foreground="#888888", font=("TkDefaultFont", 8, "bold"),
-        ).pack(side="left")
+            credit_frame, text="Developped by", foreground="#888888", font=("TkDefaultFont", 8, "bold"),
+        ).pack(side="left", padx=(0, 3))
         kevz_credit_label = ttk.Label(
             credit_frame, text="KEVZ", foreground="#888888", font=("TkDefaultFont", 8, "bold"), cursor="hand2",
         )
@@ -3617,8 +3617,8 @@ class TaggerInterface:
             reporter_name = ""
 
         def _send():
-            success = tagger.send_track_report(info, reporter_name=reporter_name)
-            self.message_queue.put(("report_sent", success))
+            success, reason = tagger.send_track_report(info, reporter_name=reporter_name)
+            self.message_queue.put(("report_sent", (success, reason)))
 
         self._run_in_background(_send)
 
@@ -3844,9 +3844,21 @@ class TaggerInterface:
                     self._finish_in_app_update(success, dest_path)
 
                 elif message_type == "report_sent":
-                    success = content
+                    success, reason = content
                     if success:
                         self._append_to_journal("Track reported, thanks!")
+                    elif reason == "cooldown":
+                        messagebox.showinfo(
+                            "Please wait",
+                            f"Wait a few seconds between reports (max one every "
+                            f"{tagger.REPORT_COOLDOWN_SECONDS}s) and try again.",
+                            parent=self.window,
+                        )
+                    elif reason == "http_error":
+                        messagebox.showerror(
+                            "Report failed", "Discord rejected the report - try again in a moment.",
+                            parent=self.window,
+                        )
                     else:
                         messagebox.showerror(
                             "Report failed", "Could not send the report - check your internet connection and try again.",
