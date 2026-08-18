@@ -1489,6 +1489,10 @@ class TaggerInterface:
         ttk.Checkbutton(
             sources_row, text="SoundCloud", variable=self.use_soundcloud_var,
             command=self._on_use_soundcloud_changed,
+        ).pack(side="left", padx=(0, 15))
+        ttk.Checkbutton(
+            sources_row, text="Spotify", variable=self.use_spotify_var,
+            command=self._on_use_spotify_changed,
         ).pack(side="left")
 
         ttk.Separator(sources_frame, orient="horizontal").pack(fill="x", padx=10, pady=(0, 10))
@@ -1496,11 +1500,6 @@ class TaggerInterface:
             sources_frame,
             text="Identify badly-named tracks from the audio itself (AcoustID)",
             variable=self.use_acoustid_var, command=self._on_use_acoustid_changed,
-        ).pack(anchor="w", padx=10, pady=(0, 10))
-        ttk.Checkbutton(
-            sources_frame,
-            text="Try Spotify as an absolute last resort, if iTunes/SoundCloud/AcoustID all fail",
-            variable=self.use_spotify_var, command=self._on_use_spotify_changed,
         ).pack(anchor="w", padx=10, pady=(0, 10))
 
         # Renamed from "Behavior" - now holds only actual file-handling
