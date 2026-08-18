@@ -2014,12 +2014,6 @@ SOUNDCLOUD_UNAVAILABLE = False  # set for the current run when no credentials ar
 # the extra concurrency ever saved.
 ITUNES_SCAN_MAX_WORKERS = 2
 
-# Minimum time between finishing one track and starting the next, during a
-# scan's sequential phase (see scan_files' Phase 3 below) - spaces out the
-# request rate to iTunes/Spotify/SoundCloud a bit further, on top of
-# ITUNES_SCAN_MAX_WORKERS, to reduce how often a big scan trips a rate limit.
-SCAN_MIN_DELAY_SECONDS = 1
-
 
 def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=None, on_rate_limited=None,
                should_cancel=None, on_auth_error=None, on_itunes_rate_limited=None):
@@ -2102,17 +2096,10 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
     # wrong match).
     results = []
     try:
-        for index, prepared in enumerate(prepared_list):
+        for prepared in prepared_list:
             if should_cancel and should_cancel():
                 log("  Scan cancelled.")
                 break
-
-            # Minimum spacing between tracks (not before the very first one) -
-            # keeps the request rate to iTunes/Spotify/SoundCloud gentler
-            # across a scan, instead of firing every file as fast as
-            # possible - reduces how often a big scan trips a rate limit.
-            if index > 0:
-                time.sleep(SCAN_MIN_DELAY_SECONDS)
 
             file_name = prepared["file_name"]
             match_result = None
