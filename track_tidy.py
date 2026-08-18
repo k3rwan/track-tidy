@@ -2310,7 +2310,18 @@ def split_artist_names(text):
     rejected as "not the same artist" as a store's own "Alonzo, Tiakola".
     """
     parts = re.split(r"\s*(?:,|&|/|\bx\b|\bvs\b|\bfeat\b\.?|\bft\b\.?|\band\b)\s*", text, flags=re.IGNORECASE)
-    return {strip_accents(strip_sanitized_chars(p.strip().lower())) for p in parts if p.strip()}
+    names = set()
+    for part in parts:
+        normalized = strip_accents(strip_sanitized_chars(part.strip().lower()))
+        if not normalized:
+            continue
+        # A band's own name is sometimes credited with a leading "The" and
+        # sometimes without (e.g. "The Black Eyed Peas" vs. iTunes's own
+        # "Black Eyed Peas") - real report: that mismatch alone rejected an
+        # otherwise-correct iTunes match, falling through to a much less
+        # reliable SoundCloud search that then matched an unrelated upload.
+        names.add(re.sub(r"^the\s+", "", normalized))
+    return names
 
 
 def artist_sets_match(expected_artist, returned_artist, returned_title=""):
