@@ -714,7 +714,7 @@ class SearchOneSourceTests(unittest.TestCase):
         tagger.search_cover_itunes = fake_itunes
 
         match_result, source = tagger._search_one_source(
-            "itunes", "Artist", "Title", "Title", None, print
+            "itunes", "Artist", "Title", "Title", None, None, print
         )
         self.assertEqual(source, "iTunes")
         self.assertEqual(calls, ["Title"])
@@ -730,7 +730,7 @@ class SearchOneSourceTests(unittest.TestCase):
         tagger.search_cover_itunes = fake_itunes
 
         match_result, source = tagger._search_one_source(
-            "itunes", "Artist", "Title", "Title (Remix)", None, print
+            "itunes", "Artist", "Title", "Title (Remix)", None, None, print
         )
         self.assertEqual(calls, ["Title", "Title (Remix)"])
         self.assertEqual(source, "iTunes")
@@ -753,7 +753,7 @@ class SearchOneSourceTests(unittest.TestCase):
         tagger.search_cover_itunes = fake_itunes
 
         match_result, source = tagger._search_one_source(
-            "itunes", "Artist", "Title", "Title (Royale BR Bootleg)", None, print
+            "itunes", "Artist", "Title", "Title (Royale BR Bootleg)", None, None, print
         )
         self.assertEqual(calls, ["Title (Royale BR Bootleg)"])
         self.assertIsNone(match_result)
@@ -764,7 +764,7 @@ class SearchOneSourceTests(unittest.TestCase):
         tagger.search_cover_itunes = lambda artist, title, log=None, **k: calls.append(title) or None
 
         match_result, source = tagger._search_one_source(
-            "itunes", "Artist", "Title", "Title", None, print
+            "itunes", "Artist", "Title", "Title", None, None, print
         )
         self.assertEqual(calls, ["Title"])
         self.assertIsNone(match_result)
@@ -780,7 +780,7 @@ class SearchOneSourceTests(unittest.TestCase):
         tagger.search_cover_soundcloud = fake_soundcloud
 
         match_result, source = tagger._search_one_source(
-            "soundcloud", "Artist", "Title", "Title (Remix)", "token", print
+            "soundcloud", "Artist", "Title", "Title (Remix)", "token", None, print
         )
         # SoundCloud goes straight for the remix-qualified title - no
         # separate plain-title attempt first.
