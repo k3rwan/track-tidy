@@ -960,7 +960,7 @@ REMIX_WITH_COMMA_PATTERN = re.compile(
 GENERIC_MIX_LABELS = {
     "extended mix", "extended edit", "extended",
     "radio edit", "radio mix", "club mix", "original mix", "instrumental mix",
-    "mixed", "mix",
+    "mixed", "mix", "remix",
 }
 
 
