@@ -1852,7 +1852,6 @@ def _prepare_scan(file_name, log=safe_print, on_new_mention=None):
         on_new_mention(fuviclan_mention)
 
     has_cover, current_artist, current_title, current_cover_bytes = read_current_info(full_path)
-    log(f"  [debug] Current tags read: artist='{current_artist}', title='{current_title}'")
     needs_conversion = not file_name.lower().endswith(".mp3")
 
     detected_artist, detected_title, tags_already_present = resolve_artist_title(
