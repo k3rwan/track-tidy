@@ -28,7 +28,7 @@ Contents (in the order they appear below):
     4. Folder extraction (flatten)        - extract_audio_files, remove_empty_subfolders
     5. Folder listing & duplicates        - list_audio_files, find_dot_underscore_duplicates
     6. Search query cleaning & mentions   - strip_parentheses, FuviClan/parenthetical detection
-    7. Scanning (read-only)               - scan_one_file, scan_files
+    7. Scanning (read-only)               - scan_files
     8. Cover match validation             - artist_names_match, title_words_overlap,
                                             fix_swapped_artist_title
     9. Cover search - iTunes              - search_cover_itunes
@@ -1753,10 +1753,9 @@ def search_cover_manual(artist, title, soundcloud_token, log=safe_print, spotify
     """
     Searches for a cover using the given artist/title directly, trying
     every enabled source in priority order (iTunes, then Spotify, then
-    SoundCloud) and stopping at the first match - shared by scan_one_file()
-    (filename/tag-derived artist/title) and the "fix Artist/Title and
-    search again" flow after a scan finds no match at all (user-corrected
-    artist/title).
+    SoundCloud) and stopping at the first match - used by the "fix Artist/
+    Title and search again" flow after a scan finds no match at all
+    (user-corrected artist/title), and by "Rescan".
 
     Spotify comes before SoundCloud despite USE_SPOTIFY's name/history as
     a "last resort" (see CLAUDE.md) - both iTunes and Spotify are curated
@@ -1815,9 +1814,9 @@ def _prepare_scan(file_name, log=safe_print, on_new_mention=None):
     Local-only part of analyzing a file (no network): reads tags, resolves
     artist/title, and detects mentions. Returns a dict with everything
     needed to both run the cover search and build the final info dict -
-    split out from scan_one_file() so scan_files() can prepare every file
-    up front (cheap, sequential) and then search iTunes for all of them
-    concurrently (see ITUNES_SCAN_MAX_WORKERS below).
+    split out so scan_files() can prepare every file up front (cheap,
+    sequential) and then search iTunes for all of them concurrently (see
+    ITUNES_SCAN_MAX_WORKERS below).
     """
     full_path = os.path.join(MUSIC_FOLDER, file_name)
 
@@ -1846,10 +1845,10 @@ def _prepare_scan(file_name, log=safe_print, on_new_mention=None):
     if detected_artist and detected_title:
         search_title, remix_qualified_title = compute_search_titles(detected_title)
     elif not detected_artist:
-        # scan_one_file()/scan_files() both skip iTunes/SoundCloud entirely
-        # without an artist to search with (see search_title being left
-        # None) - without this line that skip was completely silent,
-        # leaving no trace of why the file ended up with no cover.
+        # scan_files() skips iTunes/Spotify/SoundCloud entirely without an
+        # artist to search with (see search_title being left None) -
+        # without this line that skip was completely silent, leaving no
+        # trace of why the file ended up with no cover.
         log(
             "  No artist could be determined from the filename or tags - skipping "
             "iTunes/SoundCloud search (correct the Artist/Title and search again)."
@@ -1909,8 +1908,7 @@ def _try_acoustid_correction(prepared, log=safe_print):
 def _finish_scan(prepared, match_result, cover_source, log=safe_print):
     """
     Builds the final info dict for a file, given the (match_result,
-    cover_source) pair its cover search ended up with - shared by
-    scan_one_file() and scan_files()'s parallel-iTunes path.
+    cover_source) pair its cover search ended up with.
     """
     file_name = prepared["file_name"]
     detected_artist = prepared["detected_artist"]
@@ -1977,33 +1975,6 @@ def _finish_scan(prepared, match_result, cover_source, log=safe_print):
         # fall right back to the original unusable filename/tags.
         "acoustid_identified": prepared.get("acoustid_identified", False),
     }
-
-
-def scan_one_file(file_name, soundcloud_token, log=safe_print, on_new_mention=None):
-    """
-    Analyzes a single file (path relative to MUSIC_FOLDER): current tags,
-    info detected from the name, and online cover search.
-    Returns the corresponding info dict.
-    """
-    prepared = _prepare_scan(file_name, log=log, on_new_mention=on_new_mention)
-
-    match_result = None
-    cover_source = None
-    if prepared["detected_artist"] and prepared["search_title"]:
-        found_cover_image, cover_source, returned_artist, returned_title = search_cover_manual(
-            prepared["detected_artist"], prepared["detected_title"], soundcloud_token, log,
-        )
-        if found_cover_image:
-            match_result = (found_cover_image, returned_artist, returned_title)
-
-    if not match_result and _try_acoustid_correction(prepared, log):
-        found_cover_image, cover_source, returned_artist, returned_title = search_cover_manual(
-            prepared["detected_artist"], prepared["detected_title"], soundcloud_token, log,
-        )
-        if found_cover_image:
-            match_result = (found_cover_image, returned_artist, returned_title)
-
-    return _finish_scan(prepared, match_result, cover_source, log)
 
 
 SOUNDCLOUD_RATE_LIMITED = False  # set for the current run once a 429 is hit
