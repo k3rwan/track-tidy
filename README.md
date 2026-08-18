@@ -5,9 +5,9 @@ A Windows desktop app that cleans up and tags your audio files automatically.
 Given a folder of tracks named `Artist - Title.ext`, Track-Tidy:
 
 - Parses the filename to fill in **Artist** / **Title** tags
-- Fetches a matching **cover** online from iTunes, Spotify, and/or SoundCloud - each independently toggled in Settings (iTunes and SoundCloud on, Spotify off, by default), tried in that order until one finds a match - click a thumbnail to see it full-size, and import/remove a cover manually from that popup.
+- Fetches a matching **cover** online from iTunes and/or SoundCloud - each independently toggled in Settings (both on by default), tried in that order until one finds a match, with AcoustID (audio fingerprinting) as a last resort for badly-named files neither can search for - click a thumbnail to see it full-size, and import/remove a cover manually from that popup.
 - Converts any non-MP3 format (WAV, FLAC, AAC, M4A, OGG, WMA, AIFF, OPUS...) to **MP3 (320 kbps)** before tagging - can be turned off in Settings, in which case `.wav` files (the only format taggable without converting) are skipped instead
-- Right-click a row for more: Info, Rescan this file (or "Rescan selected" with multiple rows picked), Open file location, Move up/down, Report track... (sends the row's details to the developer), Remove from list
+- Right-click a row for more: Info, Rescan this track (or "Rescan selected" with multiple rows picked - re-searches with whatever Artist/Title is already showing, no re-entry needed), Remove cover (on the cover thumbnail), Open file location, Move up/down, Report track... (sends the row's details to the developer), Remove from list
 - "Only show tracks with no cover match" filter (Advanced) to quickly find what still needs attention
 - Flattens folders, removes empty subfolders, and detects duplicate files
 - Keeps a permanent history of every file it processes in `%APPDATA%\Track-Tidy\history.jsonl` - browsable (and restorable) from Settings ("View processing history")
@@ -35,18 +35,11 @@ Given a folder of tracks named `Artist - Title.ext`, Track-Tidy:
 
 ## Setup
 
-iTunes needs no credentials and works out of the box. To use Spotify and/or
-SoundCloud as cover sources, enter their API credentials via Settings →
-"Spotify credentials..." / "SoundCloud credentials..." (a Client ID /
-Client Secret from your own registered app - both are free, self-service:
-[Spotify](https://developer.spotify.com/dashboard),
-[SoundCloud](https://soundcloud.com/you/apps), Artist Pro account required
-for the latter). This writes `spotifyClientID.txt` / `spotifyClientSecret.txt`
-and `clientID.txt` / `clientSecret.txt` next to the app (in
-`%APPDATA%\Track-Tidy\`, not tracked by git) - you can also create those
-files yourself instead.
+iTunes, SoundCloud, and AcoustID all work out of the box - no accounts or
+API keys to set up.
 
-It also relies on `ffmpeg.exe` being present next to the script for format conversion.
+It also relies on `ffmpeg.exe` (format conversion) and `fpcalc.exe`
+(AcoustID fingerprinting) being present next to the script.
 
 ## Running from source
 

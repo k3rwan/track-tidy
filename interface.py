@@ -264,7 +264,7 @@ class TaggerInterface:
         self._drag_moved = False
         self._table_font = tkfont.nametofont("TkDefaultFont")
         self.soundcloud_rate_limit_warned = False
-        self.source_auth_error_warned = {}  # "SoundCloud"/"Spotify" -> already warned this scan
+        self.source_auth_error_warned = {}  # "SoundCloud" -> already warned this scan
         self.mention_counts = {}  # raw mention text -> number of times seen
 
         self._native_theme = ttk.Style().theme_use()  # so "light" can restore it later
@@ -276,22 +276,21 @@ class TaggerInterface:
 
         saved_settings = tagger.load_settings()
         self.use_itunes_var = tk.BooleanVar(value=saved_settings.get("use_itunes", True))
-        self.use_spotify_var = tk.BooleanVar(value=saved_settings.get("use_spotify", False))
         self.use_soundcloud_var = tk.BooleanVar(value=saved_settings.get("use_soundcloud", True))
         self.use_acoustid_var = tk.BooleanVar(value=saved_settings.get("use_acoustid_fallback", True))
+        self.use_spotify_var = tk.BooleanVar(value=saved_settings.get("use_spotify", True))
         self.auto_convert_var = tk.BooleanVar(value=saved_settings.get("auto_convert_mp3", False))
         self.auto_convert_wav_aiff_var = tk.BooleanVar(value=saved_settings.get("auto_convert_wav_to_aiff", True))
         self.show_log_var = tk.BooleanVar(value=saved_settings.get("show_log_section", False))
         self._tagger_resize_pending = False
         tagger.USE_ITUNES = self.use_itunes_var.get()
-        tagger.USE_SPOTIFY = self.use_spotify_var.get()
         tagger.USE_SOUNDCLOUD = self.use_soundcloud_var.get()
         tagger.USE_ACOUSTID_FALLBACK = self.use_acoustid_var.get()
+        tagger.USE_SPOTIFY = self.use_spotify_var.get()
         tagger.AUTO_CONVERT_MP3 = self.auto_convert_var.get()
         tagger.AUTO_CONVERT_WAV_TO_AIFF = self.auto_convert_wav_aiff_var.get()
 
         self._build_interface()
-        self._sync_convert_checkboxes_state()
         self._setup_drag_and_drop()
         self._adjust_window_height()
         self._apply_theme(self.theme_var.get())
@@ -303,7 +302,6 @@ class TaggerInterface:
         self.window.after(100, self._rewarm_theme)
         self._start_message_loop()
         self._check_for_update_on_startup()
-        self._check_cover_source_credentials_on_startup()
         self._check_internet_connection(is_startup_check=True)
         self._notify_new_install_on_startup()
 
@@ -330,31 +328,8 @@ class TaggerInterface:
 
     def _on_use_itunes_changed(self):
         enabled = self.use_itunes_var.get()
-        if enabled and self.use_spotify_var.get():
-            messagebox.showinfo(
-                "iTunes and Spotify are exclusive",
-                "iTunes and Spotify can't both be enabled as cover sources at "
-                "the same time.\n\nTurn off Spotify first if you want to use iTunes.",
-                parent=self.window,
-            )
-            self.use_itunes_var.set(False)
-            return
         tagger.USE_ITUNES = enabled
         tagger.save_setting("use_itunes", enabled)
-
-    def _on_use_spotify_changed(self):
-        enabled = self.use_spotify_var.get()
-        if enabled and self.use_itunes_var.get():
-            # iTunes and Spotify are exclusive - Spotify silently wins here,
-            # since checking it is the more deliberate action (iTunes is the
-            # default already on, so unchecking it would take an extra step
-            # otherwise). Re-checking iTunes afterward is what explains the
-            # exclusivity, in _on_use_itunes_changed().
-            self.use_itunes_var.set(False)
-            tagger.USE_ITUNES = False
-            tagger.save_setting("use_itunes", False)
-        tagger.USE_SPOTIFY = enabled
-        tagger.save_setting("use_spotify", enabled)
 
     def _on_use_soundcloud_changed(self):
         enabled = self.use_soundcloud_var.get()
@@ -366,18 +341,25 @@ class TaggerInterface:
         tagger.USE_ACOUSTID_FALLBACK = enabled
         tagger.save_setting("use_acoustid_fallback", enabled)
 
+    def _on_use_spotify_changed(self):
+        enabled = self.use_spotify_var.get()
+        tagger.USE_SPOTIFY = enabled
+        tagger.save_setting("use_spotify", enabled)
+
     def _on_auto_convert_changed(self):
         enabled = self.auto_convert_var.get()
-        if enabled:
+        if enabled and self.auto_convert_wav_aiff_var.get():
+            self.auto_convert_wav_aiff_var.set(False)
+            tagger.AUTO_CONVERT_WAV_TO_AIFF = False
+            tagger.save_setting("auto_convert_wav_to_aiff", False)
             messagebox.showinfo(
                 "Convert WAV to AIFF disabled",
                 "\"Convert everything to MP3\" and \"Convert WAV to AIFF\" are two "
                 "different destinies for WAV files, so only one can be on at a time - "
-                "\"Convert WAV to AIFF\" is disabled while this is on. Turn this back "
-                "off to make it available again.",
+                "\"Convert WAV to AIFF\" has been turned off.",
                 parent=self.window,
             )
-        else:
+        elif not enabled:
             wav_fate = (
                 "converted to AIFF" if self.auto_convert_wav_aiff_var.get() else "tagged (and get a cover) in place, kept as WAV"
             )
@@ -390,48 +372,34 @@ class TaggerInterface:
             )
         tagger.AUTO_CONVERT_MP3 = enabled
         tagger.save_setting("auto_convert_mp3", enabled)
-        self._sync_convert_checkboxes_state()
-
-    def _sync_convert_checkboxes_state(self):
-        """"Convert everything to MP3" and "Convert WAV to AIFF" are two
-        different, mutually exclusive destinies for a WAV file - checking
-        either one disables the other (instead of leaving a control up
-        that would either have no effect, in MP3's case, or fight the
-        other setting for no reason) until it's unchecked again."""
-        self.auto_convert_wav_aiff_checkbox.configure(
-            state="disabled" if self.auto_convert_var.get() else "normal"
-        )
-        self.auto_convert_checkbox.configure(
-            state="disabled" if self.auto_convert_wav_aiff_var.get() else "normal"
-        )
 
     def _on_auto_convert_wav_aiff_changed(self):
         enabled = self.auto_convert_wav_aiff_var.get()
-        if enabled:
+        if enabled and self.auto_convert_var.get():
+            self.auto_convert_var.set(False)
+            tagger.AUTO_CONVERT_MP3 = False
+            tagger.save_setting("auto_convert_mp3", False)
             messagebox.showinfo(
                 "Convert everything to MP3 disabled",
                 "\"Convert everything to MP3\" and \"Convert WAV to AIFF\" are two "
                 "different destinies for WAV files, so only one can be on at a time - "
-                "\"Convert everything to MP3\" is disabled while this is on. Turn this "
-                "back off to make it available again.",
+                "\"Convert everything to MP3\" has been turned off.",
                 parent=self.window,
             )
         tagger.AUTO_CONVERT_WAV_TO_AIFF = enabled
         tagger.save_setting("auto_convert_wav_to_aiff", enabled)
-        self._sync_convert_checkboxes_state()
 
     def _reset_settings_to_default(self):
         """Restores every Settings-tab option to its out-of-the-box value.
         Deliberately bypasses the individual _on_X_changed() handlers -
-        several of them (auto-convert, iTunes/Spotify exclusivity) pop up
-        an explanatory messagebox on every change, which would mean a wall
-        of unwanted dialogs to click through here. Credentials (SoundCloud/
-        Spotify/AcoustID) are untouched - resetting "settings" shouldn't
-        force re-entering those."""
+        several of them (auto-convert) pop up an explanatory messagebox on
+        every change, which would mean a wall of unwanted dialogs to click
+        through here. Credentials (SoundCloud/AcoustID) are untouched -
+        resetting "settings" shouldn't force re-entering those."""
         if not messagebox.askyesno(
             "Reset settings",
             "Reset all settings to their default values?\n\n"
-            "Your saved SoundCloud/Spotify/AcoustID credentials won't be affected.",
+            "Your saved SoundCloud/AcoustID credentials won't be affected.",
             parent=self.window,
         ):
             return
@@ -439,9 +407,9 @@ class TaggerInterface:
         for key, value in (
             ("theme", "light"),
             ("use_itunes", True),
-            ("use_spotify", False),
             ("use_soundcloud", True),
             ("use_acoustid_fallback", True),
+            ("use_spotify", True),
             ("auto_convert_mp3", False),
             ("auto_convert_wav_to_aiff", True),
             ("show_log_section", False),
@@ -449,19 +417,18 @@ class TaggerInterface:
             tagger.save_setting(key, value)
 
         tagger.USE_ITUNES = True
-        tagger.USE_SPOTIFY = False
         tagger.USE_SOUNDCLOUD = True
         tagger.USE_ACOUSTID_FALLBACK = True
+        tagger.USE_SPOTIFY = True
         tagger.AUTO_CONVERT_MP3 = False
         tagger.AUTO_CONVERT_WAV_TO_AIFF = True
 
         self.use_itunes_var.set(True)
-        self.use_spotify_var.set(False)
         self.use_soundcloud_var.set(True)
         self.use_acoustid_var.set(True)
+        self.use_spotify_var.set(True)
         self.auto_convert_var.set(False)
         self.auto_convert_wav_aiff_var.set(True)
-        self._sync_convert_checkboxes_state()
 
         self.show_log_var.set(False)
         self._on_show_log_changed()
@@ -1131,28 +1098,6 @@ class TaggerInterface:
 
     # --- Startup checks ---
 
-    def _check_cover_source_credentials_on_startup(self):
-        """Nags (once, on startup) about any ENABLED cover source that's
-        missing its credentials - iTunes needs none, so only SoundCloud/
-        Spotify can trigger this."""
-        if tagger.USE_SOUNDCLOUD and (not tagger.SOUNDCLOUD_CLIENT_ID or not tagger.SOUNDCLOUD_CLIENT_SECRET):
-            messagebox.showinfo(
-                "SoundCloud not configured",
-                "SoundCloud is enabled as a cover source in Settings, but no Client ID / "
-                "Client Secret is configured yet - add them in Settings, or turn it off.",
-                parent=self.window,
-            )
-            self.notebook.select(2)  # Settings tab
-
-        if tagger.USE_SPOTIFY and (not tagger.SPOTIFY_CLIENT_ID or not tagger.SPOTIFY_CLIENT_SECRET):
-            messagebox.showinfo(
-                "Spotify not configured",
-                "Spotify is enabled as a cover source in Settings, but no Client ID / "
-                "Client Secret is configured yet - add them in Settings, or turn it off.",
-                parent=self.window,
-            )
-            self.notebook.select(2)  # Settings tab
-
     # --- Drag and drop ---
 
     def _setup_drag_and_drop(self):
@@ -1537,15 +1482,6 @@ class TaggerInterface:
             command=self._on_use_soundcloud_changed,
         ).pack(side="left")
 
-        credentials_row = ttk.Frame(sources_frame)
-        credentials_row.pack(fill="x", padx=10, pady=(0, 10))
-        ttk.Button(
-            credentials_row, text="SoundCloud credentials...", command=self._show_soundcloud_credentials_dialog,
-        ).pack(side="left", fill="x", expand=True, padx=(0, 5))
-        ttk.Button(
-            credentials_row, text="Spotify credentials...", command=self._show_spotify_credentials_dialog,
-        ).pack(side="left", fill="x", expand=True)
-
         ttk.Separator(sources_frame, orient="horizontal").pack(fill="x", padx=10, pady=(0, 10))
         ttk.Checkbutton(
             sources_frame,
@@ -1625,12 +1561,16 @@ class TaggerInterface:
         self.legal_notices_link.pack(anchor="w", padx=10, pady=(0, 6), side="bottom")
         self.legal_notices_link.bind("<Button-1>", self._open_legal_notices)
 
+        credit_frame = ttk.Frame(soundcloud_tab)
+        credit_frame.pack(anchor="w", padx=10, pady=(0, 2), side="bottom")
         ttk.Label(
-            soundcloud_tab,
-            text="Developped by KEVZ",
-            foreground="#888888",
-            font=("TkDefaultFont", 8, "bold"),
-        ).pack(anchor="w", padx=10, pady=(0, 2), side="bottom")
+            credit_frame, text="Developped by", foreground="#888888", font=("TkDefaultFont", 8, "bold"),
+        ).pack(side="left", padx=(0, 3))
+        kevz_credit_label = ttk.Label(
+            credit_frame, text="KEVZ", foreground="#888888", font=("TkDefaultFont", 8, "bold"), cursor="hand2",
+        )
+        kevz_credit_label.pack(side="left")
+        kevz_credit_label.bind("<Button-1>", self._open_kevz_instagram)
 
         ttk.Separator(soundcloud_tab, orient="horizontal").pack(fill="x", padx=10, pady=(20, 10), side="bottom")
 
@@ -1682,109 +1622,6 @@ class TaggerInterface:
 
     # --- Settings tab actions ---
 
-    def _update_soundcloud_save_state(self, event=None):
-        id_value = self.sc_client_id_entry.get().strip()
-        secret_value = self.sc_client_secret_entry.get().strip()
-        both_filled = bool(id_value) and bool(secret_value)
-        both_empty = not id_value and not secret_value
-        self.sc_save_button.configure(state="normal" if (both_filled or both_empty) else "disabled")
-
-    def _save_soundcloud_credentials(self):
-        client_id = self.sc_client_id_entry.get().strip()
-        client_secret = self.sc_client_secret_entry.get().strip()
-
-        try:
-            tagger.write_credential(tagger.CLIENT_ID_KEY, client_id)
-            tagger.write_credential(tagger.CLIENT_SECRET_KEY, client_secret)
-
-            tagger.SOUNDCLOUD_CLIENT_ID = client_id or None
-            tagger.SOUNDCLOUD_CLIENT_SECRET = client_secret or None
-            tagger.invalidate_soundcloud_token()  # in case the credentials changed
-
-            messagebox.showinfo("Saved", "SoundCloud credentials saved.", parent=self._soundcloud_dialog)
-        except Exception as error:
-            messagebox.showerror("Error", f"Could not save credentials: {error}", parent=self._soundcloud_dialog)
-
-    def _open_soundcloud_registration(self):
-        webbrowser.open("https://soundcloud.com/you/apps")
-
-    def _show_soundcloud_credentials_dialog(self):
-        dialog = tk.Toplevel(self.window)
-        self._style_toplevel(dialog)
-        dialog.title("SoundCloud credentials")
-        dialog.resizable(False, False)
-        dialog.transient(self.window)
-        dialog.grab_set()
-        self._soundcloud_dialog = dialog
-
-        ttk.Label(
-            dialog,
-            text="SoundCloud requires registering an app yourself (Artist Pro account).\n"
-                 "Paste the Client ID / Client Secret you get from that page below.",
-            justify="left",
-            wraplength=440,
-        ).pack(anchor="w", padx=10, pady=(15, 10))
-
-        ttk.Label(dialog, text="Client ID:").pack(anchor="w", padx=10)
-        self.sc_client_id_entry = ttk.Entry(dialog)
-        self.sc_client_id_entry.pack(fill="x", padx=10, pady=(0, 10))
-        self.sc_client_id_entry.bind("<KeyRelease>", self._update_soundcloud_save_state)
-        self._bind_entry_context_menu(self.sc_client_id_entry)
-        if tagger.SOUNDCLOUD_CLIENT_ID:
-            self.sc_client_id_entry.insert(0, tagger.SOUNDCLOUD_CLIENT_ID)
-
-        ttk.Label(dialog, text="Client Secret:").pack(anchor="w", padx=10)
-        self.sc_client_secret_entry = ttk.Entry(dialog, show="*")
-        self.sc_client_secret_entry.pack(fill="x", padx=10, pady=(0, 15))
-        self.sc_client_secret_entry.bind("<KeyRelease>", self._update_soundcloud_save_state)
-        self._bind_entry_context_menu(self.sc_client_secret_entry)
-        if tagger.SOUNDCLOUD_CLIENT_SECRET:
-            self.sc_client_secret_entry.insert(0, tagger.SOUNDCLOUD_CLIENT_SECRET)
-
-        soundcloud_buttons_frame = ttk.Frame(dialog)
-        soundcloud_buttons_frame.pack(fill="x", padx=10, pady=(0, 10))
-        self.sc_save_button = ttk.Button(
-            soundcloud_buttons_frame, text="Save", command=self._save_soundcloud_credentials
-        )
-        self.sc_save_button.pack(side="left", fill="x", expand=True, padx=(0, 5))
-        ttk.Button(
-            soundcloud_buttons_frame, text="Register a SoundCloud app",
-            command=self._open_soundcloud_registration,
-        ).pack(side="left", fill="x", expand=True)
-
-        self._update_soundcloud_save_state()
-
-        ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=(0, 15))
-        dialog.bind("<Escape>", lambda _event: dialog.destroy())
-
-        self._center_dialog(dialog)
-
-    def _update_spotify_save_state(self, event=None):
-        id_value = self.sp_client_id_entry.get().strip()
-        secret_value = self.sp_client_secret_entry.get().strip()
-        both_filled = bool(id_value) and bool(secret_value)
-        both_empty = not id_value and not secret_value
-        self.sp_save_button.configure(state="normal" if (both_filled or both_empty) else "disabled")
-
-    def _save_spotify_credentials(self):
-        client_id = self.sp_client_id_entry.get().strip()
-        client_secret = self.sp_client_secret_entry.get().strip()
-
-        try:
-            tagger.write_credential(tagger.SPOTIFY_CLIENT_ID_KEY, client_id)
-            tagger.write_credential(tagger.SPOTIFY_CLIENT_SECRET_KEY, client_secret)
-
-            tagger.SPOTIFY_CLIENT_ID = client_id or None
-            tagger.SPOTIFY_CLIENT_SECRET = client_secret or None
-            tagger.invalidate_spotify_token()  # in case the credentials changed
-
-            messagebox.showinfo("Saved", "Spotify credentials saved.", parent=self._spotify_dialog)
-        except Exception as error:
-            messagebox.showerror("Error", f"Could not save credentials: {error}", parent=self._spotify_dialog)
-
-    def _open_spotify_registration(self):
-        webbrowser.open("https://developer.spotify.com/dashboard")
-
     def _open_legal_notices(self, event=None):
         """Opens THIRD-PARTY-NOTICES.md, installed next to the app - only
         present from v0.10 onward (see installer.iss), so this falls back
@@ -1803,57 +1640,8 @@ class TaggerInterface:
         except Exception as error:
             self._append_to_journal(f"Could not open license notices: {error}")
 
-    def _show_spotify_credentials_dialog(self):
-        dialog = tk.Toplevel(self.window)
-        self._style_toplevel(dialog)
-        dialog.title("Spotify credentials")
-        dialog.resizable(False, False)
-        dialog.transient(self.window)
-        dialog.grab_set()
-        self._spotify_dialog = dialog
-
-        ttk.Label(
-            dialog,
-            text="Spotify requires registering an app yourself (free, at the link below).\n"
-                 "Any Redirect URI works (it's never actually used) - paste the Client ID / "
-                 "Client Secret you get from that page below.",
-            justify="left",
-            wraplength=440,
-        ).pack(anchor="w", padx=10, pady=(15, 10))
-
-        ttk.Label(dialog, text="Client ID:").pack(anchor="w", padx=10)
-        self.sp_client_id_entry = ttk.Entry(dialog)
-        self.sp_client_id_entry.pack(fill="x", padx=10, pady=(0, 10))
-        self.sp_client_id_entry.bind("<KeyRelease>", self._update_spotify_save_state)
-        self._bind_entry_context_menu(self.sp_client_id_entry)
-        if tagger.SPOTIFY_CLIENT_ID:
-            self.sp_client_id_entry.insert(0, tagger.SPOTIFY_CLIENT_ID)
-
-        ttk.Label(dialog, text="Client Secret:").pack(anchor="w", padx=10)
-        self.sp_client_secret_entry = ttk.Entry(dialog, show="*")
-        self.sp_client_secret_entry.pack(fill="x", padx=10, pady=(0, 15))
-        self.sp_client_secret_entry.bind("<KeyRelease>", self._update_spotify_save_state)
-        self._bind_entry_context_menu(self.sp_client_secret_entry)
-        if tagger.SPOTIFY_CLIENT_SECRET:
-            self.sp_client_secret_entry.insert(0, tagger.SPOTIFY_CLIENT_SECRET)
-
-        spotify_buttons_frame = ttk.Frame(dialog)
-        spotify_buttons_frame.pack(fill="x", padx=10, pady=(0, 10))
-        self.sp_save_button = ttk.Button(
-            spotify_buttons_frame, text="Save", command=self._save_spotify_credentials
-        )
-        self.sp_save_button.pack(side="left", fill="x", expand=True, padx=(0, 5))
-        ttk.Button(
-            spotify_buttons_frame, text="Register a Spotify app",
-            command=self._open_spotify_registration,
-        ).pack(side="left", fill="x", expand=True)
-
-        self._update_spotify_save_state()
-
-        ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=(0, 15))
-        dialog.bind("<Escape>", lambda _event: dialog.destroy())
-
-        self._center_dialog(dialog)
+    def _open_kevz_instagram(self, event=None):
+        webbrowser.open("https://www.instagram.com/kevz_fr/")
 
     # --- Extractor tab actions ---
 
@@ -2059,6 +1847,12 @@ class TaggerInterface:
             self.apply_button.configure(text="Cancel", command=self._request_cancel, state="normal")
         self._set_tabs_locked(not enabled)
 
+    def _is_run_active(self):
+        """Whether a scan or apply run is currently in progress - see
+        _refresh_tagger_buttons_for_connectivity for why browse_button's
+        state doubles as this flag."""
+        return str(self.browse_button.cget("state")) == "disabled"
+
     def _set_tabs_locked(self, locked):
         """Prevents switching tabs while a scan or a processing run is in progress."""
         current_index = self.notebook.index("current")
@@ -2257,13 +2051,25 @@ class TaggerInterface:
 
     def _compute_processing_summary(self):
         """Counts, among the files actually processed in this session, how
-        many were converted - the cover breakdown itself is shown right
-        after scanning instead (see _compute_cover_summary), since it's
-        already known by then and doesn't change during Apply."""
-        converted_count = sum(
-            1 for info in self.scanned_plan if info.get("processed") and info.get("convert")
-        )
-        return converted_count
+        many were converted to MP3 vs. AIFF - info["convert"] alone doesn't
+        say which (it's just "this file gets converted, whichever format
+        that turns out to be"), so the actual target is re-derived from the
+        current settings via tagger._resolve_conversion_target(), same as
+        process_files() itself used at Apply time. The cover breakdown
+        itself is shown right after scanning instead (see
+        _compute_cover_summary), since it's already known by then and
+        doesn't change during Apply."""
+        mp3_count = 0
+        aiff_count = 0
+        for info in self.scanned_plan:
+            if not (info.get("processed") and info.get("convert")):
+                continue
+            target = tagger._resolve_conversion_target(info["file"])
+            if target == "mp3":
+                mp3_count += 1
+            elif target == "aiff":
+                aiff_count += 1
+        return mp3_count, aiff_count
 
     def _compute_cover_summary(self):
         """Counts, among all currently scanned tracks, how many got a cover
@@ -2272,7 +2078,7 @@ class TaggerInterface:
         acoustid_count is a separate, overlapping tally (not another
         "source" like the others) - AcoustID never provides the cover
         itself, only identifies the correct Artist/Title from the audio so
-        the iTunes/Spotify/SoundCloud search above can find one; a track it
+        the iTunes/SoundCloud search above can find one; a track it
         identified still gets counted under whichever of those actually
         supplied the cover (or "no cover" if none did)."""
         itunes_count = 0
@@ -2325,8 +2131,8 @@ class TaggerInterface:
         ).pack()
 
         # Only list sources that were actually enabled - a "Cover from
-        # Spotify: 0" line next to enabled sources reads as "Spotify was
-        # searched and came up empty", which is wrong when it wasn't
+        # SoundCloud: 0" line next to enabled sources reads as "SoundCloud
+        # was searched and came up empty", which is wrong when it wasn't
         # searched at all (see enabled_cover_sources()).
         source_counts = {"iTunes": itunes_count, "Spotify": spotify_count, "SoundCloud": soundcloud_count}
         enabled_sources = tagger.enabled_cover_sources()
@@ -2337,8 +2143,8 @@ class TaggerInterface:
 
         if no_cover_count and not enabled_sources:
             summary_text += (
-                "\n\nNo cover source is enabled in Settings - enable iTunes, "
-                "Spotify and/or SoundCloud to find covers automatically."
+                "\n\nNo cover source is enabled in Settings - enable iTunes "
+                "and/or SoundCloud to find covers automatically."
             )
         if acoustid_count:
             # Not another bucket alongside the ones above (those already add
@@ -2428,7 +2234,7 @@ class TaggerInterface:
         except Exception:
             pass  # if the sound file is missing, just show the dialog silently
 
-        converted_count = self._compute_processing_summary()
+        mp3_count, aiff_count = self._compute_processing_summary()
 
         dialog = tk.Toplevel(self.window)
         self._style_toplevel(dialog)
@@ -2444,8 +2250,19 @@ class TaggerInterface:
             padding=(20, 20, 20, 5),
         ).pack()
 
+        # Only a line for a target format that actually happened at least
+        # once - showing "Converted to AIFF: 0" next to "Converted to MP3: 5"
+        # would misleadingly suggest AIFF conversion was tried and failed.
+        lines = []
+        if mp3_count:
+            lines.append(f"Converted to MP3: {mp3_count}")
+        if aiff_count:
+            lines.append(f"Converted to AIFF: {aiff_count}")
+        if not lines:
+            lines.append("No files were converted.")
+
         ttk.Label(
-            dialog, text=f"Converted to MP3: {converted_count}", justify="left", foreground="#555555",
+            dialog, text="\n".join(lines), justify="left", foreground="#555555",
         ).pack(padx=20, pady=(0, 15))
 
         ttk.Button(dialog, text="OK", command=dialog.destroy).pack(pady=(0, 15))
@@ -2531,12 +2348,20 @@ class TaggerInterface:
         (its override if the user corrected it via double-click, otherwise
         the detected one) - no re-entry dialog, since that value is
         already right there. Runs sequentially in one background thread,
-        reusing a single SoundCloud/Spotify token across the batch, same
-        as a real scan (see scan_files) - firing one independent thread
-        per row would multiply token fetches and hit iTunes/SoundCloud
-        with an unthrottled burst instead. Reuses
+        reusing a single SoundCloud token across the batch, same as a real
+        scan (see scan_files) - firing one independent thread per row
+        would multiply token fetches and hit iTunes/SoundCloud with an
+        unthrottled burst instead. Reuses
         _apply_fix_row_search_result to update the table, which already
         tolerates no "Fix no cover" dialog being open."""
+        if self._is_run_active():
+            messagebox.showinfo(
+                "Scan in progress",
+                "Wait for the current scan/apply to finish before rescanning tracks manually.",
+                parent=self.window,
+            )
+            return
+
         to_search = []
         skipped = 0
         for info in infos:
@@ -2563,15 +2388,15 @@ class TaggerInterface:
                 soundcloud_token = tagger.get_soundcloud_token(
                     log=self._append_to_journal, on_auth_error=self._on_source_auth_error,
                 )
-            spotify_token = (
-                tagger.get_spotify_token(log=self._append_to_journal, on_auth_error=self._on_source_auth_error)
-                if tagger.USE_SPOTIFY else None
-            )
-
+            spotify_token = None
+            if tagger.USE_SPOTIFY and tagger.SPOTIFY_CLIENT_ID and tagger.SPOTIFY_CLIENT_SECRET:
+                spotify_token = tagger.get_spotify_token(
+                    log=self._append_to_journal, on_auth_error=self._on_source_auth_error,
+                )
             for info, artist, title in to_search:
                 self._append_to_journal(f"Rescanning '{artist} - {title}'...")
                 found_cover_image, cover_source, returned_artist, returned_title = tagger.search_cover_manual(
-                    artist, title, soundcloud_token, spotify_token, log=self._append_to_journal,
+                    artist, title, soundcloud_token, log=self._append_to_journal, spotify_token=spotify_token,
                 )
                 self.message_queue.put((
                     "fix_row_search_result",
@@ -2678,6 +2503,14 @@ class TaggerInterface:
         self._center_dialog(dialog)
 
     def _search_fix_row(self, info, artist_entry, title_entry, search_button, status_label):
+        if self._is_run_active():
+            messagebox.showinfo(
+                "Scan in progress",
+                "Wait for the current scan/apply to finish before searching manually.",
+                parent=search_button.winfo_toplevel(),
+            )
+            return
+
         artist = artist_entry.get().strip()
         title = title_entry.get().strip()
         if not artist or not title:
@@ -3006,9 +2839,9 @@ class TaggerInterface:
         dialog.resizable(False, False)
         dialog.transient(self.window)
 
-        # Covers are typically already small (iTunes/Spotify/SoundCloud
-        # artwork rarely exceeds ~600px) - cap the popup size without
-        # upscaling anything past its native resolution.
+        # Covers are typically already small (iTunes/SoundCloud artwork
+        # rarely exceeds ~600px) - cap the popup size without upscaling
+        # anything past its native resolution.
         max_size = (500, 500)
 
         image_label = ttk.Label(dialog)
@@ -3810,8 +3643,8 @@ class TaggerInterface:
             reporter_name = ""
 
         def _send():
-            success = tagger.send_track_report(info, reporter_name=reporter_name)
-            self.message_queue.put(("report_sent", success))
+            success, reason = tagger.send_track_report(info, reporter_name=reporter_name)
+            self.message_queue.put(("report_sent", (success, reason)))
 
         self._run_in_background(_send)
 
@@ -3994,7 +3827,7 @@ class TaggerInterface:
                             messagebox.showwarning(
                                 "No internet connection",
                                 "No internet connection was detected.\n\nOnline cover search "
-                                "(iTunes/Spotify/SoundCloud) won't be available until your "
+                                "(iTunes/SoundCloud) won't be available until your "
                                 "connection is restored.",
                                 parent=self.window,
                             )
@@ -4037,9 +3870,21 @@ class TaggerInterface:
                     self._finish_in_app_update(success, dest_path)
 
                 elif message_type == "report_sent":
-                    success = content
+                    success, reason = content
                     if success:
                         self._append_to_journal("Track reported, thanks!")
+                    elif reason == "cooldown":
+                        messagebox.showinfo(
+                            "Please wait",
+                            f"Wait a few seconds between reports (max one every "
+                            f"{tagger.REPORT_COOLDOWN_SECONDS}s) and try again.",
+                            parent=self.window,
+                        )
+                    elif reason == "http_error":
+                        messagebox.showerror(
+                            "Report failed", "Discord rejected the report - try again in a moment.",
+                            parent=self.window,
+                        )
                     else:
                         messagebox.showerror(
                             "Report failed", "Could not send the report - check your internet connection and try again.",

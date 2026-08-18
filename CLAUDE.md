@@ -124,22 +124,22 @@ For a file whose filename/tags are too mangled for the normal text search
 to even attempt (or that search comes up empty): `identify_via_acoustid()`
 fingerprints the actual audio (via the bundled `fpcalc.exe`/`fpcalc`,
 Chromaprint) and looks it up against the AcoustID web service, feeding a
-confident result's artist/title back into the normal iTunes/Spotify/
-SoundCloud search (`_try_acoustid_correction()`) rather than fetching
-cover art through AcoustID/MusicBrainz directly - reuses all the existing
-matching logic instead of a second cover-fetching path.
+confident result's artist/title back into the normal iTunes/SoundCloud
+search (`_try_acoustid_correction()`) rather than fetching cover art
+through AcoustID/MusicBrainz directly - reuses all the existing matching
+logic instead of a second cover-fetching path.
 - Only tried as a last resort (see `USE_ACOUSTID_FALLBACK`, on by
   default) - it's much slower (real audio analysis + a network call) than
   the fast text search, so running it for every file would meaningfully
   slow down a scan for no benefit on files that already match fine.
 - Works out of the box via a single hardcoded API key
-  (`ACOUSTID_API_KEY` in track_tidy.py, Kevin's own) - unlike
-  SoundCloud/Spotify, AcoustID API keys are meant to be per-application,
-  not per-user, so nobody registers anything, and there's no per-user
-  override anymore (removed - was Settings' "Use my own AcoustID API
-  key..." button/dialog). Since it's shared by every user, watch for
-  AcoustID lookups starting to fail for multiple users at once - that
-  would mean the key's free-tier rate limit is being hit collectively.
+  (`ACOUSTID_API_KEY` in track_tidy.py, Kevin's own) - unlike SoundCloud,
+  AcoustID API keys are meant to be per-application, not per-user, so
+  nobody registers anything, and there's no per-user override anymore
+  (removed - was Settings' "Use my own AcoustID API key..."
+  button/dialog). Since it's shared by every user, watch for AcoustID
+  lookups starting to fail for multiple users at once - that would mean
+  the key's free-tier rate limit is being hit collectively.
 - `fpcalc.exe`/`fpcalc` is bundled the same way as `ffmpeg.exe`/`ffmpeg`
   (gitignored, not committed - copy the binary from
   https://github.com/acoustid/chromaprint/releases into the project root
@@ -157,6 +157,60 @@ matching logic instead of a second cover-fetching path.
   (`_build_row_values` in interface.py) until the user has reviewed the
   Artist/Title themselves - don't trust a high score alone as proof of
   correctness.
+
+## Shared SoundCloud credentials
+
+Works out of the box via embedded default app credentials
+(`SOUNDCLOUD_DEFAULT_CLIENT_ID`/`_SECRET` in track_tidy.py,
+base64-obfuscated like `ACOUSTID_API_KEY`/`DISCORD_REPORT_WEBHOOK_URL` -
+same "not real secrecy" caveat) - Kevin's own app registration, used as
+a fallback whenever a user hasn't saved their own credential (the
+underlying `read_credential(...) or SOUNDCLOUD_DEFAULT_CLIENT_ID`
+priority still exists in track_tidy.py, but Settings no longer exposes
+any UI to set a personal override - removed, along with Spotify
+entirely, for a simpler Settings tab).
+
+**Accepted risk, explicitly confirmed with Kevin (unlike AcoustID):**
+SoundCloud's developer terms discourage distributing an app's Client
+Secret to end users - if it's ever extracted from the binary and
+abused, they could suspend/revoke the credentials entirely, breaking
+this for every user at once, not just whoever abused it. Watch for
+SoundCloud auth suddenly failing for multiple users at once - that's
+the signal this happened, and it'd need Kevin registering a new app and
+swapping the embedded credentials.
+
+`_check_cover_source_credentials_on_startup()` (the old "SoundCloud/
+Spotify not configured" startup nag) was removed - credentials are now
+always populated (real or the shared default), so it could never fire
+again anyway.
+
+## Spotify
+
+Spotify was dropped entirely at first (iTunes + SoundCloud "cover it
+well enough"), then re-added after a real report proved that wrong: a
+French rap track (Alonzo/Tiakola) was on Spotify but in neither iTunes's
+nor SoundCloud's index.
+
+Initially wired in as an absolute last resort (after iTunes AND
+SoundCloud both missed), but re-ordered again after a second real
+report: for "Soolking - Guerilla", SoundCloud "succeeded" with a non-
+official image (a radio freestyle photo) before Spotify ever got a
+chance to offer the track's actual official cover. iTunes and Spotify
+are both curated commercial catalogs; SoundCloud is community-uploaded
+and far more prone to a wrong match (confirmed repeatedly this
+session: Aqua/Barbie Girl, Black Eyed Peas, Soolking/Mi Amigo, Soolking/
+Guerilla). Current priority order: **iTunes -> Spotify -> SoundCloud**
+(`_search_one_source()` / `search_cover_manual()` / `scan_files()`),
+including through the AcoustID-corrected retry. `USE_SPOTIFY` (Settings:
+"Spotify" checkbox next to iTunes/SoundCloud, on by default) gates it
+independently of the other two.
+
+Uses the same shared-embedded-credentials pattern as SoundCloud
+(`SPOTIFY_DEFAULT_CLIENT_ID`/`_SECRET`, Kevin's own app registration,
+base64-obfuscated) with the same accepted ToS risk, confirmed with
+Kevin back when Spotify was first added - re-verified still working
+(HTTP 200) when re-adding it. No Settings UI for a personal override,
+same as SoundCloud.
 
 ## Cross-platform (Windows/macOS)
 
