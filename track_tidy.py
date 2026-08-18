@@ -2171,9 +2171,18 @@ def strip_accents(text):
 
 
 def exact_match(text_a, text_b):
-    """Case/whitespace/accent-insensitive EXACT match (not the looser substring/word-based checks below)."""
+    """
+    Case/whitespace/accent-insensitive EXACT match (not the looser
+    substring/word-based checks below). Also treats "Pt.III" and "Pt. III"
+    (a space right after an abbreviating period) as the same - a store's
+    listing and a filename/tag frequently disagree on that one space alone
+    (e.g. "Pt. III" vs "Pt.III", "Vol. 2" vs "Vol.2"), which would otherwise
+    reject an exact release over pure punctuation.
+    """
     def normalize(text):
-        return strip_accents(re.sub(r"\s+", " ", text.strip().lower()))
+        text = re.sub(r"\s+", " ", text.strip().lower())
+        text = re.sub(r"\.\s+", ".", text)
+        return strip_accents(text)
     return normalize(text_a) == normalize(text_b)
 
 
