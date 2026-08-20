@@ -1799,7 +1799,7 @@ def detect_parenthetical_mentions(text):
 
 def _search_one_source(
     source, artist, search_title, remix_qualified_title, soundcloud_token, spotify_token, log,
-    on_itunes_rate_limited=None,
+    on_itunes_rate_limited=None, on_spotify_rate_limited=None,
 ):
     """
     Tries a single cover source, using that provider's own established
@@ -1832,6 +1832,7 @@ def _search_one_source(
         ) if source == "itunes" else (
             lambda a, t, log, allow_loose_remix_match=False: search_cover_spotify(
                 a, t, spotify_token, log=log, allow_loose_remix_match=allow_loose_remix_match,
+                on_rate_limited=on_spotify_rate_limited,
             )
         )
         label = "iTunes" if source == "itunes" else "Spotify"
@@ -1848,7 +1849,10 @@ def _search_one_source(
     return match_result, ("SoundCloud" if match_result else None)
 
 
-def search_cover_manual(artist, title, soundcloud_token, log=safe_print, spotify_token=None, on_itunes_rate_limited=None):
+def search_cover_manual(
+    artist, title, soundcloud_token, log=safe_print, spotify_token=None,
+    on_itunes_rate_limited=None, on_spotify_rate_limited=None,
+):
     """
     Searches for a cover using the given artist/title directly, trying
     every enabled source in priority order (iTunes, then Spotify, then
@@ -1882,7 +1886,7 @@ def search_cover_manual(artist, title, soundcloud_token, log=safe_print, spotify
             continue
         match_result, cover_source = _search_one_source(
             source, artist, search_title, remix_qualified_title, soundcloud_token, spotify_token, log,
-            on_itunes_rate_limited=on_itunes_rate_limited,
+            on_itunes_rate_limited=on_itunes_rate_limited, on_spotify_rate_limited=on_spotify_rate_limited,
         )
         if match_result:
             found_cover_image, returned_artist, returned_title = match_result
@@ -1891,7 +1895,10 @@ def search_cover_manual(artist, title, soundcloud_token, log=safe_print, spotify
     return None, None, None, None
 
 
-def search_cover_manual_with_tokens(artist, title, log=safe_print, on_auth_error=None, on_itunes_rate_limited=None):
+def search_cover_manual_with_tokens(
+    artist, title, log=safe_print, on_auth_error=None,
+    on_itunes_rate_limited=None, on_spotify_rate_limited=None,
+):
     """
     Same as search_cover_manual(), but also fetches the SoundCloud/Spotify
     tokens itself - for a single ad-hoc search (e.g. the "fix Artist/Title
@@ -1904,11 +1911,11 @@ def search_cover_manual_with_tokens(artist, title, log=safe_print, on_auth_error
 
     spotify_token = None
     if USE_SPOTIFY and SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
-        spotify_token = get_spotify_token(log=log, on_auth_error=on_auth_error)
+        spotify_token = get_spotify_token(log=log, on_auth_error=on_auth_error, on_rate_limited=on_spotify_rate_limited)
 
     return search_cover_manual(
         artist, title, soundcloud_token, log=log, spotify_token=spotify_token,
-        on_itunes_rate_limited=on_itunes_rate_limited,
+        on_itunes_rate_limited=on_itunes_rate_limited, on_spotify_rate_limited=on_spotify_rate_limited,
     )
 
 
@@ -2028,7 +2035,7 @@ def _prepare_scan(file_name, log=safe_print, on_new_mention=None):
     }
 
 
-def _try_acoustid_correction(prepared, log=safe_print):
+def _try_acoustid_correction(prepared, log=safe_print, on_rate_limited=None):
     """
     Last resort for a file the text-based search couldn't do anything with
     (nothing to search - an unparseable filename with no usable tags
@@ -2046,7 +2053,7 @@ def _try_acoustid_correction(prepared, log=safe_print):
         return False
 
     full_path = os.path.join(MUSIC_FOLDER, prepared["file_name"])
-    identified = identify_via_acoustid(full_path, log=log)
+    identified = identify_via_acoustid(full_path, log=log, on_rate_limited=on_rate_limited)
     if not identified:
         return False
 
@@ -2158,7 +2165,8 @@ ITUNES_SCAN_MAX_WORKERS = 2
 
 
 def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=None, on_rate_limited=None,
-               should_cancel=None, on_auth_error=None, on_itunes_rate_limited=None):
+               should_cancel=None, on_auth_error=None, on_itunes_rate_limited=None, on_spotify_rate_limited=None,
+               on_acoustid_rate_limited=None):
     """
     Scans ONLY the files in the given list (relative paths).
     Useful for an incremental scan (only reprocess new files).
@@ -2225,7 +2233,7 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
     if not needs_search:
         pass
     elif USE_SPOTIFY and SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
-        spotify_token = get_spotify_token(log=log, on_auth_error=on_auth_error)
+        spotify_token = get_spotify_token(log=log, on_auth_error=on_auth_error, on_rate_limited=on_spotify_rate_limited)
     elif USE_SPOTIFY:
         log("  [Spotify] No credentials configured - skipping Spotify for this scan.")
 
@@ -2279,6 +2287,7 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
                 match_result, cover_source = _search_one_source(
                     "spotify", prepared["detected_artist"], prepared["search_title"],
                     prepared["remix_qualified_title"], None, spotify_token, log,
+                    on_spotify_rate_limited=on_spotify_rate_limited,
                 )
 
             if (
@@ -2290,7 +2299,7 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
                     prepared["remix_qualified_title"], soundcloud_token, None, log,
                 )
 
-            if not match_result and _try_acoustid_correction(prepared, log):
+            if not match_result and _try_acoustid_correction(prepared, log, on_rate_limited=on_acoustid_rate_limited):
                 for source, enabled in (
                     ("itunes", USE_ITUNES),
                     ("spotify", USE_SPOTIFY and bool(spotify_token)),
@@ -2301,7 +2310,7 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
                     match_result, cover_source = _search_one_source(
                         source, prepared["detected_artist"], prepared["search_title"],
                         prepared["remix_qualified_title"], soundcloud_token, spotify_token, log,
-                        on_itunes_rate_limited=on_itunes_rate_limited,
+                        on_itunes_rate_limited=on_itunes_rate_limited, on_spotify_rate_limited=on_spotify_rate_limited,
                     )
                     if match_result:
                         break
@@ -2823,6 +2832,15 @@ def _itunes_throttle():
 # literally rather than needing a keyword search.
 ITUNES_VARIOUS_ARTISTS_CREDITS = ("Multi-interprètes",)
 
+# A "(DJ Mix)" collection is a radio show/mixtape recording (e.g. "Experts
+# Only Radio 043 (DJ Mix)", "Pat Lok: Parallel Motion (DJ Mix)") that
+# happens to also list one of its individual tracks as its own searchable
+# result - its "cover" is the SHOW's own artwork, not the track's real
+# single/album cover. iTunes appends this exact marker in English
+# regardless of storefront locale (confirmed against the FR store), same
+# as ITUNES_VARIOUS_ARTISTS_CREDITS above.
+ITUNES_DJ_MIX_COLLECTION_MARKER = "(dj mix)"
+
 
 def search_cover_itunes(artist, title, log=safe_print, max_retries=2, allow_loose_remix_match=False, on_rate_limited=None):
     """
@@ -2938,6 +2956,20 @@ def search_cover_itunes(artist, title, log=safe_print, max_retries=2, allow_loos
                 log(
                     f"  [iTunes] Match found for '{artist} - {title}' but it's only on a "
                     f"various-artists compilation ('{result.get('collectionName')}') - skipping."
+                )
+                continue
+
+            collection_name = result.get("collectionName") or ""
+            if ITUNES_DJ_MIX_COLLECTION_MARKER in collection_name.lower():
+                # Real report: "Roxe - You Do Change (Extended Mix)" -
+                # picked up the artwork of "Experts Only Radio 043 (DJ
+                # Mix)" (a John Summit radio show that happens to include
+                # this track) instead of the track's own "You Do Change -
+                # Single" release, which was also in the results but
+                # ranked lower.
+                log(
+                    f"  [iTunes] Match found for '{artist} - {title}' but it's only on a DJ mix/radio "
+                    f"show recording ('{collection_name}'), not the track's own release - skipping."
                 )
                 continue
 
@@ -3233,7 +3265,7 @@ SPOTIFY_TOKEN_RATE_LIMIT_FALLBACK_COOLDOWN_SECONDS = 60
 _spotify_token_rate_limited_until = 0
 
 
-def get_spotify_token(log=safe_print, on_auth_error=None):
+def get_spotify_token(log=safe_print, on_auth_error=None, on_rate_limited=None):
     global _cached_spotify_token, _cached_spotify_token_expiry, _spotify_token_rate_limited_until
 
     if _cached_spotify_token and time.time() < _cached_spotify_token_expiry - 60:
@@ -3274,6 +3306,8 @@ def get_spotify_token(log=safe_print, on_auth_error=None):
                 wait_seconds = SPOTIFY_TOKEN_RATE_LIMIT_FALLBACK_COOLDOWN_SECONDS
             _spotify_token_rate_limited_until = time.time() + wait_seconds
             log(f"  [Spotify] Rate limit reached (too many token requests) - pausing Spotify for {wait_seconds}s.")
+            if on_rate_limited:
+                on_rate_limited()
             return None
 
         message = f"HTTP {response.status_code} - {response.text[:300]}"
@@ -3287,7 +3321,18 @@ def get_spotify_token(log=safe_print, on_auth_error=None):
         return None
 
 
-def _search_cover_spotify_query(query, artist, title, token, log, allow_loose_remix_match=False):
+# The SEARCH endpoint (unlike the token endpoint above) has its own,
+# separate rate limit - a real report hit HTTP 429 "QUOTA_EXCEEDED" on it
+# directly, with the token itself still perfectly valid. Same "pause for
+# the rest of this scan instead of hammering it again on every remaining
+# track" treatment as iTunes/SoundCloud, since without this every
+# subsequent Spotify search this scan would otherwise just fail the same
+# way, one more wasted request at a time.
+SPOTIFY_SEARCH_RATE_LIMIT_COOLDOWN_SECONDS = 60
+_spotify_search_rate_limited_until = 0
+
+
+def _search_cover_spotify_query(query, artist, title, token, log, allow_loose_remix_match=False, on_rate_limited=None):
     """
     Runs a single Spotify search query and validates its candidates -
     factored out of search_cover_spotify() so it can be tried with more
@@ -3297,14 +3342,32 @@ def _search_cover_spotify_query(query, artist, title, token, log, allow_loose_re
     logging) when nothing in this query's results checks out.
 
     allow_loose_remix_match mirrors search_cover_itunes's own parameter of
-    the same name - see there.
+    the same name - see there. on_rate_limited is called once if THIS call
+    hits the search endpoint's own rate limit (see
+    SPOTIFY_SEARCH_RATE_LIMIT_COOLDOWN_SECONDS).
     """
+    global _spotify_search_rate_limited_until
+
+    if time.time() < _spotify_search_rate_limited_until:
+        log("  [Spotify] Still rate limited from earlier in this scan - skipping.")
+        return None, []
+
     response = requests.get(
         "https://api.spotify.com/v1/search",
         headers={"Authorization": f"Bearer {token}"},
         params={"q": query, "type": "track", "limit": 10},
         timeout=10,
     )
+
+    if response.status_code == 429:
+        _spotify_search_rate_limited_until = time.time() + SPOTIFY_SEARCH_RATE_LIMIT_COOLDOWN_SECONDS
+        log(
+            f"  [Spotify] Rate limited (HTTP 429: {response.text[:200]}) - pausing Spotify search for "
+            f"{SPOTIFY_SEARCH_RATE_LIMIT_COOLDOWN_SECONDS}s for the rest of this scan."
+        )
+        if on_rate_limited:
+            on_rate_limited()
+        return None, []
 
     if response.status_code != 200:
         log(f"  [Spotify] Search failed: HTTP {response.status_code} - {response.text[:300]}")
@@ -3370,7 +3433,7 @@ def _search_cover_spotify_query(query, artist, title, token, log, allow_loose_re
     return None, results
 
 
-def search_cover_spotify(artist, title, token, log=safe_print, allow_loose_remix_match=False):
+def search_cover_spotify(artist, title, token, log=safe_print, allow_loose_remix_match=False, on_rate_limited=None):
     """
     Checks up to 10 candidates (not just the top one), mirroring
     search_cover_itunes()/search_cover_soundcloud() - only ever called as
@@ -3393,6 +3456,7 @@ def search_cover_spotify(artist, title, token, log=safe_print, allow_loose_remix
     loosen what's accepted.
 
     allow_loose_remix_match: see search_cover_itunes's identical parameter.
+    on_rate_limited: see _search_cover_spotify_query's identical parameter.
     """
     if not token:
         return None
@@ -3400,7 +3464,7 @@ def search_cover_spotify(artist, title, token, log=safe_print, allow_loose_remix
     try:
         match, results = _search_cover_spotify_query(
             build_search_query(artist, title), artist, title, token, log,
-            allow_loose_remix_match=allow_loose_remix_match,
+            allow_loose_remix_match=allow_loose_remix_match, on_rate_limited=on_rate_limited,
         )
         if match:
             return match
@@ -3419,7 +3483,8 @@ def search_cover_spotify(artist, title, token, log=safe_print, allow_loose_remix
         if artist.strip():
             log("  [Spotify] Retrying with a title-only query...")
             match, title_only_results = _search_cover_spotify_query(
-                title, artist, title, token, log, allow_loose_remix_match=allow_loose_remix_match,
+                title, artist, title, token, log,
+                allow_loose_remix_match=allow_loose_remix_match, on_rate_limited=on_rate_limited,
             )
             if match:
                 return match
@@ -3479,7 +3544,17 @@ def _run_without_console_window(func, *args, **kwargs):
         subprocess.Popen = original_popen
 
 
-def identify_via_acoustid(file_path, log=safe_print):
+# Best-effort text match against a WebServiceError's own message - pyacoustid
+# doesn't expose a distinct exception type or the API's numeric error code
+# for a rate limit specifically (unlike Spotify/iTunes, which give a clean
+# HTTP 429), so this is a heuristic, not a guaranteed detection.
+ACOUSTID_RATE_LIMIT_MESSAGE_KEYWORDS = ("rate limit", "too many requests", "429", "quota")
+
+ACOUSTID_RATE_LIMIT_COOLDOWN_SECONDS = 60
+_acoustid_rate_limited_until = 0
+
+
+def identify_via_acoustid(file_path, log=safe_print, on_rate_limited=None):
     """
     Identifies a track from its actual audio content via AcoustID/
     Chromaprint, instead of its filename/tags - last resort, only meant to
@@ -3490,8 +3565,14 @@ def identify_via_acoustid(file_path, log=safe_print):
     ACOUSTID_MIN_SCORE, or None if unavailable/no confident match - never
     raises, same philosophy as the other cover sources.
     """
+    global _acoustid_rate_limited_until
+
     if not ACOUSTID_API_KEY:
         log("  [AcoustID] No API key configured - skipping (Settings > AcoustID API key...).")
+        return None
+
+    if time.time() < _acoustid_rate_limited_until:
+        log("  [AcoustID] Still rate limited from earlier in this scan - skipping.")
         return None
 
     acoustid.FPCALC_COMMAND = find_fpcalc()
@@ -3512,6 +3593,15 @@ def identify_via_acoustid(file_path, log=safe_print):
             log(f"  [AcoustID] Could not fingerprint '{file_path}': {error}")
             return None
         except acoustid.WebServiceError as error:
+            if any(keyword in str(error).lower() for keyword in ACOUSTID_RATE_LIMIT_MESSAGE_KEYWORDS):
+                _acoustid_rate_limited_until = time.time() + ACOUSTID_RATE_LIMIT_COOLDOWN_SECONDS
+                log(
+                    f"  [AcoustID] Rate limited ({error}) - pausing AcoustID for "
+                    f"{ACOUSTID_RATE_LIMIT_COOLDOWN_SECONDS}s for the rest of this scan."
+                )
+                if on_rate_limited:
+                    on_rate_limited()
+                return None
             if attempt == max_attempts:
                 log(f"  [AcoustID] Lookup failed after {max_attempts} attempts: {error}")
                 return None
