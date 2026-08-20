@@ -384,7 +384,7 @@ class TaggerInterface:
             "Reset settings",
             "Reset all settings to their default values?\n\n"
             "Your saved SoundCloud/AcoustID credentials won't be affected.",
-            parent=self.window,
+            parent=self.window, default=messagebox.NO,
         ):
             return
 
@@ -2501,7 +2501,7 @@ class TaggerInterface:
             f"{len(duplicate_pairs)} duplicate file(s) detected (same name and duration, "
             f"just prefixed with '._').\n\nMerge them now? This will delete the '._' copies."
         )
-        if not messagebox.askyesno("Duplicate tracks found", message, parent=self.window):
+        if not messagebox.askyesno("Duplicate tracks found", message, parent=self.window, default=messagebox.NO):
             return
 
         for dot_file, normal_file in duplicate_pairs:
@@ -3030,11 +3030,20 @@ class TaggerInterface:
         self._append_to_journal(f"Cover {'updated' if new_bytes else 'removed'} for '{info['file']}'")
         return True
 
+    def _confirm_remove_cover(self, parent):
+        """Shared "Remove cover" confirmation - used by both the right-
+        click menu (_remove_cover_with_confirmation) and the zoom popup's
+        own button (_show_cover_zoom), which used to each hand-copy the
+        exact same title/message."""
+        return messagebox.askyesno(
+            "Remove cover", "Remove the cover from this file?", parent=parent, default=messagebox.NO,
+        )
+
     def _remove_cover_with_confirmation(self, info):
         """Right-click a cover thumbnail -> "Remove cover" - same action
         as the "Remove cover" button inside the zoom popup (_show_cover_
         zoom), just without opening it first."""
-        if not messagebox.askyesno("Remove cover", "Remove the cover from this file?", parent=self.window):
+        if not self._confirm_remove_cover(self.window):
             return
         self._apply_new_cover(info, None)
 
@@ -3110,7 +3119,7 @@ class TaggerInterface:
             apply_new_cover(jpeg_bytes)
 
         def remove_cover():
-            if messagebox.askyesno("Remove cover", "Remove the cover from this file?", parent=dialog):
+            if self._confirm_remove_cover(dialog):
                 apply_new_cover(None)
 
         render()
@@ -3290,7 +3299,7 @@ class TaggerInterface:
             else:
                 prompt = f"Restore {len(entries)} files to their previous tags and cover?\n\nThis changes the files on disk right now."
 
-            if not messagebox.askyesno("Restore previous version(s)", prompt, parent=dialog):
+            if not messagebox.askyesno("Restore previous version(s)", prompt, parent=dialog, default=messagebox.NO):
                 return
 
             successes, failures, restored_entries = 0, [], []
@@ -3356,7 +3365,7 @@ class TaggerInterface:
                 f"Delete {len(entries)} {unit} from the processing history?\n\n"
                 "This only removes the log entry - it doesn't touch the audio file itself. "
                 "This cannot be undone.",
-                parent=dialog,
+                parent=dialog, default=messagebox.NO,
             ):
                 return
 
