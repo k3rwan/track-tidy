@@ -279,7 +279,6 @@ class TaggerInterface:
         # per Delete/"Remove from list" action, or ("edit", {...}) per Title/Artist cell edit.
         self._undo_stack = []
         self._drag_row_id = None  # row being dragged to reorder, if any
-        self._drag_moved = False
         self._table_font = tkfont.nametofont("TkDefaultFont")
         self._reset_scan_run_state()
         self.mention_counts = {}  # raw mention text -> number of times seen
@@ -3711,7 +3710,6 @@ class TaggerInterface:
         row_id = self.table.identify_row(event.y)
         info = next((i for i in self.scanned_plan if i["file"] == row_id), None) if row_id else None
         self._drag_row_id = row_id if info else None
-        self._drag_moved = False
 
     def _on_row_drag_motion(self, event):
         """Dragging a row onto another one reorders it there immediately -
@@ -3735,7 +3733,6 @@ class TaggerInterface:
 
         self.scanned_plan.remove(drag_info)
         self.scanned_plan.insert(self.scanned_plan.index(target_info), drag_info)
-        self._drag_moved = True
 
         visible_files = set(self.table.get_children())
         for info in self.scanned_plan:
@@ -3746,7 +3743,6 @@ class TaggerInterface:
 
     def _on_row_drag_release(self, event):
         self._drag_row_id = None
-        self._drag_moved = False
 
     def _show_context_menu(self, event):
         """Right-click on a row: shows a small context menu (e.g. open file location)."""
