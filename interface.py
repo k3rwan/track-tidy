@@ -104,7 +104,7 @@ PROCESSED_CHECK = "✔"
 # scan found already fully tagged (see track_tidy.py's "already_applied") -
 # distinguishes "nothing to do, already done before this scan" from "this
 # scan just processed it".
-ALREADY_APPLIED_MARK = "●"
+ALREADY_APPLIED_MARK = "-"
 
 # How often a buffered scan result is revealed into the table - see
 # _reveal_next_scan_row(). Purely cosmetic pacing so tracks don't all pop
