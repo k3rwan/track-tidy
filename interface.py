@@ -3695,7 +3695,7 @@ class TaggerInterface:
         menu.add_command(label="Move up", command=lambda: self._move_row(info, -1))
         menu.add_command(label="Move down", command=lambda: self._move_row(info, 1))
         menu.add_separator()
-        menu.add_command(label="Report track...", command=lambda: self._report_track(info))
+        menu.add_command(label="Report track...", command=lambda: self._report_track_menu_action(selected_infos, info))
         menu.add_separator()
         menu.add_command(label="Remove from list", command=self._delete_selected_rows)
         menu.tk_popup(event.x_root, event.y_root)
@@ -3769,6 +3769,23 @@ class TaggerInterface:
         dialog.bind("<Escape>", lambda _event: dialog.destroy())
 
         self._center_dialog(dialog)
+
+    def _report_track_menu_action(self, selected_infos, info):
+        """Gate in front of _report_track() for the context menu: unlike
+        "Rescan selected", reporting is deliberately NOT a bulk action -
+        multiple simultaneous reports to the same Discord channel from one
+        click looks like spam on the receiving end. If more than one row
+        is selected, explains that instead of silently reporting only the
+        right-clicked row (or all of them)."""
+        if len(selected_infos) > 1:
+            messagebox.showinfo(
+                "Report one track at a time",
+                "Reporting multiple tracks at once isn't supported, to avoid spamming the report "
+                "channel - select just one track and report it, then repeat for the others.",
+                parent=self.window,
+            )
+            return
+        self._report_track(info)
 
     def _report_track(self, info):
         """Sends this row's info (file name, current/suggested tags, cover
