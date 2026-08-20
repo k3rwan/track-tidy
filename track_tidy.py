@@ -2205,6 +2205,24 @@ def _finish_scan(prepared, match_result, cover_source, log=safe_print):
 SOUNDCLOUD_RATE_LIMITED = False  # set for the current run once a 429 is hit
 SOUNDCLOUD_UNAVAILABLE = False  # set for the current run when no credentials are configured at all
 
+# Same idea as SOUNDCLOUD_RATE_LIMITED above - set for the current scan
+# once a search 429 is hit, checked before every subsequent Spotify
+# search attempt, cleared again at the start of the next scan. Real
+# report: a 100-track scan hit the search endpoint's own timed cooldown
+# (_spotify_search_cooldown, 60s) re-expiring and re-tripping a FRESH 429
+# over and over throughout the whole scan - the log's own comment already
+# claimed "for the rest of this scan", but the cooldown alone only ever
+# enforced 60s, not that. A scan this size takes far longer than 60s
+# (iTunes/AcoustID alone easily push each file's turn past a minute), so
+# the timed cooldown kept expiring mid-scan and letting a doomed retry
+# through - two more wasted requests (main + title-only) every time,
+# for zero successful matches once the real quota is genuinely
+# exhausted. This flag makes the search actually stop for the rest of
+# the scan on the first hit, like SoundCloud already does; the timed
+# cooldown itself is untouched (still relevant to a call made outside
+# scan_files, e.g. search_cover_manual's single "Fix no cover" retry).
+SPOTIFY_SEARCH_RATE_LIMITED = False
+
 # Bounded on purpose: iTunes' undocumented search endpoint already returns
 # the occasional transient 403 under plain sequential use (see
 # search_cover_itunes's own retry logic) - too much concurrency risks
@@ -2234,9 +2252,10 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
     every request is fully independent, unlike SoundCloud (shared
     rate-limit state), which stays sequential exactly as before.
     """
-    global SOUNDCLOUD_RATE_LIMITED, SOUNDCLOUD_UNAVAILABLE
+    global SOUNDCLOUD_RATE_LIMITED, SOUNDCLOUD_UNAVAILABLE, SPOTIFY_SEARCH_RATE_LIMITED
     SOUNDCLOUD_RATE_LIMITED = False
     SOUNDCLOUD_UNAVAILABLE = False
+    SPOTIFY_SEARCH_RATE_LIMITED = False
 
     if not file_list:
         return []
@@ -2344,7 +2363,10 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
             if future:
                 match_result, cover_source = future.result()
 
-            if not match_result and has_query and USE_SPOTIFY and spotify_token:
+            if (
+                not match_result and has_query and USE_SPOTIFY and spotify_token
+                and not SPOTIFY_SEARCH_RATE_LIMITED
+            ):
                 match_result, cover_source = _search_one_source(
                     "spotify", prepared["detected_artist"], prepared["search_title"],
                     prepared["remix_qualified_title"], None, spotify_token, log,
@@ -2363,7 +2385,7 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
             if not match_result and _try_acoustid_correction(prepared, log, on_rate_limited=on_acoustid_rate_limited):
                 for source, enabled in (
                     ("itunes", USE_ITUNES),
-                    ("spotify", USE_SPOTIFY and bool(spotify_token)),
+                    ("spotify", USE_SPOTIFY and bool(spotify_token) and not SPOTIFY_SEARCH_RATE_LIMITED),
                     ("soundcloud", USE_SOUNDCLOUD and not SOUNDCLOUD_RATE_LIMITED and not SOUNDCLOUD_UNAVAILABLE),
                 ):
                     if not enabled:
@@ -3539,10 +3561,12 @@ def _search_cover_spotify_query(query, artist, title, token, log, allow_loose_re
     )
 
     if response.status_code == 429:
+        global SPOTIFY_SEARCH_RATE_LIMITED
+        SPOTIFY_SEARCH_RATE_LIMITED = True
         _spotify_search_cooldown.trigger(SPOTIFY_SEARCH_RATE_LIMIT_COOLDOWN_SECONDS)
         log(
-            f"  [Spotify] Rate limited (HTTP 429: {response.text[:200]}) - pausing Spotify search for "
-            f"{SPOTIFY_SEARCH_RATE_LIMIT_COOLDOWN_SECONDS}s for the rest of this scan."
+            f"  [Spotify] Rate limited (HTTP 429: {response.text[:200]}) - pausing Spotify search "
+            "for the rest of this scan."
         )
         if on_rate_limited:
             on_rate_limited()

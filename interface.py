@@ -4024,8 +4024,8 @@ class TaggerInterface:
                     if not self.spotify_rate_limit_warned:
                         self.spotify_rate_limit_warned = True
                         self._append_to_journal(
-                            "Spotify's request limit has been reached - it'll be paused for "
-                            f"{tagger.SPOTIFY_SEARCH_RATE_LIMIT_COOLDOWN_SECONDS}s."
+                            "Spotify's request limit has been reached - no cover will be fetched from it "
+                            "for the rest of this scan."
                         )
 
                 elif message_type == "acoustid_rate_limited":
