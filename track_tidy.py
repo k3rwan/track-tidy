@@ -1229,8 +1229,17 @@ def parse_filename(file_name):
             artist, title = title_mix_artist
 
     # Standard case: "Artist - Title"
+    # Requires a REAL " - " (space on both sides), like reformat_trailing_
+    # dash_mix()/resolve_artist_title() already do - a bare hyphen with no
+    # surrounding spaces is almost always part of a name (e.g. "Jean-Marc"),
+    # not an Artist/Title separator. Real report: "Marshall Jefferson,
+    # Samson, Maesic, Jean-Marc, Salomé Das - Life Is Simple (Extended
+    # Remix)" - the old \s*-\s* matched "Jean-Marc"'s own hyphen (the
+    # FIRST one in the string, since the match is non-greedy) instead of
+    # the real separator before the title, splitting the artist list itself
+    # in half and mangling everything after it.
     if artist is None:
-        match = re.match(r"^(.+?)\s*-\s*(.+)$", name_no_ext)
+        match = re.match(r"^(.+?)\s+-\s+(.+)$", name_no_ext)
         if match:
             artist = match.group(1).strip()
             title = reformat_trailing_dash_mix(match.group(2).strip())
