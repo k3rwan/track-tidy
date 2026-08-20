@@ -1912,7 +1912,7 @@ def search_cover_manual_with_tokens(artist, title, log=safe_print, on_auth_error
     )
 
 
-def _is_already_applied(has_cover, tags_already_present, current_cover_bytes):
+def _is_already_applied(file_name, has_cover, tags_already_present, current_cover_bytes):
     """
     Whether a file already has both a cover AND clean tags - true exactly
     when a previous Apply already ran on it (or it came pre-tagged from
@@ -1925,7 +1925,17 @@ def _is_already_applied(has_cover, tags_already_present, current_cover_bytes):
     cheap local-only precheck run BEFORE a scan starts, so interface.py
     can ask the user whether to bother rescanning these at all) so the two
     can never drift apart on what counts as "already applied".
+
+    WAV is unconditionally excluded, on request - a WAV embedding a
+    perfectly real, legitimate cover + tags (e.g. downloaded pre-tagged
+    from a store) still needs its own online search: DJ software commonly
+    reads a WAV's metadata from the RIFF INFO chunk rather than the ID3
+    tags this app itself writes/reads, so a WAV's tags can't be trusted
+    the same way another format's can just because they're present -
+    always re-verified instead of skipped.
     """
+    if file_name.lower().endswith(".wav"):
+        return False
     return has_cover and tags_already_present and not is_banned_cover_image(current_cover_bytes)
 
 
@@ -1945,7 +1955,7 @@ def find_already_applied_files(file_list):
         _detected_artist, _detected_title, tags_already_present = resolve_artist_title(
             file_name, current_artist, current_title
         )
-        if _is_already_applied(has_cover, tags_already_present, current_cover_bytes):
+        if _is_already_applied(file_name, has_cover, tags_already_present, current_cover_bytes):
             already_applied.append(file_name)
     return already_applied
 
@@ -2014,7 +2024,7 @@ def _prepare_scan(file_name, log=safe_print, on_new_mention=None):
         # there (this is what "double scan" means in this codebase -
         # rescanning a folder that still has already-applied files sitting
         # in it).
-        "already_applied": _is_already_applied(has_cover, tags_already_present, current_cover_bytes),
+        "already_applied": _is_already_applied(file_name, has_cover, tags_already_present, current_cover_bytes),
     }
 
 
