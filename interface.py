@@ -2244,10 +2244,7 @@ class TaggerInterface:
         say which (it's just "this file gets converted, whichever format
         that turns out to be"), so the actual target is re-derived from the
         current settings via tagger._resolve_conversion_target(), same as
-        process_files() itself used at Apply time. The cover breakdown
-        itself is shown right after scanning instead (see
-        _compute_cover_summary), since it's already known by then and
-        doesn't change during Apply."""
+        process_files() itself used at Apply time."""
         mp3_count = 0
         aiff_count = 0
         for info in self.scanned_plan:
@@ -2259,107 +2256,6 @@ class TaggerInterface:
             elif target == "aiff":
                 aiff_count += 1
         return mp3_count, aiff_count
-
-    def _compute_cover_summary(self):
-        """Counts, among all currently scanned tracks, how many got a cover
-        from each source, how many kept their original one, and how many
-        have none at all - independent of whether Apply has run yet.
-        acoustid_count is a separate, overlapping tally (not another
-        "source" like the others) - AcoustID never provides the cover
-        itself, only identifies the correct Artist/Title from the audio so
-        the iTunes/SoundCloud search above can find one; a track it
-        identified still gets counted under whichever of those actually
-        supplied the cover (or "no cover" if none did)."""
-        itunes_count = 0
-        spotify_count = 0
-        soundcloud_count = 0
-        kept_existing_count = 0
-        no_cover_count = 0
-        acoustid_count = 0
-
-        for info in self.scanned_plan:
-            if info.get("acoustid_identified"):
-                acoustid_count += 1
-
-            source = info.get("cover_source")
-            if source == "iTunes":
-                itunes_count += 1
-            elif source == "Spotify":
-                spotify_count += 1
-            elif source == "SoundCloud":
-                soundcloud_count += 1
-            elif tagger.has_usable_cover(info):
-                kept_existing_count += 1
-            else:
-                no_cover_count += 1
-
-        return itunes_count, spotify_count, soundcloud_count, kept_existing_count, no_cover_count, acoustid_count
-
-    def _show_scan_summary_dialog(self, no_cover_infos=None):
-        """Cover-source breakdown shown right after a scan finds new files -
-        this is the earliest point every track's cover_source is known.
-        A single dialog: "OK" alone, or "OK" plus a second button straight
-        into fixing Artist/Title for no-cover tracks when there are any -
-        not a separate yes/no confirmation chained after this one."""
-        itunes_count, spotify_count, soundcloud_count, kept_existing_count, no_cover_count, acoustid_count = (
-            self._compute_cover_summary()
-        )
-
-        dialog = tk.Toplevel(self.window)
-        self._style_toplevel(dialog)
-        dialog.title("Scan complete")
-        dialog.resizable(False, False)
-        dialog.transient(self.window)
-        dialog.grab_set()
-
-        ttk.Label(
-            dialog,
-            text=f"{PROCESSED_CHECK} Scan complete.",
-            justify="center",
-            padding=(20, 20, 20, 5),
-        ).pack()
-
-        # Only list sources that were actually enabled - a "Cover from
-        # SoundCloud: 0" line next to enabled sources reads as "SoundCloud
-        # was searched and came up empty", which is wrong when it wasn't
-        # searched at all (see enabled_cover_sources()).
-        source_counts = {"iTunes": itunes_count, "Spotify": spotify_count, "SoundCloud": soundcloud_count}
-        enabled_sources = tagger.enabled_cover_sources()
-        lines = [f"Cover from {name}: {source_counts[name]}" for name in enabled_sources]
-        lines.append(f"Kept original cover: {kept_existing_count}")
-        lines.append(f"No cover at all: {no_cover_count}")
-        summary_text = "\n".join(lines)
-
-        if acoustid_count:
-            # Not another bucket alongside the ones above (those already add
-            # up to every scanned track) - these overlap with them, since
-            # AcoustID only identifies Artist/Title, it doesn't supply the
-            # cover itself (see _compute_cover_summary).
-            unit = "track" if acoustid_count == 1 else "tracks"
-            summary_text += f"\n\nIdentified via audio (AcoustID): {acoustid_count} {unit}"
-        ttk.Label(dialog, text=summary_text, justify="left", foreground="#555555").pack(padx=20, pady=(0, 15))
-
-        button_row = ttk.Frame(dialog)
-        button_row.pack(pady=(0, 15))
-
-        def close():
-            dialog.destroy()
-
-        ttk.Button(button_row, text="OK", command=close).pack(side="left", padx=(0, 5) if no_cover_infos else 0)
-
-        if no_cover_infos:
-            count = len(no_cover_infos)
-            unit = "track" if count == 1 else "tracks"
-
-            def fix_no_cover():
-                dialog.destroy()
-                self._show_fix_no_cover_dialog(no_cover_infos)
-
-            ttk.Button(button_row, text=f"Fix {count} {unit}...", command=fix_no_cover).pack(side="left")
-
-        dialog.protocol("WM_DELETE_WINDOW", close)
-
-        self._center_dialog(dialog)
 
     def _show_processing_failures_dialog(self):
         """Shown right before the "Processing complete" dialog whenever
@@ -2521,8 +2417,6 @@ class TaggerInterface:
                 # "0 new, 0 removed" notifications.
                 if number_new > 0 or removed_files:
                     self._notify_scan_complete(number_new, len(removed_files), len(self.scanned_plan))
-                if number_new > 0:
-                    self._show_scan_summary_dialog(no_cover_infos=no_cover_infos)
 
         self._check_for_duplicates()
 
@@ -3839,6 +3733,8 @@ class TaggerInterface:
                 label="Remove cover", command=lambda: self._remove_cover_with_confirmation(info), state=cover_state,
             )
         menu.add_command(label=rescan_label, command=lambda: self._quick_rescan(selected_infos))
+        fix_label = "Fix Artist/Title..." if len(selected_infos) <= 1 else f"Fix Artist/Title ({len(selected_infos)})..."
+        menu.add_command(label=fix_label, command=lambda: self._show_fix_no_cover_dialog(selected_infos))
         menu.add_command(label="Open file location", command=lambda: self._open_file_location(info))
         menu.add_separator()
         menu.add_command(label="Move up", command=lambda: self._move_row(info, -1))
