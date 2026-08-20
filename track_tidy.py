@@ -3767,6 +3767,26 @@ ACOUSTID_RATE_LIMIT_MESSAGE_KEYWORDS = ("rate limit", "too many requests", "429"
 ACOUSTID_RATE_LIMIT_COOLDOWN_SECONDS = 60
 _acoustid_cooldown = _SourceCooldown()
 
+# Paces every AcoustID lookup the same way _itunes_throttle()/
+# _spotify_throttle()/_soundcloud_throttle() pace their own sources (see
+# there) - same shared-key exposure as SoundCloud/Spotify
+# (ACOUSTID_API_KEY is a single embedded key, not per-user), and it's
+# tried for every file the text-based search couldn't resolve at all, so
+# a big scan can fire many of these back-to-back with no pacing before
+# now. 1.5s apart, matching the other three.
+ACOUSTID_MIN_REQUEST_INTERVAL_SECONDS = 1.5
+_acoustid_throttle_lock = threading.Lock()
+_acoustid_last_request_time = 0.0
+
+
+def _acoustid_throttle():
+    global _acoustid_last_request_time
+    with _acoustid_throttle_lock:
+        wait_seconds = _acoustid_last_request_time + ACOUSTID_MIN_REQUEST_INTERVAL_SECONDS - time.time()
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
+        _acoustid_last_request_time = time.time()
+
 
 def identify_via_acoustid(file_path, log=safe_print, on_rate_limited=None):
     """
@@ -3786,6 +3806,8 @@ def identify_via_acoustid(file_path, log=safe_print, on_rate_limited=None):
     if _acoustid_cooldown.active():
         log("  [AcoustID] Still rate limited from earlier in this scan - skipping.")
         return None
+
+    _acoustid_throttle()
 
     acoustid.FPCALC_COMMAND = find_fpcalc()
     # WebServiceError covers connection resets/timeouts, which are usually a
