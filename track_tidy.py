@@ -4014,7 +4014,23 @@ def convert_wav_to_aiff(source_path):
     there's no quality loss. Exists only for cover-art compatibility with
     software that doesn't read embedded artwork from WAV (confirmed:
     Rekordbox) but does from AIFF. Removes the original file on success.
+
+    FFmpeg's plain conversion drops every existing tag (genre, year,
+    etc.) - confirmed live: its WAV demuxer doesn't surface the ID3 chunk
+    mutagen writes as ffmpeg-level metadata to carry over, so the output
+    AIFF comes out with none at all, not just the ones this app itself
+    doesn't otherwise rewrite. Read the source's ID3 tags via mutagen
+    first and reapply them to the converted file below - the caller's
+    own artist/title/cover writes still happen normally afterward, same
+    as for a file that was never converted.
     """
+    source_tags = None
+    try:
+        source_audio = WAVE(source_path)
+        source_tags = source_audio.tags
+    except Exception as error:
+        print(f"  Could not read existing tags before conversion: {error}")
+
     aiff_path = os.path.splitext(source_path)[0] + ".aiff"
     try:
         result = subprocess.run(
@@ -4026,6 +4042,24 @@ def convert_wav_to_aiff(source_path):
         if result.returncode != 0:
             print(f"  FFmpeg error during conversion: {result.stderr[-300:]}")
             return None
+
+        if source_tags:
+            try:
+                aiff_audio = AIFF(aiff_path)
+                if aiff_audio.tags is None:
+                    aiff_audio.add_tags()
+                # Add each frame individually into the AIFF's own tags
+                # object (already correctly bound to its FORM container by
+                # add_tags() above) rather than assigning source_tags
+                # wholesale - WAV's ID3 tags are bound to a RIFF container
+                # internally, and reusing that object as-is against an
+                # AIFF/FORM file fails to save ("Root chunk must be a RIFF
+                # chunk, got FORM").
+                for frame in source_tags.values():
+                    aiff_audio.tags.add(frame)
+                aiff_audio.save()
+            except Exception as error:
+                print(f"  Could not carry over existing tags after conversion: {error}")
 
         os.remove(source_path)
         return aiff_path
