@@ -3,6 +3,48 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.19]
+
+### Added
+- "Fix track file name" Settings toggle (on by default) - renames a file
+  to "Artist - Title.ext" after a successful tag update.
+- "Use Spotify as a cover source" Settings toggle (off by default) -
+  Spotify's low rate-limit tier makes it unreliable enough to be opt-in
+  now instead of always-on.
+- Right-click "Fix Artist/Title..." context menu entry.
+
+### Changed
+- iTunes, Spotify, SoundCloud, and AcoustID all now proactively pace
+  their own requests (roughly one every 1.5s) instead of only reacting
+  after a rate limit already hit - far fewer mid-scan interruptions
+  across every source.
+- SoundCloud's OAuth token is now persisted across app restarts instead
+  of being re-requested on every launch, easing pressure on its tight
+  per-app/per-IP quota.
+- Removed the end-of-scan summary popup and the Spotify rate-limit
+  popup - both are journal-only now; "no cover" tracks stay reachable
+  via the new right-click menu instead.
+- Unchecking a row's Apply checkbox now also unchecks its Format
+  (convert) checkbox, and vice versa.
+- Embedded default API credentials (SoundCloud, Spotify, Discord
+  webhook) are now AES-256-GCM encrypted instead of plain base64.
+
+### Fixed
+- Several real cover-matching bugs: a short artist disambiguator like
+  "(UZ)" polluting the search query and derailing relevance ranking; a
+  bracketed "[DJ Mix]" collection marker slipping past the DJ-mix
+  compilation filter; a multi-artist SoundCloud match only requiring
+  ONE of several expected artists to be present instead of all of them;
+  a generic repost-account logo passed through as a real cover.
+- WAV -> AIFF conversion no longer drops existing tags (genre, year,
+  etc.) - FFmpeg's plain conversion silently discarded them all.
+- A blank-artist SoundCloud search no longer accepts an overly loose
+  match.
+- Comma-spacing and a trailing period ("D.O.D." vs "D.O.D") are now
+  tolerated when comparing artist/title.
+- Fixed multi-file drag-and-drop only scanning the first dropped file.
+- Fixed a UI double-space in "Developed by KEVZ".
+
 ## [0.18]
 
 ### Added
