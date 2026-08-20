@@ -2695,14 +2695,20 @@ class TaggerInterface:
             # this back to a plain checked box instead - the file's own
             # tags no longer match what the table shows, so "done" (✔)
             # would be actively misleading until the next Apply catches up.
-            if info.get("already_applied"):
+            if info.get("fix_pending"):
+                apply_box = CHECKED_BOX
+            elif info.get("already_applied") and not info.get("apply_changes"):
                 # Already had a cover + complete tags before this scan even
                 # ran (search skipped - see track_tidy.py's
-                # "already_applied") - distinct from PROCESSED_CHECK, which
-                # means THIS run actually did something to the row.
+                # "already_applied") and still unchecked - distinct from
+                # PROCESSED_CHECK/EMPTY_BOX so it's clear nothing needed to
+                # happen here, rather than "this run processed it" or "the
+                # user unchecked it". A user who explicitly (re)checks the
+                # row still sees the normal PROCESSED_CHECK/EMPTY_BOX pair
+                # once Apply runs - only the untouched default gets the
+                # special mark, so the checkbox/select-all toggle keeps
+                # actually doing something visible for these rows too.
                 apply_box = ALREADY_APPLIED_MARK
-            elif info.get("fix_pending"):
-                apply_box = CHECKED_BOX
             else:
                 apply_box = PROCESSED_CHECK if info.get("apply_changes") else EMPTY_BOX
             return (apply_box, displayed_title, displayed_artist, displayed_format)
@@ -2723,7 +2729,7 @@ class TaggerInterface:
         else:
             displayed_artist = info["current_artist"] or "(empty)"
 
-        if info.get("already_applied"):
+        if info.get("already_applied") and not apply:
             apply_box = ALREADY_APPLIED_MARK
         else:
             apply_box = CHECKED_BOX if apply else EMPTY_BOX
