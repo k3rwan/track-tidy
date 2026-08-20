@@ -2052,13 +2052,17 @@ class TaggerInterface:
 
             if query and query not in searchable:
                 continue
-            # has_cover, not just cover_source: a track that already had a
-            # cover before this scan (kept as-is, including an
-            # already_applied track - see track_tidy.py) never gets a
-            # cover_source of its own, since no online search even ran for
-            # it - checking cover_source alone wrongly treated it as
-            # cover-less and showed it under this filter.
-            if no_cover_only and (info.get("cover_source") or info.get("has_cover")):
+            # effective_cover_bytes(), not just cover_source/has_cover: a
+            # track that kept its existing cover (no online search matched/
+            # ran, including an already_applied track - see
+            # track_tidy.py) never gets its own cover_source, but IS a real
+            # cover - while a track whose existing cover is a banned
+            # generic image (is_banned_cover_image) has_cover=True too, yet
+            # is really cover-less. This is the same "what cover will this
+            # row actually end up with" check the thumbnail/zoom preview
+            # already uses - reusing it keeps this filter in sync with what
+            # the user actually sees.
+            if no_cover_only and tagger.effective_cover_bytes(info):
                 hidden_with_cover += 1
                 continue
 
@@ -2159,7 +2163,7 @@ class TaggerInterface:
                 spotify_count += 1
             elif source == "SoundCloud":
                 soundcloud_count += 1
-            elif info.get("has_cover"):
+            elif tagger.effective_cover_bytes(info):
                 kept_existing_count += 1
             else:
                 no_cover_count += 1
@@ -2353,7 +2357,7 @@ class TaggerInterface:
 
             no_cover_infos = [
                 info for info in self.scanned_plan
-                if not info.get("processed") and not info.get("cover_source") and not info.get("has_cover")
+                if not info.get("processed") and not tagger.effective_cover_bytes(info)
             ]
             if no_cover_infos:
                 self._append_to_journal(f"{len(no_cover_infos)} track(s) currently have no cover match.")
