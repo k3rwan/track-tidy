@@ -138,6 +138,13 @@ SEARCH_RESULT_SUMMARY_ROW_ID = "__search_result_summary_row__"
 LIGHT_TABLE_SELECT_BG = "#cfe3f5"
 LIGHT_TABLE_SELECT_FG = "#1a1a1a"
 
+# Muted/secondary text (footer credits, version label) - a plain mid-grey
+# reads fine on light mode's near-white background, but is borderline-low
+# contrast against dark mode's near-black one, so it's brightened for dark
+# specifically (see MUTED_TEXT_COLOR's uses in _apply_theme).
+MUTED_TEXT_COLOR = "#888888"
+DARK_MUTED_TEXT_COLOR = "#a0a0a0"
+
 # Dark palette. There's no equivalent LIGHT_COLORS dict - "light" instead
 # means "leave the native theme's own colors alone", captured at startup
 # (see App._native_bg etc.) so it matches today's look exactly.
@@ -872,6 +879,11 @@ class TaggerInterface:
             if not getattr(entry, "placeholder_active", False):
                 entry.configure(foreground=entry.normal_color)
 
+        muted_fg = DARK_MUTED_TEXT_COLOR if dark else MUTED_TEXT_COLOR
+        self.dev_credit_label.configure(foreground=muted_fg)
+        self.kevz_credit_label.configure(foreground=muted_fg)
+        self.legal_text_label.configure(foreground=muted_fg)
+
         self._folder_icon_photo = self._build_folder_icon_photo(dark)
         self.folder_icon_label.configure(image=self._folder_icon_photo)
 
@@ -1533,7 +1545,7 @@ class TaggerInterface:
         )
         self.internet_status_label.pack(anchor="w", padx=10, pady=(0, 10))
 
-        legal_text_label = ttk.Label(
+        self.legal_text_label = legal_text_label = ttk.Label(
             soundcloud_tab,
             text=(
                 "Track Tidy is an independent, personal tool and is not affiliated with, "
@@ -1549,7 +1561,7 @@ class TaggerInterface:
                 "finishes."
             ),
             justify="left",
-            foreground="#888888",
+            foreground=MUTED_TEXT_COLOR,
             font=("TkDefaultFont", 8),
         )
         legal_text_label.pack(anchor="w", fill="x", padx=10, pady=(0, 2), side="bottom")
@@ -1566,14 +1578,20 @@ class TaggerInterface:
 
         credit_frame = ttk.Frame(soundcloud_tab)
         credit_frame.pack(anchor="w", padx=10, pady=(0, 2), side="bottom")
-        ttk.Label(
-            credit_frame, text="Developped by", foreground="#888888", font=("TkDefaultFont", 8, "bold"),
-        ).pack(side="left", padx=(0, 3))
-        kevz_credit_label = ttk.Label(
-            credit_frame, text="KEVZ", foreground="#888888", font=("TkDefaultFont", 8, "bold"), cursor="hand2",
+        # Colored explicitly by _apply_theme (MUTED_TEXT_COLOR/DARK_COLORS'
+        # "muted_fg") rather than left at this light-mode default forever -
+        # #888888 is borderline-low contrast against the dark background,
+        # unlike virtually every other color in the app, which IS
+        # reassigned on every theme switch.
+        self.dev_credit_label = ttk.Label(
+            credit_frame, text="Developed by", foreground=MUTED_TEXT_COLOR, font=("TkDefaultFont", 8, "bold"),
         )
-        kevz_credit_label.pack(side="left")
-        kevz_credit_label.bind("<Button-1>", self._open_kevz_instagram)
+        self.dev_credit_label.pack(side="left", padx=(0, 3))
+        self.kevz_credit_label = ttk.Label(
+            credit_frame, text="KEVZ", foreground=MUTED_TEXT_COLOR, font=("TkDefaultFont", 8, "bold"), cursor="hand2",
+        )
+        self.kevz_credit_label.pack(side="left")
+        self.kevz_credit_label.bind("<Button-1>", self._open_kevz_instagram)
 
         ttk.Separator(soundcloud_tab, orient="horizontal").pack(fill="x", padx=10, pady=(20, 10), side="bottom")
 
@@ -3531,8 +3549,16 @@ class TaggerInterface:
         self._tooltip_window = tk.Toplevel(self.window)
         self._tooltip_window.overrideredirect(True)
         self._tooltip_window.attributes("-topmost", True)
+        # Pale "sticky note" yellow reads fine in light mode, but stands out
+        # as a bright, jarring box against the dark UI - reuse the same
+        # menu colors already used for right-click menus in dark mode
+        # instead of leaving this the one un-themed popup in the app.
+        if self.theme_colors:
+            bg, fg = self.theme_colors["menu_bg"], self.theme_colors["menu_fg"]
+        else:
+            bg, fg = "#ffffe0", "#1a1a1a"
         ttk.Label(
-            self._tooltip_window, text=text, background="#ffffe0", foreground="#1a1a1a",
+            self._tooltip_window, text=text, background=bg, foreground=fg,
             relief="solid", borderwidth=1, padding=(6, 3),
         ).pack()
         self._position_tooltip(event)
