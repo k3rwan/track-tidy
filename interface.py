@@ -1616,6 +1616,8 @@ class TaggerInterface:
         self.progress_canvas.itemconfigure(self.progress_text, text=text)
 
     def _toggle_advanced_section(self):
+        if self._is_run_active():
+            return  # locked during a scan/apply run, same as the other action buttons
         self.advanced_section_visible = not self.advanced_section_visible
         if self.advanced_section_visible:
             self.advanced_frame.pack(fill="x", padx=10, pady=(0, 10), after=self.advanced_toggle)
@@ -1853,6 +1855,13 @@ class TaggerInterface:
         self.browse_button.configure(state=state)
         self.scan_button.configure(state=state)
         self.reset_button.configure(state=state)
+        # advanced_toggle is a plain Label (click-bound, not a real ttk
+        # Button - see _toggle_advanced_section, which also has its own
+        # _is_run_active() guard), so "disabling" it means faking the look
+        # instead of an actual state="disabled".
+        self.advanced_toggle.configure(
+            foreground="#1a73e8" if enabled else "#999999", cursor="hand2" if enabled else "arrow",
+        )
         if enabled:
             self.scan_button.configure(text="Scan")
             self._update_apply_button_label()
