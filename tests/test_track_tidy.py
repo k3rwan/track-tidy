@@ -377,12 +377,12 @@ class ITunesRetryTests(unittest.TestCase):
         self.original_get = tagger.requests.get
         self.original_sleep = tagger.time.sleep
         tagger.time.sleep = lambda seconds: None
-        tagger._itunes_rate_limited_until = 0
+        tagger._itunes_cooldown.until = 0
 
     def tearDown(self):
         tagger.requests.get = self.original_get
         tagger.time.sleep = self.original_sleep
-        tagger._itunes_rate_limited_until = 0
+        tagger._itunes_cooldown.until = 0
 
     class FakeResponse:
         def __init__(self, status_code, payload=None, content=b""):
@@ -447,7 +447,7 @@ class ITunesRetryTests(unittest.TestCase):
 
         self.assertIsNone(result)
         self.assertEqual(calls["search"], 3)  # this call still does its own retries
-        self.assertGreater(tagger._itunes_rate_limited_until, time.time())
+        self.assertGreater(tagger._itunes_cooldown.until, time.time())
 
         # A second call, still within the cooldown, is skipped outright -
         # no further HTTP request at all.
@@ -456,7 +456,7 @@ class ITunesRetryTests(unittest.TestCase):
         self.assertEqual(calls["search"], 3)  # unchanged - no new request made
 
     def test_cooldown_expiring_allows_requests_again(self):
-        tagger._itunes_rate_limited_until = time.time() - 1  # already expired
+        tagger._itunes_cooldown.until = time.time() - 1  # already expired
 
         def fake_get(url, params=None, timeout=None):
             return self.FakeResponse(200, {"results": [
