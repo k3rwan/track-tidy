@@ -3679,20 +3679,30 @@ def effective_cover_bytes(info):
 
 def has_usable_cover(info):
     """
-    Whether this row currently has a legitimate cover - either a freshly
-    found one, or an existing one that isn't a banned/generic placeholder -
-    regardless of apply_changes (unchecked). Unlike effective_cover_bytes()
-    (which answers "what will actually be WRITTEN", and for that reason
-    skips the banned-cover check entirely once apply_changes is False,
-    since nothing is being touched), this is for deciding whether a row
-    still needs cover-search attention. Real report: unchecking a "no
-    cover match" row whose existing cover happened to be a banned
-    placeholder made effective_cover_bytes() return that placeholder's raw
-    bytes (truthy) and wrongly disappear from the "Only show tracks with
-    no cover match" filter.
+    Whether this row should count as "has a cover" for deciding if it still
+    needs cover-search attention (the "Only show tracks with no cover
+    match" filter, the post-scan no-cover count, the scan summary's kept-
+    existing/no-cover split) - distinct from effective_cover_bytes(), which
+    answers a different question ("what will actually be WRITTEN").
+
+    A cover an online search actually FOUND (found_cover_image) always
+    counts, regardless of checked state. Otherwise, an existing cover only
+    counts while the row is still CHECKED (apply_changes) - Apply is
+    actually going to keep it, so it's a real, current answer to "does
+    this track have a cover" - and only if it isn't itself a banned/
+    generic placeholder (is_banned_cover_image). Once UNCHECKED, an
+    existing cover no longer counts at all, even a legitimate one: the
+    whole point of unchecking a no-match row is to flag it for later
+    review, not to quietly let its (unverified, possibly wrong/low-
+    quality) existing cover excuse it from that list. Real report:
+    unchecking a row whose online search genuinely found nothing still
+    hid it from the filter because it happened to already have SOME
+    cover embedded.
     """
     if info.get("found_cover_image"):
         return True
+    if not info.get("apply_changes", True):
+        return False
     if not info.get("has_cover"):
         return False
     return not (detect_fuviclan_mention(info.get("file", "")) or is_banned_cover_image(info.get("current_cover_bytes")))
