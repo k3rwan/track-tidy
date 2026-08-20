@@ -2442,6 +2442,13 @@ def split_artist_names(text):
     parts = re.split(r"\s*(?:,|&|/|\bx\b|\bvs\b|\bfeat\b\.?|\bft\b\.?|\band\b)\s*", text, flags=re.IGNORECASE)
     names = set()
     for part in parts:
+        # Strip a trailing parenthetical disambiguator (e.g. "SOMMERS (UK)"
+        # -> "SOMMERS") - some stores add these to tell apart two different
+        # artists who happen to share an exact name on their platform; our
+        # own filenames/tags never include it, so comparing with it left in
+        # would reject an otherwise-exact match. Real report: "Moeaike,
+        # SOMMERS" (filename) vs. Spotify's own "Moeaike, SOMMERS (UK)".
+        part = re.sub(r"\s*\([^()]*\)\s*$", "", part)
         normalized = strip_accents(strip_sanitized_chars(part.strip().lower()))
         if not normalized:
             continue
