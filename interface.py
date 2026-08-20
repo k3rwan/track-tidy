@@ -2132,11 +2132,13 @@ class TaggerInterface:
             # track_tidy.py) never gets its own cover_source, but IS a real
             # cover - while a track whose existing cover is a banned
             # generic image (is_banned_cover_image) has_cover=True too, yet
-            # is really cover-less. This is the same "what cover will this
-            # row actually end up with" check the thumbnail/zoom preview
-            # already uses - reusing it keeps this filter in sync with what
-            # the user actually sees.
-            if no_cover_only and tagger.effective_cover_bytes(info):
+            # is really cover-less. has_usable_cover() (not
+            # effective_cover_bytes()) so this stays correct even for an
+            # UNCHECKED row - effective_cover_bytes() skips the banned-cover
+            # check entirely once apply_changes is False (nothing being
+            # written, so the raw existing bytes are returned as-is),
+            # which wrongly hid an unchecked banned-cover row from here.
+            if no_cover_only and tagger.has_usable_cover(info):
                 hidden_with_cover += 1
                 continue
 
@@ -2237,7 +2239,7 @@ class TaggerInterface:
                 spotify_count += 1
             elif source == "SoundCloud":
                 soundcloud_count += 1
-            elif tagger.effective_cover_bytes(info):
+            elif tagger.has_usable_cover(info):
                 kept_existing_count += 1
             else:
                 no_cover_count += 1
@@ -2406,9 +2408,15 @@ class TaggerInterface:
         removed_files, number_before = result
         self._set_buttons_enabled(True)
 
+        # Reset (not "Done ✓"/left showing, unlike Apply) - a scan's own
+        # progress is done being useful the moment it ends, and leaving it
+        # sitting there at 100% would be stale/misleading by the time the
+        # user gets around to clicking Apply, which starts its own run of
+        # this same bar from 0% anyway.
         if self.progress_canvas.winfo_ismapped():
-            cancelled = self.cancel_requested.is_set()
-            self._update_progress_bar(0 if cancelled else 1.0, "Cancelled" if cancelled else "Done ✓")
+            self.progress_canvas.pack_forget()
+            self._update_progress_bar(0, "")
+            self._adjust_window_height()
 
         # Removes files that no longer exist on disk
         for file_name in removed_files:
@@ -2435,7 +2443,7 @@ class TaggerInterface:
 
             no_cover_infos = [
                 info for info in self.scanned_plan
-                if not info.get("processed") and not tagger.effective_cover_bytes(info)
+                if not info.get("processed") and not tagger.has_usable_cover(info)
             ]
             if no_cover_infos:
                 self._append_to_journal(f"{len(no_cover_infos)} track(s) currently have no cover match.")
