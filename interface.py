@@ -2847,6 +2847,12 @@ class TaggerInterface:
         self.table.heading("apply", text=CHECKED_BOX if checked else EMPTY_BOX)
         self._update_apply_button_label()
 
+        # See _toggle_cell's identical call for why - checked state affects
+        # has_usable_cover() (track_tidy.py), so a row can newly qualify
+        # for (or drop out of) the "no cover match" filter here too.
+        if self.no_cover_filter_var.get():
+            self._apply_table_filter()
+
     def _toggle_all(self):
         """Also clears the "format" column - a track that isn't going to be
         touched at all shouldn't still have a pending conversion queued.
@@ -2943,6 +2949,12 @@ class TaggerInterface:
             info["apply_changes"] = not info["apply_changes"]
             self._refresh_row(info)  # the image also changes based on current/suggested
             self._update_apply_button_label()
+            # Checked state affects has_usable_cover() (see track_tidy.py) -
+            # unchecking a row can put it back into (or checking it can take
+            # it out of) the "no cover match" filter, so re-apply it right
+            # away instead of leaving the row wherever it happened to be.
+            if self.no_cover_filter_var.get():
+                self._apply_table_filter()
         elif column_id == f"#{COLUMNS.index('format') + 1}":
             if info["format"] != "WAV":
                 return  # AIFF has no checkbox (see _build_row_values); every other non-MP3 format has no choice - it MUST convert to be taggable at all
