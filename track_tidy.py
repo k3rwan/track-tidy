@@ -907,6 +907,12 @@ AUTO_CONVERT_MP3 = False
 # files that are already something other than WAV.
 AUTO_CONVERT_WAV_TO_AIFF = True
 
+# Whether a processed file gets renamed to "Artist - Title.ext" at Apply
+# time (set by the UI, on by default). Tags are always written regardless
+# of this setting - it only controls the FILENAME itself, for a user who'd
+# rather keep their own existing file naming untouched.
+FIX_TRACK_FILE_NAME = True
+
 
 # ============================================================================
 # 2. FILENAME & TITLE CLEANING
@@ -4211,7 +4217,7 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
                 log=log,
             )
 
-            if update_title and update_artist:
+            if update_title and update_artist and FIX_TRACK_FILE_NAME:
                 folder_part = os.path.dirname(file_name)
                 extension = os.path.splitext(file_name)[1]
                 new_base_name = sanitize_filename(build_display_name(artist, title)) + extension

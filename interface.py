@@ -294,10 +294,12 @@ class TaggerInterface:
         saved_settings = tagger.load_settings()
         self.auto_convert_var = tk.BooleanVar(value=saved_settings.get("auto_convert_mp3", False))
         self.auto_convert_wav_aiff_var = tk.BooleanVar(value=saved_settings.get("auto_convert_wav_to_aiff", True))
+        self.fix_track_file_name_var = tk.BooleanVar(value=saved_settings.get("fix_track_file_name", True))
         self.show_log_var = tk.BooleanVar(value=saved_settings.get("show_log_section", False))
         self._tagger_resize_pending = False
         tagger.AUTO_CONVERT_MP3 = self.auto_convert_var.get()
         tagger.AUTO_CONVERT_WAV_TO_AIFF = self.auto_convert_wav_aiff_var.get()
+        tagger.FIX_TRACK_FILE_NAME = self.fix_track_file_name_var.get()
 
         self._build_interface()
         self._setup_drag_and_drop()
@@ -380,6 +382,11 @@ class TaggerInterface:
         tagger.AUTO_CONVERT_WAV_TO_AIFF = enabled
         tagger.save_setting("auto_convert_wav_to_aiff", enabled)
 
+    def _on_fix_track_file_name_changed(self):
+        enabled = self.fix_track_file_name_var.get()
+        tagger.FIX_TRACK_FILE_NAME = enabled
+        tagger.save_setting("fix_track_file_name", enabled)
+
     def _reset_settings_to_default(self):
         """Restores every Settings-tab option to its out-of-the-box value.
         Deliberately bypasses the individual _on_X_changed() handlers -
@@ -399,15 +406,18 @@ class TaggerInterface:
             ("theme", "light"),
             ("auto_convert_mp3", False),
             ("auto_convert_wav_to_aiff", True),
+            ("fix_track_file_name", True),
             ("show_log_section", False),
         ):
             tagger.save_setting(key, value)
 
         tagger.AUTO_CONVERT_MP3 = False
         tagger.AUTO_CONVERT_WAV_TO_AIFF = True
+        tagger.FIX_TRACK_FILE_NAME = True
 
         self.auto_convert_var.set(False)
         self.auto_convert_wav_aiff_var.set(True)
+        self.fix_track_file_name_var.set(True)
 
         self.show_log_var.set(False)
         self._on_show_log_changed()
@@ -1537,6 +1547,10 @@ class TaggerInterface:
             variable=self.auto_convert_wav_aiff_var, command=self._on_auto_convert_wav_aiff_changed,
         )
         self.auto_convert_wav_aiff_checkbox.pack(anchor="w", padx=10, pady=(0, 0))
+        ttk.Checkbutton(
+            behavior_frame, text="Fix track file name", variable=self.fix_track_file_name_var,
+            command=self._on_fix_track_file_name_changed,
+        ).pack(anchor="w", padx=10, pady=(0, 0))
         ttk.Checkbutton(
             behavior_frame, text="Show log section", variable=self.show_log_var,
             command=self._on_show_log_changed,
