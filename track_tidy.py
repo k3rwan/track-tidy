@@ -997,13 +997,24 @@ GENERIC_MIX_LABELS = {
 
 def is_named_remix_qualifier(content):
     """
-    True for a specific/named remix, edit, or bootleg credit (e.g. "Royale
-    BR Bootleg", "Raphael Palacci Remix") - one that names a particular
-    person/version, as opposed to a purely generic, interchangeable label
-    like "Extended Mix" or "Radio Edit" (see GENERIC_MIX_LABELS).
+    True for a specific/named remix, edit, mix, or bootleg credit (e.g.
+    "Royale BR Bootleg", "Raphael Palacci Remix", "One For The Sunrise
+    Mix") - one that names a particular person/version, as opposed to a
+    purely generic, interchangeable label like "Extended Mix" or "Radio
+    Edit" (see GENERIC_MIX_LABELS - those exact compound phrases are still
+    excluded below, "mix" alone isn't enough to make something generic).
+
+    "mix" is a real keyword here, same as "remix"/"edit"/"bootleg"/
+    "reboot" - real report: "Isaac Notes (One For The Sunrise Mix)" wasn't
+    recognized as named at all (the check used to only look for "remix"/
+    "edit"/"reboot"/"bootleg", missing bare "mix" entirely, unlike
+    DASH_MIX_KEYWORDS just above which already includes it), so the
+    qualifier was silently dropped from EVERY search attempt instead of
+    being tried - not even a "loose" mismatch, nothing to search with at
+    all beyond the bare title.
     """
     lowered = content.lower().strip()
-    has_named_keyword = any(keyword in lowered for keyword in ("remix", "edit", "reboot", "bootleg"))
+    has_named_keyword = any(keyword in lowered for keyword in ("remix", "edit", "mix", "reboot", "bootleg"))
     return has_named_keyword and lowered not in GENERIC_MIX_LABELS
 
 
@@ -1026,7 +1037,7 @@ def find_named_qualifier_groups(title):
         if lowered in GENERIC_MIX_LABELS:
             continue
         words = lowered.split()
-        has_keyword = any(keyword in words for keyword in ("remix", "edit", "reboot", "bootleg"))
+        has_keyword = any(keyword in words for keyword in ("remix", "edit", "mix", "reboot", "bootleg"))
         if has_keyword and len(words) > 1:
             named_groups.append(group.strip())
     return named_groups
