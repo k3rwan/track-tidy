@@ -301,6 +301,22 @@ class TaggerInterface:
         tagger.AUTO_CONVERT_WAV_TO_AIFF = self.auto_convert_wav_aiff_var.get()
         tagger.FIX_TRACK_FILE_NAME = self.fix_track_file_name_var.get()
 
+        # Personal API credentials (optional - see _on_save_spotify_
+        # credentials/_on_save_soundcloud_credentials): blank here just
+        # means "using the shared default", not "nothing configured" -
+        # tagger.SPOTIFY_CLIENT_ID/SOUNDCLOUD_CLIENT_ID are already
+        # resolved (personal-if-saved, shared otherwise) at import time,
+        # these StringVars only reflect what's specifically saved in the
+        # keyring, deliberately not the shared fallback.
+        self.spotify_client_id_var = tk.StringVar(value=tagger.read_credential(tagger.SPOTIFY_CLIENT_ID_KEY) or "")
+        self.spotify_client_secret_var = tk.StringVar(
+            value=tagger.read_credential(tagger.SPOTIFY_CLIENT_SECRET_KEY) or ""
+        )
+        self.soundcloud_client_id_var = tk.StringVar(value=tagger.read_credential(tagger.CLIENT_ID_KEY) or "")
+        self.soundcloud_client_secret_var = tk.StringVar(
+            value=tagger.read_credential(tagger.CLIENT_SECRET_KEY) or ""
+        )
+
         self._build_interface()
         self._setup_drag_and_drop()
         self._adjust_window_height()
@@ -386,6 +402,80 @@ class TaggerInterface:
         enabled = self.fix_track_file_name_var.get()
         tagger.FIX_TRACK_FILE_NAME = enabled
         tagger.save_setting("fix_track_file_name", enabled)
+
+    def _on_save_spotify_credentials(self):
+        client_id = self.spotify_client_id_var.get().strip()
+        client_secret = self.spotify_client_secret_var.get().strip()
+        if not client_id or not client_secret:
+            messagebox.showwarning(
+                "Missing info", "Enter both a Client ID and a Client Secret.", parent=self.window,
+            )
+            return
+
+        tagger.write_credential(tagger.SPOTIFY_CLIENT_ID_KEY, client_id)
+        tagger.write_credential(tagger.SPOTIFY_CLIENT_SECRET_KEY, client_secret)
+        tagger.SPOTIFY_CLIENT_ID = client_id
+        tagger.SPOTIFY_CLIENT_SECRET = client_secret
+        tagger.invalidate_spotify_token()
+        # A cooldown tripped under the OLD (shared) credentials has nothing
+        # to do with this brand new, private one - starting it still
+        # paused would just silently skip Spotify until that stale
+        # cooldown happens to expire on its own.
+        tagger._spotify_token_cooldown.until = 0
+        tagger._spotify_search_cooldown.until = 0
+        messagebox.showinfo(
+            "Spotify credentials saved",
+            "Your personal Spotify credentials are now in use instead of Track Tidy's shared ones.",
+            parent=self.window,
+        )
+
+    def _on_clear_spotify_credentials(self):
+        tagger.write_credential(tagger.SPOTIFY_CLIENT_ID_KEY, "")
+        tagger.write_credential(tagger.SPOTIFY_CLIENT_SECRET_KEY, "")
+        self.spotify_client_id_var.set("")
+        self.spotify_client_secret_var.set("")
+        tagger.SPOTIFY_CLIENT_ID = tagger.SPOTIFY_DEFAULT_CLIENT_ID
+        tagger.SPOTIFY_CLIENT_SECRET = tagger.SPOTIFY_DEFAULT_CLIENT_SECRET
+        tagger.invalidate_spotify_token()
+        tagger._spotify_token_cooldown.until = 0
+        tagger._spotify_search_cooldown.until = 0
+        messagebox.showinfo(
+            "Spotify credentials cleared", "Back to Track Tidy's shared Spotify credentials.", parent=self.window,
+        )
+
+    def _on_save_soundcloud_credentials(self):
+        client_id = self.soundcloud_client_id_var.get().strip()
+        client_secret = self.soundcloud_client_secret_var.get().strip()
+        if not client_id or not client_secret:
+            messagebox.showwarning(
+                "Missing info", "Enter both a Client ID and a Client Secret.", parent=self.window,
+            )
+            return
+
+        tagger.write_credential(tagger.CLIENT_ID_KEY, client_id)
+        tagger.write_credential(tagger.CLIENT_SECRET_KEY, client_secret)
+        tagger.SOUNDCLOUD_CLIENT_ID = client_id
+        tagger.SOUNDCLOUD_CLIENT_SECRET = client_secret
+        tagger.invalidate_soundcloud_token()
+        tagger._soundcloud_token_cooldown.until = 0
+        messagebox.showinfo(
+            "SoundCloud credentials saved",
+            "Your personal SoundCloud credentials are now in use instead of Track Tidy's shared ones.",
+            parent=self.window,
+        )
+
+    def _on_clear_soundcloud_credentials(self):
+        tagger.write_credential(tagger.CLIENT_ID_KEY, "")
+        tagger.write_credential(tagger.CLIENT_SECRET_KEY, "")
+        self.soundcloud_client_id_var.set("")
+        self.soundcloud_client_secret_var.set("")
+        tagger.SOUNDCLOUD_CLIENT_ID = tagger.SOUNDCLOUD_DEFAULT_CLIENT_ID
+        tagger.SOUNDCLOUD_CLIENT_SECRET = tagger.SOUNDCLOUD_DEFAULT_CLIENT_SECRET
+        tagger.invalidate_soundcloud_token()
+        tagger._soundcloud_token_cooldown.until = 0
+        messagebox.showinfo(
+            "SoundCloud credentials cleared", "Back to Track Tidy's shared SoundCloud credentials.", parent=self.window,
+        )
 
     def _reset_settings_to_default(self):
         """Restores every Settings-tab option to its out-of-the-box value.
@@ -1572,6 +1662,79 @@ class TaggerInterface:
         ttk.Button(
             app_frame, text="Reset all settings to default", command=self._reset_settings_to_default,
         ).pack(fill="x", padx=10, pady=(0, 10))
+
+        # Optional personal API credentials - Track Tidy ships with shared
+        # credentials for Spotify/SoundCloud (see SPOTIFY_DEFAULT_CLIENT_ID/
+        # SOUNDCLOUD_DEFAULT_CLIENT_ID in track_tidy.py) so most users never
+        # need this, but that quota is shared across every Track Tidy user
+        # at once - a personal credential here takes priority over the
+        # shared one (see read_credential(...) or DEFAULT in track_tidy.py)
+        # and is never seen by anyone but this installation.
+        credentials_frame = ttk.LabelFrame(soundcloud_tab, text="Personal API credentials (optional)")
+        credentials_frame.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Label(
+            credentials_frame,
+            text="By default, Track Tidy uses shared Spotify/SoundCloud credentials - fine for "
+                 "most people, but their request limit is shared across every user at once. "
+                 "Entering your own here (free) gives this installation a private limit instead.",
+            justify="left", wraplength=380,
+        ).pack(anchor="w", padx=10, pady=(10, 8))
+
+        spotify_creds_frame = ttk.Frame(credentials_frame)
+        spotify_creds_frame.pack(fill="x", padx=10, pady=(0, 8))
+        ttk.Label(spotify_creds_frame, text="Spotify Client ID").grid(row=0, column=0, sticky="w")
+        spotify_id_entry = ttk.Entry(spotify_creds_frame, textvariable=self.spotify_client_id_var)
+        spotify_id_entry.grid(row=0, column=1, sticky="ew", padx=(5, 0))
+        self._bind_entry_context_menu(spotify_id_entry)
+        ttk.Label(spotify_creds_frame, text="Spotify Client Secret").grid(row=1, column=0, sticky="w", pady=(4, 0))
+        spotify_secret_entry = ttk.Entry(spotify_creds_frame, textvariable=self.spotify_client_secret_var, show="•")
+        spotify_secret_entry.grid(row=1, column=1, sticky="ew", padx=(5, 0), pady=(4, 0))
+        self._bind_entry_context_menu(spotify_secret_entry)
+        spotify_creds_frame.columnconfigure(1, weight=1)
+        spotify_buttons_row = ttk.Frame(credentials_frame)
+        spotify_buttons_row.pack(fill="x", padx=10, pady=(0, 4))
+        ttk.Button(spotify_buttons_row, text="Save", command=self._on_save_spotify_credentials).pack(
+            side="left", padx=(0, 5)
+        )
+        ttk.Button(spotify_buttons_row, text="Clear", command=self._on_clear_spotify_credentials).pack(side="left")
+        spotify_link = ttk.Label(
+            credentials_frame, text="Get free Spotify credentials at developer.spotify.com",
+            foreground="#1a73e8", cursor="hand2", font=("TkDefaultFont", 8),
+        )
+        spotify_link.pack(anchor="w", padx=10, pady=(0, 10))
+        spotify_link.bind(
+            "<Button-1>", lambda event: webbrowser.open("https://developer.spotify.com/dashboard")
+        )
+
+        soundcloud_creds_frame = ttk.Frame(credentials_frame)
+        soundcloud_creds_frame.pack(fill="x", padx=10, pady=(0, 8))
+        ttk.Label(soundcloud_creds_frame, text="SoundCloud Client ID").grid(row=0, column=0, sticky="w")
+        soundcloud_id_entry = ttk.Entry(soundcloud_creds_frame, textvariable=self.soundcloud_client_id_var)
+        soundcloud_id_entry.grid(row=0, column=1, sticky="ew", padx=(5, 0))
+        self._bind_entry_context_menu(soundcloud_id_entry)
+        ttk.Label(soundcloud_creds_frame, text="SoundCloud Client Secret").grid(row=1, column=0, sticky="w", pady=(4, 0))
+        soundcloud_secret_entry = ttk.Entry(
+            soundcloud_creds_frame, textvariable=self.soundcloud_client_secret_var, show="•"
+        )
+        soundcloud_secret_entry.grid(row=1, column=1, sticky="ew", padx=(5, 0), pady=(4, 0))
+        self._bind_entry_context_menu(soundcloud_secret_entry)
+        soundcloud_creds_frame.columnconfigure(1, weight=1)
+        soundcloud_buttons_row = ttk.Frame(credentials_frame)
+        soundcloud_buttons_row.pack(fill="x", padx=10, pady=(0, 4))
+        ttk.Button(soundcloud_buttons_row, text="Save", command=self._on_save_soundcloud_credentials).pack(
+            side="left", padx=(0, 5)
+        )
+        ttk.Button(soundcloud_buttons_row, text="Clear", command=self._on_clear_soundcloud_credentials).pack(
+            side="left"
+        )
+        soundcloud_link = ttk.Label(
+            credentials_frame, text="Request SoundCloud API access at soundcloud.com/you/apps",
+            foreground="#1a73e8", cursor="hand2", font=("TkDefaultFont", 8),
+        )
+        soundcloud_link.pack(anchor="w", padx=10, pady=(0, 10))
+        soundcloud_link.bind(
+            "<Button-1>", lambda event: webbrowser.open("https://soundcloud.com/you/apps")
+        )
 
         self.internet_status_label = ttk.Label(
             soundcloud_tab, text="● Checking connection...", foreground="#999999",
