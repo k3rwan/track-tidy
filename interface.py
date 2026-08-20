@@ -295,11 +295,13 @@ class TaggerInterface:
         self.auto_convert_var = tk.BooleanVar(value=saved_settings.get("auto_convert_mp3", False))
         self.auto_convert_wav_aiff_var = tk.BooleanVar(value=saved_settings.get("auto_convert_wav_to_aiff", True))
         self.fix_track_file_name_var = tk.BooleanVar(value=saved_settings.get("fix_track_file_name", True))
+        self.use_spotify_var = tk.BooleanVar(value=saved_settings.get("use_spotify", False))
         self.show_log_var = tk.BooleanVar(value=saved_settings.get("show_log_section", False))
         self._tagger_resize_pending = False
         tagger.AUTO_CONVERT_MP3 = self.auto_convert_var.get()
         tagger.AUTO_CONVERT_WAV_TO_AIFF = self.auto_convert_wav_aiff_var.get()
         tagger.FIX_TRACK_FILE_NAME = self.fix_track_file_name_var.get()
+        tagger.USE_SPOTIFY = self.use_spotify_var.get()
 
         self._build_interface()
         self._setup_drag_and_drop()
@@ -387,6 +389,11 @@ class TaggerInterface:
         tagger.FIX_TRACK_FILE_NAME = enabled
         tagger.save_setting("fix_track_file_name", enabled)
 
+    def _on_use_spotify_changed(self):
+        enabled = self.use_spotify_var.get()
+        tagger.USE_SPOTIFY = enabled
+        tagger.save_setting("use_spotify", enabled)
+
     def _reset_settings_to_default(self):
         """Restores every Settings-tab option to its out-of-the-box value.
         Deliberately bypasses the individual _on_X_changed() handlers -
@@ -407,6 +414,7 @@ class TaggerInterface:
             ("auto_convert_mp3", False),
             ("auto_convert_wav_to_aiff", True),
             ("fix_track_file_name", True),
+            ("use_spotify", False),
             ("show_log_section", False),
         ):
             tagger.save_setting(key, value)
@@ -414,10 +422,12 @@ class TaggerInterface:
         tagger.AUTO_CONVERT_MP3 = False
         tagger.AUTO_CONVERT_WAV_TO_AIFF = True
         tagger.FIX_TRACK_FILE_NAME = True
+        tagger.USE_SPOTIFY = False
 
         self.auto_convert_var.set(False)
         self.auto_convert_wav_aiff_var.set(True)
         self.fix_track_file_name_var.set(True)
+        self.use_spotify_var.set(False)
 
         self.show_log_var.set(False)
         self._on_show_log_changed()
@@ -1006,15 +1016,15 @@ class TaggerInterface:
     def _check_source_health_on_startup(self):
         """Runs two background checks at most once every 24h (not every
         single launch - these force a fresh SoundCloud/Spotify token
-        request each time, which is quota every user shares, so re-running
-        this on every relaunch was pure waste on top of normal scanning
-        usage), since Settings can no longer disable a cover source to work
-        around a silent failure (see the comment above tagger.USE_ITUNES):
-        whether the shared SoundCloud/Spotify/AcoustID credentials still
-        authenticate, and whether iTunes/Spotify's own domains are
-        reachable at all (a restrictive firewall/network filter blocking
-        just those, while general internet access still works, would
-        otherwise look identical to "nothing found" with no explanation)."""
+        request each time against a real, limited rate limit, so re-
+        running this on every relaunch was pure waste on top of normal
+        scanning usage; skipped entirely for Spotify while it's turned
+        off, see tagger.check_source_credentials): whether the shared
+        SoundCloud/Spotify/AcoustID credentials still authenticate, and
+        whether iTunes/Spotify's own domains are reachable at all (a
+        restrictive firewall/network filter blocking just those, while
+        general internet access still works, would otherwise look
+        identical to "nothing found" with no explanation)."""
         last_checked = tagger.load_settings().get("last_source_health_check", 0)
         if time.time() - last_checked < 24 * 60 * 60:
             return
@@ -1550,6 +1560,10 @@ class TaggerInterface:
         ttk.Checkbutton(
             behavior_frame, text="Fix track file name", variable=self.fix_track_file_name_var,
             command=self._on_fix_track_file_name_changed,
+        ).pack(anchor="w", padx=10, pady=(0, 0))
+        ttk.Checkbutton(
+            behavior_frame, text="Use Spotify as a cover source", variable=self.use_spotify_var,
+            command=self._on_use_spotify_changed,
         ).pack(anchor="w", padx=10, pady=(0, 0))
         ttk.Checkbutton(
             behavior_frame, text="Show log section", variable=self.show_log_var,
