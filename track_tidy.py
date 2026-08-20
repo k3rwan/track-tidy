@@ -214,13 +214,13 @@ SPOTIFY_CLIENT_SECRET = read_credential(SPOTIFY_CLIENT_SECRET_KEY) or SPOTIFY_DE
 ACOUSTID_API_KEY = "REDACTED-ACOUSTID-KEY"
 
 
-def load_id_txt_credentials():
+def load_id_txt_credentials(filename="id.txt"):
     """
     Convenience file for quick offline testing: "id.txt" next to the app,
     with the Client ID on line 1 and the Client Secret on line 2.
     Takes priority over the normal saved credentials when present.
     """
-    path = os.path.join(app_base_dir(), "id.txt")
+    path = os.path.join(app_base_dir(), filename)
     if not os.path.exists(path):
         return None, None
     try:
@@ -230,7 +230,7 @@ def load_id_txt_credentials():
         client_secret = lines[1] if len(lines) > 1 and lines[1] else None
         return client_id, client_secret
     except Exception as error:
-        print(f"  Could not read id.txt: {error}")
+        print(f"  Could not read {filename}: {error}")
         return None, None
 
 
@@ -238,6 +238,15 @@ _id_txt_client_id, _id_txt_client_secret = load_id_txt_credentials()
 if _id_txt_client_id and _id_txt_client_secret:
     SOUNDCLOUD_CLIENT_ID = _id_txt_client_id
     SOUNDCLOUD_CLIENT_SECRET = _id_txt_client_secret
+
+# Second dev-only convenience pair ("id_2.txt", same format as id.txt) - a
+# separate SoundCloud app registration used ONLY to ride out SoundCloud's
+# token rate limit (50/12h per app) while testing locally, by retrying with
+# a different app's credentials right after a 429 instead of waiting out the
+# cooldown. Never embedded/shipped - both files are gitignored, and normal
+# users never have either one, so SOUNDCLOUD_FALLBACK_CLIENT_ID/_SECRET stay
+# None for everyone but whoever drops these files in next to the app.
+SOUNDCLOUD_FALLBACK_CLIENT_ID, SOUNDCLOUD_FALLBACK_CLIENT_SECRET = load_id_txt_credentials("id_2.txt")
 
 
 # --- Internet connectivity check ---
@@ -3168,11 +3177,53 @@ def get_soundcloud_token(log=safe_print, on_rate_limited=None, on_auth_error=Non
         log("  [SoundCloud] No credentials found (clientID.txt / clientSecret.txt missing or empty).")
         return None
 
-    try:
-        credentials = f"{SOUNDCLOUD_CLIENT_ID}:{SOUNDCLOUD_CLIENT_SECRET}"
-        encoded_credentials = base64.b64encode(credentials.encode()).decode()
+    response = _request_soundcloud_token(SOUNDCLOUD_CLIENT_ID, SOUNDCLOUD_CLIENT_SECRET, log)
+    if response is None:
+        return None
 
-        response = requests.post(
+    if response.status_code == 429 and SOUNDCLOUD_FALLBACK_CLIENT_ID and SOUNDCLOUD_FALLBACK_CLIENT_SECRET:
+        # Dev-only convenience (see id_2.txt above) - a separate app's
+        # credentials, so it has its own, independent 50/12h token budget.
+        log("  [SoundCloud] Primary app rate limited - retrying with id_2.txt's fallback credentials (dev only)...")
+        response = _request_soundcloud_token(SOUNDCLOUD_FALLBACK_CLIENT_ID, SOUNDCLOUD_FALLBACK_CLIENT_SECRET, log)
+        if response is None:
+            return None
+
+    if response.status_code == 200:
+        payload = response.json()
+        _cached_soundcloud_token = payload.get("access_token")
+        _cached_token_expiry = time.time() + payload.get("expires_in", 3600)
+        save_setting("soundcloud_token", _cached_soundcloud_token)
+        save_setting("soundcloud_token_expiry", _cached_token_expiry)
+        return _cached_soundcloud_token
+
+    if response.status_code == 429:
+        _soundcloud_token_cooldown.trigger(SOUNDCLOUD_TOKEN_RATE_LIMIT_COOLDOWN_SECONDS)
+        log(
+            "  [SoundCloud] Rate limit reached (too many token requests) - pausing "
+            f"SoundCloud for {SOUNDCLOUD_TOKEN_RATE_LIMIT_COOLDOWN_SECONDS}s."
+        )
+        if on_rate_limited:
+            on_rate_limited()
+    else:
+        message = f"HTTP {response.status_code} - {response.text[:300]}"
+        log(f"  [SoundCloud] Authentication error: {message}")
+        # Distinct from "no credentials" above - these ARE configured,
+        # they're just wrong/expired (e.g. a revoked client). Easy to
+        # miss buried in the log since it doesn't stop the scan.
+        if on_auth_error:
+            on_auth_error("SoundCloud", message)
+    return None
+
+
+def _request_soundcloud_token(client_id, client_secret, log):
+    """Raw client_credentials token request for one SoundCloud app - returns
+    the `requests.Response`, or None if the request itself errored out
+    (network issue etc., as opposed to an HTTP error status)."""
+    try:
+        credentials = f"{client_id}:{client_secret}"
+        encoded_credentials = base64.b64encode(credentials.encode()).decode()
+        return requests.post(
             "https://secure.soundcloud.com/oauth/token",
             headers={
                 "Authorization": f"Basic {encoded_credentials}",
@@ -3181,33 +3232,6 @@ def get_soundcloud_token(log=safe_print, on_rate_limited=None, on_auth_error=Non
             data={"grant_type": "client_credentials"},
             timeout=10,
         )
-
-        if response.status_code == 200:
-            payload = response.json()
-            _cached_soundcloud_token = payload.get("access_token")
-            _cached_token_expiry = time.time() + payload.get("expires_in", 3600)
-            save_setting("soundcloud_token", _cached_soundcloud_token)
-            save_setting("soundcloud_token_expiry", _cached_token_expiry)
-            return _cached_soundcloud_token
-
-        if response.status_code == 429:
-            _soundcloud_token_cooldown.trigger(SOUNDCLOUD_TOKEN_RATE_LIMIT_COOLDOWN_SECONDS)
-            log(
-                "  [SoundCloud] Rate limit reached (too many token requests) - pausing "
-                f"SoundCloud for {SOUNDCLOUD_TOKEN_RATE_LIMIT_COOLDOWN_SECONDS}s."
-            )
-            if on_rate_limited:
-                on_rate_limited()
-        else:
-            message = f"HTTP {response.status_code} - {response.text[:300]}"
-            log(f"  [SoundCloud] Authentication error: {message}")
-            # Distinct from "no credentials" above - these ARE configured,
-            # they're just wrong/expired (e.g. a revoked client). Easy to
-            # miss buried in the log since it doesn't stop the scan.
-            if on_auth_error:
-                on_auth_error("SoundCloud", message)
-        return None
-
     except Exception as error:
         log(f"  [SoundCloud] Error during authentication: {error}")
         return None
