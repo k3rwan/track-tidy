@@ -1936,63 +1936,71 @@ def search_cover_manual_with_tokens(
     )
 
 
-def _is_already_applied(file_name, has_cover, tags_already_present, current_cover_bytes):
+def _build_history_lookup():
     """
-    Whether a file already has both a cover AND clean tags - true exactly
-    when a previous Apply already ran on it (or it came pre-tagged from
-    somewhere else). A BANNED existing cover (see is_banned_cover_image/
-    effective_cover_bytes) disqualifies this even with clean tags - that
-    cover needs replacing, which needs a real online search, exactly like
-    write_tags() already treats a banned existing cover as no cover at all
-    when deciding whether to remove it. Shared by _prepare_scan (per-file,
-    during a scan already underway) and find_already_applied_files (a
-    cheap local-only precheck run BEFORE a scan starts, so interface.py
-    can ask the user whether to bother rescanning these at all) so the two
-    can never drift apart on what counts as "already applied".
+    Set of (absolute folder, new_file) pairs from every logged processing-
+    history entry (history.jsonl) - computed once per scan/precheck rather
+    than re-reading the whole file from disk once per track. Feeds
+    _is_already_applied()'s authoritative check.
+    """
+    lookup = set()
+    for entry in load_history_entries():
+        folder = entry.get("folder")
+        new_file = entry.get("new_file")
+        if folder and new_file:
+            lookup.add((os.path.abspath(folder), new_file))
+    return lookup
 
-    WAV is unconditionally excluded, on request - a WAV embedding a
-    perfectly real, legitimate cover + tags (e.g. downloaded pre-tagged
-    from a store) still needs its own online search: DJ software commonly
-    reads a WAV's metadata from the RIFF INFO chunk rather than the ID3
-    tags this app itself writes/reads, so a WAV's tags can't be trusted
-    the same way another format's can just because they're present -
-    always re-verified instead of skipped.
+
+def _is_already_applied(file_name, history_lookup):
     """
-    if file_name.lower().endswith(".wav"):
-        return False
-    return has_cover and tags_already_present and not is_banned_cover_image(current_cover_bytes)
+    Whether Track Tidy has actually applied this exact file before, per
+    the processing history log (history.jsonl, see _build_history_lookup)
+    - the authoritative signal, replacing an earlier guess based on the
+    file's current has_cover/tags state. That heuristic had real, repeated
+    false positives: a file downloaded pre-tagged from elsewhere
+    (Beatport, a DJ pool...) can have a real cover and complete tags
+    without ever having been searched/verified by this app at all -
+    including, in one real report, a track whose existing "complete-
+    looking" cover turned out to be a banned/generic placeholder. A
+    history entry means this exact file, at this exact location, actually
+    went through Apply before - nothing to infer.
+
+    Shared by _prepare_scan (per-file, during a scan already underway)
+    and find_already_applied_files (a precheck run BEFORE a scan starts,
+    so interface.py can ask the user whether to bother rescanning these
+    at all) so the two can never drift apart on what counts as "already
+    applied".
+    """
+    return (os.path.abspath(MUSIC_FOLDER), file_name) in history_lookup
 
 
 def find_already_applied_files(file_list):
     """
-    Local-only (no network) precheck: returns the subset of file_list that
-    already looks fully applied (see _is_already_applied) - meant to run
-    BEFORE a scan starts, so the caller can ask the user whether to
-    rescan those too or skip them entirely, without needing to run the
-    heavier _prepare_scan (mention detection, search-query computation)
-    just to find out.
+    Precheck: returns the subset of file_list Track Tidy has actually
+    applied before (see _is_already_applied) - meant to run BEFORE a scan
+    starts, so the caller can ask the user whether to rescan those too or
+    skip them entirely. Now purely a history.jsonl lookup, no per-file
+    tag reads needed at all.
     """
-    already_applied = []
-    for file_name in file_list:
-        full_path = os.path.join(MUSIC_FOLDER, file_name)
-        has_cover, current_artist, current_title, current_cover_bytes = read_current_info(full_path)
-        _detected_artist, _detected_title, tags_already_present = resolve_artist_title(
-            file_name, current_artist, current_title
-        )
-        if _is_already_applied(file_name, has_cover, tags_already_present, current_cover_bytes):
-            already_applied.append(file_name)
-    return already_applied
+    history_lookup = _build_history_lookup()
+    return [file_name for file_name in file_list if _is_already_applied(file_name, history_lookup)]
 
 
-def _prepare_scan(file_name, log=safe_print, on_new_mention=None):
+def _prepare_scan(file_name, log=safe_print, on_new_mention=None, history_lookup=None):
     """
     Local-only part of analyzing a file (no network): reads tags, resolves
     artist/title, and detects mentions. Returns a dict with everything
     needed to both run the cover search and build the final info dict -
     split out so scan_files() can prepare every file up front (cheap,
     sequential) and then search iTunes for all of them concurrently (see
-    ITUNES_SCAN_MAX_WORKERS below).
+    ITUNES_SCAN_MAX_WORKERS below). history_lookup: see _build_history_
+    lookup - built fresh here if not given (e.g. a caller other than
+    scan_files, which always passes its own already-loaded one).
     """
+    if history_lookup is None:
+        history_lookup = _build_history_lookup()
+
     full_path = os.path.join(MUSIC_FOLDER, file_name)
 
     # Detect a "By Fuvi Clan" mention and report it as a SUGGESTION only.
@@ -2048,7 +2056,7 @@ def _prepare_scan(file_name, log=safe_print, on_new_mention=None):
         # there (this is what "double scan" means in this codebase -
         # rescanning a folder that still has already-applied files sitting
         # in it).
-        "already_applied": _is_already_applied(file_name, has_cover, tags_already_present, current_cover_bytes),
+        "already_applied": _is_already_applied(file_name, history_lookup),
     }
 
 
@@ -2209,18 +2217,23 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
 
     # Phase 1: prepare every file (local-only: tags, filename parsing) -
     # fast, so should_cancel is checked cheaply between each one. Also
-    # decides right away which files already have a cover AND complete
-    # tags (see _prepare_scan's "already_applied") - those need no online
-    # search at all, so this is computed BEFORE authenticating with
-    # SoundCloud/Spotify below, to skip that too when nothing in this
-    # batch actually needs it (e.g. rescanning a folder that's already
-    # fully tagged from a previous Apply).
+    # decides right away which files Track Tidy has actually already
+    # applied before, per history.jsonl (see _prepare_scan's
+    # "already_applied") - those need no online search at all, so this is
+    # computed BEFORE authenticating with SoundCloud/Spotify below, to
+    # skip that too when nothing in this batch actually needs it (e.g.
+    # rescanning a folder that's already fully tagged from a previous
+    # Apply). history_lookup is loaded once here rather than once per
+    # file inside _prepare_scan.
+    history_lookup = _build_history_lookup()
     prepared_list = []
     for file_name in file_list:
         if should_cancel and should_cancel():
             log("  Scan cancelled.")
             return []
-        prepared_list.append(_prepare_scan(file_name, log=log, on_new_mention=on_new_mention))
+        prepared_list.append(
+            _prepare_scan(file_name, log=log, on_new_mention=on_new_mention, history_lookup=history_lookup)
+        )
 
     needs_search = any(not prepared["already_applied"] for prepared in prepared_list)
 
