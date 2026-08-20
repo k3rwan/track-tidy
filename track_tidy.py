@@ -3257,7 +3257,26 @@ def search_cover_soundcloud(artist, title, token, log=safe_print):
                 artist_names_match(title, track_title) or artist_names_match(title, uploader_name)
             ) and title_words_overlap(artist, track_title)
 
-            if not (artist_ok or swapped_ok):
+            # A remix upload often credits only the remixer, never
+            # repeating the original artist's name anywhere in its own
+            # title or the uploader's username - real report: SoundCloud
+            # upload titled just "MILLION DOLLAR BABY (YUMA REMIX)" by
+            # uploader "YUMA", searching for "TOMMY RICHMAN - Million
+            # Dollar Baby (YUMA Remix)" - "Tommy Richman" appears nowhere
+            # in either, so artist_ok/swapped_ok both fail despite this
+            # clearly being the right, correctly-covered upload. Accepted
+            # instead when the base title still overlaps AND the
+            # uploader's own username IS the specific remixer being
+            # searched for - a strong, narrow signal (only even checked
+            # when a named remix was actually asked for) that this is the
+            # remixer's own upload of exactly this remix.
+            remixer_upload_ok = (
+                bool(qualifier_words)
+                and title_words_overlap(title, track_title)
+                and bool(qualifier_words & significant_words(uploader_name))
+            )
+
+            if not (artist_ok or swapped_ok or remixer_upload_ok):
                 continue
 
             # Reject an unsolicited fan edit (see has_unsolicited_edit_marker) -
