@@ -3121,6 +3121,8 @@ def invalidate_soundcloud_token():
     global _cached_soundcloud_token, _cached_token_expiry
     _cached_soundcloud_token = None
     _cached_token_expiry = 0
+    save_setting("soundcloud_token", None)
+    save_setting("soundcloud_token_expiry", 0)
 
 
 # Unlike iTunes/Spotify, a 429 from SoundCloud's token endpoint carries no
@@ -3142,6 +3144,20 @@ def get_soundcloud_token(log=safe_print, on_rate_limited=None, on_auth_error=Non
 
     # Reuse the cached token if it's still valid (with a 60s safety margin)
     if _cached_soundcloud_token and time.time() < _cached_token_expiry - 60:
+        return _cached_soundcloud_token
+
+    # The in-memory cache above is lost on every app restart, which used to
+    # mean a brand new token (and a bite out of SoundCloud's tight 50/12h
+    # per-app, 30/hour per-IP token quota - see SOUNDCLOUD_TOKEN_RATE_LIMIT_COOLDOWN_SECONDS
+    # above) was requested every time the app launched, even if the previous
+    # token (usually valid ~1h) hadn't actually expired yet. Persisting it to
+    # settings.json lets a fresh process pick up where the last one left off.
+    persisted_settings = load_settings()
+    persisted_token = persisted_settings.get("soundcloud_token")
+    persisted_expiry = persisted_settings.get("soundcloud_token_expiry", 0)
+    if persisted_token and time.time() < persisted_expiry - 60:
+        _cached_soundcloud_token = persisted_token
+        _cached_token_expiry = persisted_expiry
         return _cached_soundcloud_token
 
     if _soundcloud_token_cooldown.active():
@@ -3170,6 +3186,8 @@ def get_soundcloud_token(log=safe_print, on_rate_limited=None, on_auth_error=Non
             payload = response.json()
             _cached_soundcloud_token = payload.get("access_token")
             _cached_token_expiry = time.time() + payload.get("expires_in", 3600)
+            save_setting("soundcloud_token", _cached_soundcloud_token)
+            save_setting("soundcloud_token_expiry", _cached_token_expiry)
             return _cached_soundcloud_token
 
         if response.status_code == 429:
