@@ -2320,6 +2320,16 @@ GENERIC_QUALIFIER_MODIFIER_RE = re.compile(
     r"\b(?:extended|radio)\s+(?=(?:remix|edit|mix|bootleg|reboot)\b)", re.IGNORECASE
 )
 
+# A short (<=6 char) parenthetical directly before the mix keyword - a
+# country/region disambiguator a store tacks onto the remixer's own name
+# (e.g. "Panna (BR) Remix", same "(BR)"/"(UK)" pattern split_artist_names()
+# already strips from a plain artist field - see there for why) rather
+# than a real part of the remix's name. Bounded short so an actual
+# multi-word subtitle in parens isn't mistaken for one.
+GROUP_DISAMBIGUATOR_RE = re.compile(
+    r"\s*\([^()]{1,6}\)\s+(?=(?:remix|edit|mix|bootleg|reboot)\b)", re.IGNORECASE
+)
+
 
 def strip_generic_qualifier_modifiers(text):
     """
@@ -2338,8 +2348,16 @@ def strip_generic_qualifier_modifiers(text):
     keyword, so it can't touch an actual name (e.g. "Extended" isn't
     dropped from "DJ Extended Vibes Remix" - it isn't immediately before
     "remix" there).
+
+    Also drops a short parenthetical disambiguator directly before the
+    keyword (see GROUP_DISAMBIGUATOR_RE) - e.g. "Panna (BR) Remix" ->
+    "Panna Remix", real report: "Malandra Jr. - Pam Pam (Panna Extended
+    Remix)" vs. Spotify's own "Pam Pam (Panna (BR) Remix)" for the
+    identical release.
     """
-    return GENERIC_QUALIFIER_MODIFIER_RE.sub("", text)
+    text = GENERIC_QUALIFIER_MODIFIER_RE.sub("", text)
+    text = GROUP_DISAMBIGUATOR_RE.sub(" ", text)
+    return text
 
 
 FEATURE_SUFFIX_RE = re.compile(r"\s*[\(\[](?:feat\.?|ft\.?|featuring)\s+([^)\]]*)[\)\]]\s*$", re.IGNORECASE)
@@ -2404,10 +2422,17 @@ def strip_all_trailing_groups(text):
     several stacked qualifiers like "Title (Subtitle) [feat. X] [Y Remix]" -
     returning (core_title, [group_1, group_2, ...]) with groups in the order
     they were stripped (rightmost/outermost first).
+
+    Tolerates ONE level of nesting inside a group (e.g. "(Panna (BR)
+    Remix)", a remixer credit with its own parenthetical disambiguator
+    baked in) - real report: without this, the whole group failed to
+    match at all (its content isn't parenthesis-free), silently leaving
+    the ENTIRE trailing text un-stripped instead of extracting it as one
+    group with nested content.
     """
     groups = []
     while True:
-        match = re.search(r"\s*[\(\[]([^()\[\]]*)[\)\]]\s*$", text)
+        match = re.search(r"\s*[\(\[]((?:[^()\[\]]|\([^()]*\)|\[[^\[\]]*\])*)[\)\]]\s*$", text)
         if not match:
             break
         groups.append(match.group(1).strip())
@@ -2462,6 +2487,7 @@ def loose_remix_match(expected_title, returned_title, expected_artist=None):
         return False
 
     def normalize_group(text):
+        text = strip_generic_qualifier_modifiers(text)
         return re.sub(r"\s+", " ", text.strip().lower())
 
     expected_set = {normalize_group(g) for g in expected_groups}
