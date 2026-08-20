@@ -1191,7 +1191,7 @@ class TaggerInterface:
 
         self.notebook.select(0)
         self._set_buttons_enabled(False)
-        self._run_in_background(self._run_scan)
+        self._launch_scan_after_already_applied_check()
 
     def _start_single_file_scan(self, file_path):
         """Drop of a single audio file: tag just that file, without scanning
@@ -1901,7 +1901,64 @@ class TaggerInterface:
 
         self._set_buttons_enabled(False)
 
-        self._run_in_background(self._run_scan)
+        self._launch_scan_after_already_applied_check()
+
+    def _launch_scan_after_already_applied_check(self, explicit_files=None):
+        """Runs right before every folder-level scan actually starts
+        (Scan button, drag-a-folder) - NOT the single-dropped-file case,
+        which has no "folder" to ask about. A cheap local-only precheck
+        (tag/cover reads only, no network - same cost class as
+        _choose_folder's own synchronous list_audio_files() call, so
+        blocking the main thread briefly here is consistent with existing
+        behavior) via tagger.find_already_applied_files() finds any file
+        this scan is about to touch that already looks fully applied (see
+        track_tidy.py's _is_already_applied). If there's at least one,
+        asks whether to rescan those too (unchanged behavior - they're
+        still skipped online, just re-added to the table) or skip them
+        entirely this time, before the real (network-calling) scan is
+        handed off to a background thread as usual."""
+        known_files = {info["file"] for info in self.scanned_plan}
+        if explicit_files is not None:
+            candidate_files = sorted(set(explicit_files) - known_files)
+        else:
+            candidate_files = sorted(set(tagger.list_audio_files()) - known_files)
+
+        already_applied_files = set(tagger.find_already_applied_files(candidate_files))
+
+        # Stays whatever the caller passed in (None for every current
+        # caller) unless the user actually chooses to filter something
+        # out below - passing None through to _run_scan lets IT recompute
+        # the file list itself, which is what also gets it to detect
+        # removed files (files gone from disk since the last scan of this
+        # folder - see _run_scan's own explicit_files handling). Passing
+        # an explicit list here, even one that's unfiltered, would
+        # silently lose that removed-file detection for no reason.
+        files_to_scan = explicit_files
+
+        if already_applied_files:
+            count = len(already_applied_files)
+            unit = "track" if count == 1 else "tracks"
+            rescan = messagebox.askyesno(
+                "Already-tagged tracks found",
+                f"{count} {unit} in this folder already look{'s' if count == 1 else ''} fully "
+                "tagged (a cover and complete Artist/Title already there - from a previous "
+                "Apply, or tagged elsewhere already).\n\n"
+                "Rescan them too? Either way they won't be searched online again - choosing "
+                "\"No\" just skips adding them to the list at all this time.",
+                parent=self.window,
+            )
+            if not rescan:
+                files_to_scan = [f for f in candidate_files if f not in already_applied_files]
+                if not files_to_scan:
+                    self._set_buttons_enabled(True)
+                    messagebox.showinfo(
+                        "Nothing to scan",
+                        "Every track in this folder is already tagged - nothing left to scan.",
+                        parent=self.window,
+                    )
+                    return
+
+        self._run_in_background(self._run_scan, files_to_scan)
 
     def _run_scan(self, explicit_files=None):
         number_before = len(self.scanned_plan)
