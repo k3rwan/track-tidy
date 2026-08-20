@@ -1167,12 +1167,12 @@ class TaggerInterface:
         if not raw_paths:
             return
 
-        first_path = os.path.normpath(raw_paths[0].strip("{}"))
+        paths = [os.path.normpath(p.strip("{}")) for p in raw_paths]
 
-        if os.path.isdir(first_path):
-            self._start_dropped_folder_scan(first_path)
+        if os.path.isdir(paths[0]):
+            self._start_dropped_folder_scan(paths[0])
         else:
-            self._start_single_file_scan(first_path)
+            self._start_multi_file_scan(paths)
 
     def _start_dropped_folder_scan(self, folder):
         """Drop of a folder: scans it fully, WITHOUT touching the visible
@@ -1197,28 +1197,47 @@ class TaggerInterface:
         self._set_buttons_enabled(False)
         self._launch_scan_after_already_applied_check()
 
-    def _start_single_file_scan(self, file_path):
-        """Drop of a single audio file: tag just that file, without scanning
-        everything else that happens to sit in the same folder."""
-        if not os.path.isfile(file_path):
-            return
-        if not file_path.lower().endswith(tagger.SUPPORTED_EXTENSIONS):
-            return
-        if (
-            not tagger.AUTO_CONVERT_MP3
-            and not file_path.lower().endswith((".mp3", ".wav", ".aiff", ".aif"))
-        ):
-            self._append_to_journal(
-                f"Ignored '{os.path.basename(file_path)}' - only MP3/WAV/AIFF can be tagged "
-                "without converting (Settings > Convert everything to MP3)."
-            )
+    def _start_multi_file_scan(self, file_paths):
+        """Drop of one or more individual audio files: tags just those
+        files, without scanning everything else that happens to sit in
+        the same folder. All dropped files are expected to share ONE
+        parent folder (the normal case - multi-selecting tracks in one
+        Explorer window and dragging them together), since tagger.
+        MUSIC_FOLDER/scanned_plan's relative paths only support a single
+        folder at a time - one dropped from a different folder than the
+        first valid file is skipped (logged, not silently mixed in or
+        left to collide with a same-named file)."""
+        valid_paths = [
+            path for path in file_paths
+            if os.path.isfile(path) and path.lower().endswith(tagger.SUPPORTED_EXTENSIONS)
+        ]
+        if not valid_paths:
             return
 
-        folder = os.path.dirname(file_path)
-        relative_name = os.path.basename(file_path)
+        folder = os.path.dirname(valid_paths[0])
+        relative_names = []
+        for path in valid_paths:
+            if os.path.dirname(path) != folder:
+                self._append_to_journal(
+                    f"Ignored '{os.path.basename(path)}' - dropped from a different folder than the rest."
+                )
+                continue
+            if (
+                not tagger.AUTO_CONVERT_MP3
+                and not path.lower().endswith((".mp3", ".wav", ".aiff", ".aif"))
+            ):
+                self._append_to_journal(
+                    f"Ignored '{os.path.basename(path)}' - only MP3/WAV/AIFF can be tagged "
+                    "without converting (Settings > Convert everything to MP3)."
+                )
+                continue
+            relative_name = os.path.basename(path)
+            if any(info["file"] == relative_name for info in self.scanned_plan):
+                continue  # already in the table
+            relative_names.append(relative_name)
 
-        if any(info["file"] == relative_name for info in self.scanned_plan):
-            return  # already in the table
+        if not relative_names:
+            return
 
         tagger.MUSIC_FOLDER = folder
         self.last_scanned_folder = folder
@@ -1227,7 +1246,7 @@ class TaggerInterface:
         self.notebook.select(0)
         self._set_buttons_enabled(False)
         self._show_scan_progress_bar()
-        self._run_in_background(self._run_scan, [relative_name])
+        self._run_in_background(self._run_scan, relative_names)
 
     # --- UI construction ---
 
