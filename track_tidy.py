@@ -51,6 +51,7 @@ import time
 import json
 import base64
 import subprocess
+import threading
 import unicodedata
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
@@ -2514,6 +2515,28 @@ def build_search_query(artist, title):
 ITUNES_RATE_LIMIT_COOLDOWN_SECONDS = 30
 _itunes_rate_limited_until = 0
 
+# Paces every iTunes request (across both concurrent workers - see
+# ITUNES_SCAN_MAX_WORKERS) to stay under iTunes' real, undocumented
+# per-IP limit instead of just reacting after the fact with the 30s
+# cooldown above. Before this, 2 workers firing back-to-back requests
+# (each track can trigger more than one search - normal + remix retry +
+# AcoustID-corrected retry) could burn through the limit within the
+# first several files of a scan, tripping ITUNES_RATE_LIMIT_COOLDOWN and
+# losing iTunes for everything after. 1.5s apart keeps every request
+# under ~40/min, which real scans no longer trip.
+ITUNES_MIN_REQUEST_INTERVAL_SECONDS = 1.5
+_itunes_throttle_lock = threading.Lock()
+_itunes_last_request_time = 0.0
+
+
+def _itunes_throttle():
+    global _itunes_last_request_time
+    with _itunes_throttle_lock:
+        wait_seconds = _itunes_last_request_time + ITUNES_MIN_REQUEST_INTERVAL_SECONDS - time.time()
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
+        _itunes_last_request_time = time.time()
+
 
 # iTunes' fixed "various artists" credit on a compilation's collection, in
 # whichever storefront locale search_cover_itunes() queries (hardcoded to
@@ -2549,6 +2572,7 @@ def search_cover_itunes(artist, title, log=safe_print, max_retries=2, allow_loos
 
     try:
         for attempt in range(max_retries + 1):
+            _itunes_throttle()
             response = requests.get(
                 "https://itunes.apple.com/search",
                 # Without an explicit country, the API defaults to the US store,
