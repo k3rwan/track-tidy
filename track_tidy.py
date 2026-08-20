@@ -2407,11 +2407,16 @@ def exact_match(text_a, text_b):
     (a space right after an abbreviating period) as the same - a store's
     listing and a filename/tag frequently disagree on that one space alone
     (e.g. "Pt. III" vs "Pt.III", "Vol. 2" vs "Vol.2"), which would otherwise
-    reject an exact release over pure punctuation.
+    reject an exact release over pure punctuation. Trailing "!"/"?" are
+    dropped too - real report: our title "What" vs. Spotify's own "WHAT!" -
+    a store stylizing a title with emphasis punctuation our own filename/
+    tags never bothered to include is a stylistic difference, not a
+    different song.
     """
     def normalize(text):
         text = re.sub(r"\s+", " ", text.strip().lower())
         text = re.sub(r"\.\s+", ".", text)
+        text = re.sub(r"[!?]+$", "", text).strip()
         return strip_accents(text)
     return normalize(text_a) == normalize(text_b)
 
