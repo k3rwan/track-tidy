@@ -2036,16 +2036,24 @@ def _prepare_scan(file_name, log=safe_print, on_new_mention=None, history_lookup
             on_new_mention(mention)
 
     search_title = remix_qualified_title = None
-    if detected_artist and detected_title:
+    if detected_title:
         search_title, remix_qualified_title = compute_search_titles(detected_title)
-    elif not detected_artist:
-        # scan_files() skips iTunes/Spotify/SoundCloud entirely without an
-        # artist to search with (see search_title being left None) -
-        # without this line that skip was completely silent, leaving no
-        # trace of why the file ended up with no cover.
+    if not detected_artist:
+        # scan_files() skips iTunes/Spotify entirely without an artist to
+        # search with - artist_sets_match() treats a blank expected artist
+        # as trivially matching anything (an empty set is a subset of any
+        # set), so searching those with no artist risks a confidently wrong
+        # match. SoundCloud is still tried by title alone (see has_search_
+        # title in scan_files) - its own match validation
+        # (search_cover_soundcloud's artist_ok/swapped_ok/remixer_upload_ok)
+        # never trivially passes on a blank artist, so it's safe. Real
+        # report: "KIDS MGMT (KASSIN Remix) Final.wav" - no " - " separator
+        # for parse_filename to split on, so this was skipping SoundCloud
+        # too and losing a cover ("MGMT - KIDS (KASSIN Remix)") that a
+        # direct title-only SoundCloud search finds without trouble.
         log(
             "  No artist could be determined from the filename or tags - skipping "
-            "iTunes/SoundCloud search (correct the Artist/Title and search again)."
+            "iTunes/Spotify search (correct the Artist/Title and search again for those)."
         )
 
     return {
@@ -2320,6 +2328,11 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
             match_result = None
             cover_source = None
             has_query = prepared["detected_artist"] and prepared["search_title"]
+            # SoundCloud alone can still be searched with no artist at all
+            # (see _prepare_scan) - its own match validation never trivially
+            # accepts a blank artist, unlike iTunes/Spotify's has_query gate
+            # above.
+            has_search_title = bool(prepared["search_title"])
 
             future = itunes_futures.get(file_name)
             if future:
@@ -2333,7 +2346,7 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
                 )
 
             if (
-                not match_result and has_query
+                not match_result and has_search_title
                 and USE_SOUNDCLOUD and not SOUNDCLOUD_RATE_LIMITED and not SOUNDCLOUD_UNAVAILABLE
             ):
                 match_result, cover_source = _search_one_source(
