@@ -1940,6 +1940,15 @@ def _prepare_scan(file_name, log=safe_print, on_new_mention=None):
         "search_title": search_title,
         "remix_qualified_title": remix_qualified_title,
         "acoustid_identified": False,  # set to True in place by _try_acoustid_correction, if it runs
+        # A file already has both a cover AND clean tags exactly when a
+        # previous Apply already ran on it (or it came pre-tagged from
+        # somewhere else) - either way there's nothing a fresh online
+        # search could improve, so scan_files() skips iTunes/Spotify/
+        # SoundCloud/AcoustID entirely for it instead of re-spending quota
+        # re-confirming what's already there (this is what "double scan"
+        # means in this codebase - rescanning a folder that still has
+        # already-applied files sitting in it).
+        "already_applied": has_cover and tags_already_present,
     }
 
 
@@ -2088,10 +2097,29 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
     if not file_list:
         return []
 
+    # Phase 1: prepare every file (local-only: tags, filename parsing) -
+    # fast, so should_cancel is checked cheaply between each one. Also
+    # decides right away which files already have a cover AND complete
+    # tags (see _prepare_scan's "already_applied") - those need no online
+    # search at all, so this is computed BEFORE authenticating with
+    # SoundCloud/Spotify below, to skip that too when nothing in this
+    # batch actually needs it (e.g. rescanning a folder that's already
+    # fully tagged from a previous Apply).
+    prepared_list = []
+    for file_name in file_list:
+        if should_cancel and should_cancel():
+            log("  Scan cancelled.")
+            return []
+        prepared_list.append(_prepare_scan(file_name, log=log, on_new_mention=on_new_mention))
+
+    needs_search = any(not prepared["already_applied"] for prepared in prepared_list)
+
     if not USE_SOUNDCLOUD:
         # Disabled in Settings - don't even try to authenticate.
         log("  [SoundCloud] Disabled in Settings - skipping SoundCloud for this scan.")
         SOUNDCLOUD_UNAVAILABLE = True
+        soundcloud_token = None
+    elif not needs_search:
         soundcloud_token = None
     elif not SOUNDCLOUD_CLIENT_ID or not SOUNDCLOUD_CLIENT_SECRET:
         # No point even trying to authenticate - skip SoundCloud entirely for
@@ -2109,25 +2137,20 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
         soundcloud_token = get_soundcloud_token(log=log, on_rate_limited=_mark_rate_limited, on_auth_error=on_auth_error)
 
     spotify_token = None
-    if USE_SPOTIFY and SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
+    if not needs_search:
+        pass
+    elif USE_SPOTIFY and SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
         spotify_token = get_spotify_token(log=log, on_auth_error=on_auth_error)
     elif USE_SPOTIFY:
         log("  [Spotify] No credentials configured - skipping Spotify for this scan.")
 
-    # Phase 1: prepare every file (local-only: tags, filename parsing) -
-    # fast, so should_cancel is checked cheaply between each one.
-    prepared_list = []
-    for file_name in file_list:
-        if should_cancel and should_cancel():
-            log("  Scan cancelled.")
-            return []
-        prepared_list.append(_prepare_scan(file_name, log=log, on_new_mention=on_new_mention))
-
     # Phase 2: search iTunes for every file concurrently (bounded), if enabled.
     itunes_futures = {}
-    executor = ThreadPoolExecutor(max_workers=ITUNES_SCAN_MAX_WORKERS) if USE_ITUNES else None
+    executor = ThreadPoolExecutor(max_workers=ITUNES_SCAN_MAX_WORKERS) if USE_ITUNES and needs_search else None
     if executor:
         for prepared in prepared_list:
+            if prepared["already_applied"]:
+                continue
             if prepared["detected_artist"] and prepared["search_title"]:
                 itunes_futures[prepared["file_name"]] = executor.submit(
                     _search_one_source,
@@ -2150,6 +2173,15 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
                 break
 
             file_name = prepared["file_name"]
+
+            if prepared["already_applied"]:
+                log(f"  '{file_name}' already has a cover and tags - skipping online search.")
+                info = _finish_scan(prepared, None, None, log)
+                results.append(info)
+                if on_file_scanned:
+                    on_file_scanned(info)
+                continue
+
             match_result = None
             cover_source = None
             has_query = prepared["detected_artist"] and prepared["search_title"]
