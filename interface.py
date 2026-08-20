@@ -274,14 +274,8 @@ class TaggerInterface:
         self._drag_row_id = None  # row being dragged to reorder, if any
         self._drag_moved = False
         self._table_font = tkfont.nametofont("TkDefaultFont")
-        self.soundcloud_rate_limit_warned = False
-        self.itunes_rate_limit_warned = False
-        self.spotify_rate_limit_warned = False
-        self.acoustid_rate_limit_warned = False
-        self.source_auth_error_warned = {}  # "SoundCloud" -> already warned this scan
+        self._reset_scan_run_state()
         self.mention_counts = {}  # raw mention text -> number of times seen
-        self._pending_scan_reveals = []  # (info, scanned_count, total) queued for _reveal_next_scan_row
-        self._pending_scan_done = None  # (removed_files, number_before), held until reveals catch up
 
         self._native_theme = ttk.Style().theme_use()  # so "light" can restore it later
         self.theme_colors = None  # None while light/native; DARK_COLORS once dark is applied
@@ -1176,13 +1170,7 @@ class TaggerInterface:
 
         tagger.MUSIC_FOLDER = folder
         self._sync_mentions_to_remove()
-        self.soundcloud_rate_limit_warned = False
-        self.itunes_rate_limit_warned = False
-        self.spotify_rate_limit_warned = False
-        self.acoustid_rate_limit_warned = False
-        self.source_auth_error_warned = {}
-        self._pending_scan_reveals = []
-        self._pending_scan_done = None
+        self._reset_scan_run_state()
 
         if folder != getattr(self, "last_scanned_folder", None):
             for row in self.table.get_children():
@@ -1222,13 +1210,7 @@ class TaggerInterface:
 
         tagger.MUSIC_FOLDER = folder
         self.last_scanned_folder = folder
-        self.soundcloud_rate_limit_warned = False
-        self.itunes_rate_limit_warned = False
-        self.spotify_rate_limit_warned = False
-        self.acoustid_rate_limit_warned = False
-        self.source_auth_error_warned = {}
-        self._pending_scan_reveals = []
-        self._pending_scan_done = None
+        self._reset_scan_run_state()
 
         self.notebook.select(0)
         self._set_buttons_enabled(False)
@@ -1849,6 +1831,22 @@ class TaggerInterface:
 
         self._adjust_window_height()
 
+    def _reset_scan_run_state(self):
+        """Resets everything that must start fresh for a new scan run
+        (Scan button, drag-a-folder, drag-a-single-file) - each "warned"
+        flag gates its rate-limit popup to once per scan (see the
+        matching message-loop handlers), and the pending-reveal state
+        feeds _reveal_next_scan_row(). Factored out since all 3 call
+        sites (plus __init__, for the very first scan) need the exact
+        same reset and had drifted into 4 hand-copied blocks."""
+        self.soundcloud_rate_limit_warned = False
+        self.itunes_rate_limit_warned = False
+        self.spotify_rate_limit_warned = False
+        self.acoustid_rate_limit_warned = False
+        self.source_auth_error_warned = {}  # "SoundCloud" -> already warned this scan
+        self._pending_scan_reveals = []  # (info, scanned_count, total) queued for _reveal_next_scan_row
+        self._pending_scan_done = None  # (removed_files, number_before), held until reveals catch up
+
     def _update_apply_button_label(self):
         """Shows how many of the scanned tracks are currently checked to be applied."""
         checked = sum(1 for info in self.scanned_plan if info.get("apply_changes"))
@@ -1900,13 +1898,7 @@ class TaggerInterface:
 
         tagger.MUSIC_FOLDER = folder
         self._sync_mentions_to_remove()
-        self.soundcloud_rate_limit_warned = False
-        self.itunes_rate_limit_warned = False
-        self.spotify_rate_limit_warned = False
-        self.acoustid_rate_limit_warned = False
-        self.source_auth_error_warned = {}
-        self._pending_scan_reveals = []
-        self._pending_scan_done = None
+        self._reset_scan_run_state()
 
         if folder != getattr(self, "last_scanned_folder", None):
             for row in self.table.get_children():
