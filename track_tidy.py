@@ -2520,15 +2520,18 @@ def exact_match(text_a, text_b):
     (a space right after an abbreviating period) as the same - a store's
     listing and a filename/tag frequently disagree on that one space alone
     (e.g. "Pt. III" vs "Pt.III", "Vol. 2" vs "Vol.2"), which would otherwise
-    reject an exact release over pure punctuation. Trailing "!"/"?" are
-    dropped too - real report: our title "What" vs. Spotify's own "WHAT!" -
-    a store stylizing a title with emphasis punctuation our own filename/
-    tags never bothered to include is a stylistic difference, not a
-    different song.
+    reject an exact release over pure punctuation. Same treatment for a
+    space right after a comma (e.g. "1,2,3,4" vs "1, 2, 3, 4") - real
+    report: a numbered-title track rejected purely over that one space per
+    comma. Trailing "!"/"?" are dropped too - real report: our title "What"
+    vs. Spotify's own "WHAT!" - a store stylizing a title with emphasis
+    punctuation our own filename/tags never bothered to include is a
+    stylistic difference, not a different song.
     """
     def normalize(text):
         text = re.sub(r"\s+", " ", text.strip().lower())
         text = re.sub(r"\.\s+", ".", text)
+        text = re.sub(r",\s+", ",", text)
         text = re.sub(r"[!?]+$", "", text).strip()
         return strip_accents(text)
     return normalize(text_a) == normalize(text_b)
@@ -2710,6 +2713,14 @@ def split_artist_names(text):
         # SOMMERS" (filename) vs. Spotify's own "Moeaike, SOMMERS (UK)".
         part = re.sub(r"\s*\([^()]*\)\s*$", "", part)
         normalized = strip_accents(strip_sanitized_chars(part.strip().lower()))
+        # A trailing period on an abbreviation-style name (e.g. "D.O.D.")
+        # is sometimes dropped by a store ("D.O.D") - real report:
+        # "Cesar De Melero, D.O.D." (filename) vs. iTunes's own "Cesar de
+        # Melero & D.O.D", rejected purely over that one trailing period.
+        # significant_words() also can't bridge this via the fuzzy
+        # fallback below: an abbreviation like "d.o.d" splits into single-
+        # character words, all below its 3-char significance threshold.
+        normalized = normalized.rstrip(".")
         if not normalized:
             continue
         # A band's own name is sometimes credited with a leading "The" and
