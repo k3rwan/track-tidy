@@ -3384,6 +3384,26 @@ def search_cover_soundcloud(artist, title, token, log=safe_print):
             if not (artist_ok or swapped_ok or remixer_upload_ok):
                 continue
 
+            # artist_names_match() above only requires ONE of several expected
+            # artists to show up (loose, to tolerate a store crediting a
+            # featured artist differently) - fine for a single-artist search,
+            # but for a multi-artist one it let a DIFFERENT, unrelated release
+            # by just one of the expected artists win over the real match.
+            # Real report: searching "Toman, Bad Bunny - Verano En NY
+            # (Extended Mix)" matched a SoundCloud upload titled just "Toman -
+            # Verano En NY (Extended Mix) [Solid Grooves]" (Toman's own solo
+            # original, wrong cover) instead of falling through to the actual
+            # Toman+Bad Bunny mashup further down the results, because "Toman"
+            # alone was enough to satisfy artist_ok. Skipped for
+            # remixer_upload_ok (see its own docstring - the original
+            # artist(s) are expected to be absent there on purpose).
+            if (artist_ok or swapped_ok) and not remixer_upload_ok:
+                expected_artist_names = split_artist_names(artist)
+                if len(expected_artist_names) > 1:
+                    candidate_words = significant_words(f"{track_title} {uploader_name}")
+                    if any(not (significant_words(name) & candidate_words) for name in expected_artist_names):
+                        continue
+
             # Reject an unsolicited fan edit (see has_unsolicited_edit_marker) -
             # unless we actually asked for one ourselves, in which case it's
             # not "unsolicited" at all.
