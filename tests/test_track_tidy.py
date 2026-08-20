@@ -1023,8 +1023,8 @@ class ListAudioFilesTests(unittest.TestCase):
 
 
 class ScanFilesParallelITunesTests(unittest.TestCase):
-    """scan_files() searches iTunes for every file concurrently (bounded by
-    ITUNES_SCAN_MAX_WORKERS), while SoundCloud stays sequential."""
+    """scan_files() searches every source (iTunes included) strictly
+    sequentially, one file at a time - no concurrency anywhere."""
 
     def setUp(self):
         self._original_music_folder = tagger.MUSIC_FOLDER
@@ -1066,7 +1066,7 @@ class ScanFilesParallelITunesTests(unittest.TestCase):
         tagger.get_soundcloud_token = self._original_get_soundcloud_token
         self._tmp_dir.cleanup()
 
-    def test_itunes_searches_run_concurrently(self):
+    def test_itunes_searches_run_sequentially(self):
         active = {"count": 0, "max": 0}
         lock = threading.Lock()
 
@@ -1074,7 +1074,7 @@ class ScanFilesParallelITunesTests(unittest.TestCase):
             with lock:
                 active["count"] += 1
                 active["max"] = max(active["max"], active["count"])
-            time.sleep(0.05)  # hold the "slot" briefly so overlap is observable
+            time.sleep(0.05)  # would overlap with a concurrent caller, if there were one
             with lock:
                 active["count"] -= 1
             return (b"cover", artist, title)
@@ -1085,8 +1085,7 @@ class ScanFilesParallelITunesTests(unittest.TestCase):
 
         self.assertEqual(len(results), len(self.file_names))
         self.assertTrue(all(info["cover_source"] == "iTunes" for info in results))
-        self.assertGreater(active["max"], 1, "expected genuine concurrency across files")
-        self.assertLessEqual(active["max"], tagger.ITUNES_SCAN_MAX_WORKERS)
+        self.assertEqual(active["max"], 1, "expected no concurrency across files")
 
     def test_falls_back_to_soundcloud_when_itunes_misses(self):
         tagger.search_cover_itunes = lambda artist, title, log=None, **kwargs: None
