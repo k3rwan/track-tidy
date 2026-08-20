@@ -959,6 +959,23 @@ def clean_title(text):
             break
         text = stripped
 
+    # "X Extended Remix" -> "X Remix": on request, a droppable modifier
+    # rather than a distinct version - written to the title itself now,
+    # not just used for cover-search comparison (see
+    # strip_generic_qualifier_modifiers, defined further down but callable
+    # here since Python resolves this at call time, not definition order).
+    # Only applied inside a NAMED qualifier group (is_named_remix_qualifier)
+    # - a purely generic bare "(Extended Mix)" is a real, complete label on
+    # its own and must be left alone; blindly stripping "Extended" from
+    # ANY group would otherwise mangle it into the nonsensical "(Mix)".
+    def _strip_extended_in_named_group(match):
+        content = match.group(1)
+        if is_named_remix_qualifier(content):
+            return f"({strip_generic_qualifier_modifiers(content)})"
+        return match.group(0)
+
+    text = re.sub(r"\(([^()]*)\)", _strip_extended_in_named_group, text)
+
     return text.strip()
 
 
