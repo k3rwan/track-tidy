@@ -3677,6 +3677,27 @@ def effective_cover_bytes(info):
     return current_cover_bytes
 
 
+def has_usable_cover(info):
+    """
+    Whether this row currently has a legitimate cover - either a freshly
+    found one, or an existing one that isn't a banned/generic placeholder -
+    regardless of apply_changes (unchecked). Unlike effective_cover_bytes()
+    (which answers "what will actually be WRITTEN", and for that reason
+    skips the banned-cover check entirely once apply_changes is False,
+    since nothing is being touched), this is for deciding whether a row
+    still needs cover-search attention. Real report: unchecking a "no
+    cover match" row whose existing cover happened to be a banned
+    placeholder made effective_cover_bytes() return that placeholder's raw
+    bytes (truthy) and wrongly disappear from the "Only show tracks with
+    no cover match" filter.
+    """
+    if info.get("found_cover_image"):
+        return True
+    if not info.get("has_cover"):
+        return False
+    return not (detect_fuviclan_mention(info.get("file", "")) or is_banned_cover_image(info.get("current_cover_bytes")))
+
+
 def _write_wav_riff_info(file_path, artist, title, update_artist, update_title, log=safe_print):
     """
     Writes title/artist into a WAV's RIFF "LIST INFO" chunk (INAM/IART) via
