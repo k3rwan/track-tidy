@@ -2886,6 +2886,32 @@ class _SourceCooldown:
         self.until = time.time() + cooldown_seconds
 
 
+class _SourceThrottle:
+    """
+    Enforces a minimum interval between consecutive requests to one API
+    endpoint - shared by every source with its own proactive per-request
+    pacing (iTunes, Spotify, SoundCloud, AcoustID). These were four
+    separately hand-copied instances of the exact same "lock + last-
+    request timestamp + sleep the difference" pattern, one added at a time
+    as each source's own "rate limited too often" report came in -
+    consolidated here instead of leaving a fifth near-copy for the next
+    one. Callable directly (like the plain functions it replaces) so every
+    call site stays unchanged.
+    """
+
+    def __init__(self, min_interval_seconds):
+        self.min_interval_seconds = min_interval_seconds
+        self.lock = threading.Lock()
+        self.last_request_time = 0.0
+
+    def __call__(self):
+        with self.lock:
+            wait_seconds = self.last_request_time + self.min_interval_seconds - time.time()
+            if wait_seconds > 0:
+                time.sleep(wait_seconds)
+            self.last_request_time = time.time()
+
+
 def build_search_query(artist, title):
     """
     Builds a search term from artist+title, replacing punctuation (commas,
@@ -2934,17 +2960,7 @@ _itunes_cooldown = _SourceCooldown()
 # ITUNES_RATE_LIMIT_COOLDOWN and losing iTunes for everything after. 1.5s
 # apart keeps every request under ~40/min, which real scans no longer trip.
 ITUNES_MIN_REQUEST_INTERVAL_SECONDS = 1.5
-_itunes_throttle_lock = threading.Lock()
-_itunes_last_request_time = 0.0
-
-
-def _itunes_throttle():
-    global _itunes_last_request_time
-    with _itunes_throttle_lock:
-        wait_seconds = _itunes_last_request_time + ITUNES_MIN_REQUEST_INTERVAL_SECONDS - time.time()
-        if wait_seconds > 0:
-            time.sleep(wait_seconds)
-        _itunes_last_request_time = time.time()
+_itunes_throttle = _SourceThrottle(ITUNES_MIN_REQUEST_INTERVAL_SECONDS)
 
 
 # iTunes' fixed "various artists" credit on a compilation's collection, in
@@ -3301,17 +3317,7 @@ def looks_like_mix_variant(text):
 # matching the other two, to stay under SoundCloud's real per-app limit
 # instead of only reacting after a 429 already happened.
 SOUNDCLOUD_MIN_REQUEST_INTERVAL_SECONDS = 1.5
-_soundcloud_throttle_lock = threading.Lock()
-_soundcloud_last_request_time = 0.0
-
-
-def _soundcloud_throttle():
-    global _soundcloud_last_request_time
-    with _soundcloud_throttle_lock:
-        wait_seconds = _soundcloud_last_request_time + SOUNDCLOUD_MIN_REQUEST_INTERVAL_SECONDS - time.time()
-        if wait_seconds > 0:
-            time.sleep(wait_seconds)
-        _soundcloud_last_request_time = time.time()
+_soundcloud_throttle = _SourceThrottle(SOUNDCLOUD_MIN_REQUEST_INTERVAL_SECONDS)
 
 
 def search_cover_soundcloud(artist, title, token, log=safe_print):
@@ -3578,17 +3584,7 @@ _spotify_search_cooldown = _SourceCooldown()
 # re-guessing a new number, since that pacing already stopped the
 # identical problem there.
 SPOTIFY_MIN_REQUEST_INTERVAL_SECONDS = 1.5
-_spotify_throttle_lock = threading.Lock()
-_spotify_last_request_time = 0.0
-
-
-def _spotify_throttle():
-    global _spotify_last_request_time
-    with _spotify_throttle_lock:
-        wait_seconds = _spotify_last_request_time + SPOTIFY_MIN_REQUEST_INTERVAL_SECONDS - time.time()
-        if wait_seconds > 0:
-            time.sleep(wait_seconds)
-        _spotify_last_request_time = time.time()
+_spotify_throttle = _SourceThrottle(SPOTIFY_MIN_REQUEST_INTERVAL_SECONDS)
 
 
 def _search_cover_spotify_query(query, artist, title, token, log, allow_loose_remix_match=False, on_rate_limited=None):
@@ -3798,17 +3794,7 @@ _acoustid_cooldown = _SourceCooldown()
 # a big scan can fire many of these back-to-back with no pacing before
 # now. 1.5s apart, matching the other three.
 ACOUSTID_MIN_REQUEST_INTERVAL_SECONDS = 1.5
-_acoustid_throttle_lock = threading.Lock()
-_acoustid_last_request_time = 0.0
-
-
-def _acoustid_throttle():
-    global _acoustid_last_request_time
-    with _acoustid_throttle_lock:
-        wait_seconds = _acoustid_last_request_time + ACOUSTID_MIN_REQUEST_INTERVAL_SECONDS - time.time()
-        if wait_seconds > 0:
-            time.sleep(wait_seconds)
-        _acoustid_last_request_time = time.time()
+_acoustid_throttle = _SourceThrottle(ACOUSTID_MIN_REQUEST_INTERVAL_SECONDS)
 
 
 def identify_via_acoustid(file_path, log=safe_print, on_rate_limited=None):
