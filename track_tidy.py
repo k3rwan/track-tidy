@@ -2777,6 +2777,30 @@ def fix_swapped_artist_title(detected_artist, detected_title, returned_artist, r
 # 9. COVER SEARCH - ITUNES
 # ============================================================================
 
+class _SourceCooldown:
+    """
+    Tracks "skip this source until timestamp X" for a rate-limited API
+    endpoint - shared by every source that can hit a 429/quota-exceeded
+    error mid-scan and needs to stop retrying it for the rest of THIS scan
+    instead of hammering it again, one wasted request at a time, on every
+    remaining file (iTunes, Spotify's token AND search endpoints,
+    SoundCloud's token endpoint, AcoustID). These were five separately
+    hand-copied instances of the exact same "module-level 'until'
+    timestamp + check-before-request + set-on-429" pattern, one added at a
+    time as each source's own rate-limit handling was built - consolidated
+    here instead of leaving a sixth near-copy for the next one.
+    """
+
+    def __init__(self):
+        self.until = 0
+
+    def active(self):
+        return time.time() < self.until
+
+    def trigger(self, cooldown_seconds):
+        self.until = time.time() + cooldown_seconds
+
+
 def build_search_query(artist, title):
     """
     Builds a search term from artist+title, replacing punctuation (commas,
@@ -2801,7 +2825,7 @@ def build_search_query(artist, title):
 # more doomed requests - they fall through to SoundCloud/AcoustID
 # immediately, same as if iTunes just wasn't enabled for those files.
 ITUNES_RATE_LIMIT_COOLDOWN_SECONDS = 30
-_itunes_rate_limited_until = 0
+_itunes_cooldown = _SourceCooldown()
 
 # Paces every iTunes request (across both concurrent workers - see
 # ITUNES_SCAN_MAX_WORKERS) to stay under iTunes' real, undocumented
@@ -2861,9 +2885,7 @@ def search_cover_itunes(artist, title, log=safe_print, max_retries=2, allow_loos
     remix-qualified retry, not the default search, since it's a narrower
     but still real risk of a false positive.
     """
-    global _itunes_rate_limited_until
-
-    if time.time() < _itunes_rate_limited_until:
+    if _itunes_cooldown.active():
         log("  [iTunes] Still rate limited from earlier in this scan - skipping.")
         return None
 
@@ -2896,7 +2918,7 @@ def search_cover_itunes(artist, title, log=safe_print, max_retries=2, allow_loos
             break
 
         if response.status_code == 429:
-            _itunes_rate_limited_until = time.time() + ITUNES_RATE_LIMIT_COOLDOWN_SECONDS
+            _itunes_cooldown.trigger(ITUNES_RATE_LIMIT_COOLDOWN_SECONDS)
             log(
                 f"  [iTunes] Still rate limited after {max_retries} retries - pausing iTunes for "
                 f"{ITUNES_RATE_LIMIT_COOLDOWN_SECONDS}s for the rest of this scan."
@@ -3029,17 +3051,17 @@ def invalidate_soundcloud_token():
 # scan/health-check would immediately retry the token endpoint and could
 # keep extending the block instead of letting it clear.
 SOUNDCLOUD_TOKEN_RATE_LIMIT_COOLDOWN_SECONDS = 300
-_soundcloud_token_rate_limited_until = 0
+_soundcloud_token_cooldown = _SourceCooldown()
 
 
 def get_soundcloud_token(log=safe_print, on_rate_limited=None, on_auth_error=None):
-    global _cached_soundcloud_token, _cached_token_expiry, _soundcloud_token_rate_limited_until
+    global _cached_soundcloud_token, _cached_token_expiry
 
     # Reuse the cached token if it's still valid (with a 60s safety margin)
     if _cached_soundcloud_token and time.time() < _cached_token_expiry - 60:
         return _cached_soundcloud_token
 
-    if time.time() < _soundcloud_token_rate_limited_until:
+    if _soundcloud_token_cooldown.active():
         log("  [SoundCloud] Still rate limited from earlier - skipping the token request.")
         return None
 
@@ -3068,7 +3090,7 @@ def get_soundcloud_token(log=safe_print, on_rate_limited=None, on_auth_error=Non
             return _cached_soundcloud_token
 
         if response.status_code == 429:
-            _soundcloud_token_rate_limited_until = time.time() + SOUNDCLOUD_TOKEN_RATE_LIMIT_COOLDOWN_SECONDS
+            _soundcloud_token_cooldown.trigger(SOUNDCLOUD_TOKEN_RATE_LIMIT_COOLDOWN_SECONDS)
             log(
                 "  [SoundCloud] Rate limit reached (too many token requests) - pausing "
                 f"SoundCloud for {SOUNDCLOUD_TOKEN_RATE_LIMIT_COOLDOWN_SECONDS}s."
@@ -3262,16 +3284,16 @@ def invalidate_spotify_token():
 # instead of guessing, falling back to this only if the header is somehow
 # missing.
 SPOTIFY_TOKEN_RATE_LIMIT_FALLBACK_COOLDOWN_SECONDS = 60
-_spotify_token_rate_limited_until = 0
+_spotify_token_cooldown = _SourceCooldown()
 
 
 def get_spotify_token(log=safe_print, on_auth_error=None, on_rate_limited=None):
-    global _cached_spotify_token, _cached_spotify_token_expiry, _spotify_token_rate_limited_until
+    global _cached_spotify_token, _cached_spotify_token_expiry
 
     if _cached_spotify_token and time.time() < _cached_spotify_token_expiry - 60:
         return _cached_spotify_token
 
-    if time.time() < _spotify_token_rate_limited_until:
+    if _spotify_token_cooldown.active():
         log("  [Spotify] Still rate limited from earlier - skipping the token request.")
         return None
 
@@ -3304,7 +3326,7 @@ def get_spotify_token(log=safe_print, on_auth_error=None, on_rate_limited=None):
                 wait_seconds = int(response.headers.get("Retry-After", ""))
             except ValueError:
                 wait_seconds = SPOTIFY_TOKEN_RATE_LIMIT_FALLBACK_COOLDOWN_SECONDS
-            _spotify_token_rate_limited_until = time.time() + wait_seconds
+            _spotify_token_cooldown.trigger(wait_seconds)
             log(f"  [Spotify] Rate limit reached (too many token requests) - pausing Spotify for {wait_seconds}s.")
             if on_rate_limited:
                 on_rate_limited()
@@ -3329,7 +3351,7 @@ def get_spotify_token(log=safe_print, on_auth_error=None, on_rate_limited=None):
 # subsequent Spotify search this scan would otherwise just fail the same
 # way, one more wasted request at a time.
 SPOTIFY_SEARCH_RATE_LIMIT_COOLDOWN_SECONDS = 60
-_spotify_search_rate_limited_until = 0
+_spotify_search_cooldown = _SourceCooldown()
 
 
 def _search_cover_spotify_query(query, artist, title, token, log, allow_loose_remix_match=False, on_rate_limited=None):
@@ -3346,9 +3368,7 @@ def _search_cover_spotify_query(query, artist, title, token, log, allow_loose_re
     hits the search endpoint's own rate limit (see
     SPOTIFY_SEARCH_RATE_LIMIT_COOLDOWN_SECONDS).
     """
-    global _spotify_search_rate_limited_until
-
-    if time.time() < _spotify_search_rate_limited_until:
+    if _spotify_search_cooldown.active():
         log("  [Spotify] Still rate limited from earlier in this scan - skipping.")
         return None, []
 
@@ -3360,7 +3380,7 @@ def _search_cover_spotify_query(query, artist, title, token, log, allow_loose_re
     )
 
     if response.status_code == 429:
-        _spotify_search_rate_limited_until = time.time() + SPOTIFY_SEARCH_RATE_LIMIT_COOLDOWN_SECONDS
+        _spotify_search_cooldown.trigger(SPOTIFY_SEARCH_RATE_LIMIT_COOLDOWN_SECONDS)
         log(
             f"  [Spotify] Rate limited (HTTP 429: {response.text[:200]}) - pausing Spotify search for "
             f"{SPOTIFY_SEARCH_RATE_LIMIT_COOLDOWN_SECONDS}s for the rest of this scan."
@@ -3551,7 +3571,7 @@ def _run_without_console_window(func, *args, **kwargs):
 ACOUSTID_RATE_LIMIT_MESSAGE_KEYWORDS = ("rate limit", "too many requests", "429", "quota")
 
 ACOUSTID_RATE_LIMIT_COOLDOWN_SECONDS = 60
-_acoustid_rate_limited_until = 0
+_acoustid_cooldown = _SourceCooldown()
 
 
 def identify_via_acoustid(file_path, log=safe_print, on_rate_limited=None):
@@ -3565,13 +3585,11 @@ def identify_via_acoustid(file_path, log=safe_print, on_rate_limited=None):
     ACOUSTID_MIN_SCORE, or None if unavailable/no confident match - never
     raises, same philosophy as the other cover sources.
     """
-    global _acoustid_rate_limited_until
-
     if not ACOUSTID_API_KEY:
         log("  [AcoustID] No API key configured - skipping (Settings > AcoustID API key...).")
         return None
 
-    if time.time() < _acoustid_rate_limited_until:
+    if _acoustid_cooldown.active():
         log("  [AcoustID] Still rate limited from earlier in this scan - skipping.")
         return None
 
@@ -3594,7 +3612,7 @@ def identify_via_acoustid(file_path, log=safe_print, on_rate_limited=None):
             return None
         except acoustid.WebServiceError as error:
             if any(keyword in str(error).lower() for keyword in ACOUSTID_RATE_LIMIT_MESSAGE_KEYWORDS):
-                _acoustid_rate_limited_until = time.time() + ACOUSTID_RATE_LIMIT_COOLDOWN_SECONDS
+                _acoustid_cooldown.trigger(ACOUSTID_RATE_LIMIT_COOLDOWN_SECONDS)
                 log(
                     f"  [AcoustID] Rate limited ({error}) - pausing AcoustID for "
                     f"{ACOUSTID_RATE_LIMIT_COOLDOWN_SECONDS}s for the rest of this scan."
