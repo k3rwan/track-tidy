@@ -2056,6 +2056,11 @@ def _finish_scan(prepared, match_result, cover_source, log=safe_print):
         # that would throw away a confident AcoustID identification and
         # fall right back to the original unusable filename/tags.
         "acoustid_identified": prepared.get("acoustid_identified", False),
+        # See _prepare_scan's "already_applied" - marks a row that already
+        # had a cover and complete tags before this scan even started
+        # (search skipped entirely), so interface.py can show it
+        # differently from a row this scan actually just processed.
+        "already_applied": prepared.get("already_applied", False),
     }
 
 
