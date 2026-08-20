@@ -2048,7 +2048,11 @@ def _finish_scan(prepared, match_result, cover_source, log=safe_print):
         # If the file's own tags are already complete, don't default to
         # overwriting them with a filename-derived guess that could be worse
         # (e.g. a truncated/garbled filename from some export tool).
-        "apply_changes": bool(detected_title),
+        # An already_applied row starts unchecked on top of that - it has
+        # nothing to gain from Apply rewriting the exact same tags/cover it
+        # already has, unlike a plain "tags already present" row that just
+        # never got a filename-derived guess to second-guess.
+        "apply_changes": bool(detected_title) and not prepared.get("already_applied", False),
         "found_cover_image": found_cover_image,
         "cover_source": cover_source,
         "current_cover_bytes": prepared["current_cover_bytes"],
