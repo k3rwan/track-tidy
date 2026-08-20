@@ -1744,6 +1744,11 @@ BANNED_COVER_HASHES = (
     # Generic "girl in a pink coat" lifestyle photo, reused by a SoundCloud
     # "aesthetic playlist" repost account across unrelated tracks.
     0x30B5A7A4C6891113,
+    # "Deep House District" channel logo/branding, reused by a SoundCloud
+    # repost account across unrelated tracks - real report: "Amine Edge &
+    # DANCE - Halfway Crooks" picked this up instead of the track's own
+    # cover.
+    0x46878E4C0F0F8C0F,
 )
 
 BANNED_COVER_HASH_THRESHOLD = 6  # Hamming distance - see is_banned_cover_image()
