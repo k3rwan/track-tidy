@@ -4001,9 +4001,15 @@ class TaggerInterface:
                         )
 
                 elif message_type == "spotify_rate_limited":
+                    # Logged only, no popup (unlike the other 3 sources
+                    # below) - per request, this one was showing up too
+                    # often to be worth interrupting the user for; Spotify
+                    # is the last-resort source anyway (see USE_SPOTIFY),
+                    # so the scan just keeps going on iTunes/SoundCloud
+                    # without it.
                     if not self.spotify_rate_limit_warned:
                         self.spotify_rate_limit_warned = True
-                        self._rate_limited_messages_this_scan.append(
+                        self._append_to_journal(
                             "Spotify's request limit has been reached - it'll be paused for "
                             f"{tagger.SPOTIFY_SEARCH_RATE_LIMIT_COOLDOWN_SECONDS}s."
                         )
