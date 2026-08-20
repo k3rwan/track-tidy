@@ -845,7 +845,6 @@ class TaggerInterface:
             )
 
             self.window.configure(bg=colors["bg"])
-            self.settings_canvas.configure(bg=colors["bg"])
             self.journal_text.configure(
                 bg=colors["journal_bg"], fg=colors["journal_fg"], insertbackground=colors["journal_fg"],
             )
@@ -871,7 +870,6 @@ class TaggerInterface:
                 foreground=[("selected", LIGHT_TABLE_SELECT_FG)],
             )
             self.window.configure(bg=self._native_bg)
-            self.settings_canvas.configure(bg=self._native_bg)
             self.journal_text.configure(
                 bg=self._native_journal_bg, fg=self._native_journal_fg, insertbackground=self._native_journal_fg,
             )
@@ -1527,41 +1525,7 @@ class TaggerInterface:
 
         # ============================== Settings tab ==============================
 
-        # A footer (legal notices/credits) pinned to the very bottom, always
-        # visible - packed (and thus laid out) BEFORE the scrollable area
-        # below so it reliably gets its own space first, with the
-        # scrollable area only taking whatever's left.
-        settings_footer = ttk.Frame(soundcloud_tab)
-        settings_footer.pack(fill="x", side="bottom")
-
-        # Everything else lives in a scrollable area instead of just
-        # growing the whole window - the "Personal API credentials"
-        # section alone pushed the window well past a reasonable height,
-        # and settings keep growing over time. Capped height (see
-        # settings_canvas.configure(height=...) below), scrollbar for the
-        # overflow - same Canvas+Scrollbar+mousewheel pattern as
-        # _show_fix_no_cover_dialog's own scrollable area.
-        settings_canvas_frame = ttk.Frame(soundcloud_tab)
-        settings_canvas_frame.pack(fill="both", expand=True)
-
-        settings_canvas = tk.Canvas(settings_canvas_frame, highlightthickness=0, height=340)
-        settings_scrollbar = ttk.Scrollbar(settings_canvas_frame, orient="vertical", command=settings_canvas.yview)
-        settings_canvas.configure(yscrollcommand=settings_scrollbar.set)
-        settings_canvas.pack(side="left", fill="both", expand=True)
-        settings_scrollbar.pack(side="left", fill="y")
-
-        settings_scroll_frame = ttk.Frame(settings_canvas)
-        settings_canvas_window = settings_canvas.create_window((0, 0), window=settings_scroll_frame, anchor="nw")
-        settings_scroll_frame.bind(
-            "<Configure>", lambda e: settings_canvas.configure(scrollregion=settings_canvas.bbox("all"))
-        )
-        settings_canvas.bind("<Configure>", lambda e: settings_canvas.itemconfig(settings_canvas_window, width=e.width))
-        # Lives for the whole app, unlike the dialog's own version of this -
-        # no matching unbind() call needed, there's no close event to hang it off.
-        self._bind_canvas_mousewheel(settings_canvas)
-        self.settings_canvas = settings_canvas  # recolored in _apply_theme, like progress_canvas
-
-        appearance_frame = ttk.LabelFrame(settings_scroll_frame, text="Appearance")
+        appearance_frame = ttk.LabelFrame(soundcloud_tab, text="Appearance")
         appearance_frame.pack(fill="x", padx=10, pady=(15, 10))
         for value, label in (("light", "Light"), ("dark", "Dark")):
             ttk.Radiobutton(
@@ -1571,7 +1535,7 @@ class TaggerInterface:
 
         # Renamed from "Behavior" - now holds only actual file-handling
         # toggles, not one-off maintenance actions (those moved to "App").
-        behavior_frame = ttk.LabelFrame(settings_scroll_frame, text="File handling")
+        behavior_frame = ttk.LabelFrame(soundcloud_tab, text="File handling")
         behavior_frame.pack(fill="x", padx=10, pady=(0, 10))
         self.auto_convert_checkbox = ttk.Checkbutton(
             behavior_frame, text="Convert everything to MP3 (320 kbps)", variable=self.auto_convert_var,
@@ -1596,7 +1560,7 @@ class TaggerInterface:
         # of floating unframed below "Behavior" (where they looked like
         # they were part of it, even though they're one-off actions, not
         # settings).
-        app_frame = ttk.LabelFrame(settings_scroll_frame, text="App")
+        app_frame = ttk.LabelFrame(soundcloud_tab, text="App")
         app_frame.pack(fill="x", padx=10, pady=(0, 10))
         self.check_update_button = ttk.Button(
             app_frame, text="Check for updates", command=self._check_for_update_manual,
@@ -1610,12 +1574,12 @@ class TaggerInterface:
         ).pack(fill="x", padx=10, pady=(0, 10))
 
         self.internet_status_label = ttk.Label(
-            settings_footer, text="● Checking connection...", foreground="#999999",
+            soundcloud_tab, text="● Checking connection...", foreground="#999999",
         )
         self.internet_status_label.pack(anchor="w", padx=10, pady=(0, 10))
 
         self.legal_text_label = legal_text_label = ttk.Label(
-            settings_footer,
+            soundcloud_tab,
             text=(
                 "Track Tidy is an independent, personal tool and is not affiliated with, "
                 "endorsed by, or sponsored by SoundCloud, Apple, or any other third-party "
@@ -1639,13 +1603,13 @@ class TaggerInterface:
         legal_text_label.bind("<Configure>", lambda e: e.widget.configure(wraplength=e.width))
 
         self.legal_notices_link = ttk.Label(
-            settings_footer, text="View license & third-party notices",
+            soundcloud_tab, text="View license & third-party notices",
             foreground="#1a73e8", cursor="hand2", font=("TkDefaultFont", 8),
         )
         self.legal_notices_link.pack(anchor="w", padx=10, pady=(0, 6), side="bottom")
         self.legal_notices_link.bind("<Button-1>", self._open_legal_notices)
 
-        credit_frame = ttk.Frame(settings_footer)
+        credit_frame = ttk.Frame(soundcloud_tab)
         credit_frame.pack(anchor="w", padx=10, pady=(0, 2), side="bottom")
         # Colored explicitly by _apply_theme (MUTED_TEXT_COLOR/DARK_COLORS'
         # "muted_fg") rather than left at this light-mode default forever -
@@ -1653,16 +1617,18 @@ class TaggerInterface:
         # unlike virtually every other color in the app, which IS
         # reassigned on every theme switch.
         self.dev_credit_label = ttk.Label(
-            credit_frame, text="Developed by", foreground=MUTED_TEXT_COLOR, font=("TkDefaultFont", 8, "bold"),
+            credit_frame, text="Developed by ", foreground=MUTED_TEXT_COLOR, font=("TkDefaultFont", 8, "bold"),
+            padding=0,
         )
-        self.dev_credit_label.pack(side="left", padx=(0, 3))
+        self.dev_credit_label.pack(side="left")
         self.kevz_credit_label = ttk.Label(
             credit_frame, text="KEVZ", foreground=MUTED_TEXT_COLOR, font=("TkDefaultFont", 8, "bold"), cursor="hand2",
+            padding=0,
         )
         self.kevz_credit_label.pack(side="left")
         self.kevz_credit_label.bind("<Button-1>", self._open_kevz_instagram)
 
-        ttk.Separator(settings_footer, orient="horizontal").pack(fill="x", padx=10, pady=(20, 10), side="bottom")
+        ttk.Separator(soundcloud_tab, orient="horizontal").pack(fill="x", padx=10, pady=(20, 10), side="bottom")
 
         # Captured now (native theme, before any dark styling is ever applied)
         # so "light" mode can restore these exact values later.
