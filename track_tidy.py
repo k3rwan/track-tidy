@@ -1948,7 +1948,12 @@ def _prepare_scan(file_name, log=safe_print, on_new_mention=None):
         # re-confirming what's already there (this is what "double scan"
         # means in this codebase - rescanning a folder that still has
         # already-applied files sitting in it).
-        "already_applied": has_cover and tags_already_present,
+        # A BANNED existing cover (see is_banned_cover_image/
+        # effective_cover_bytes) disqualifies this even with clean tags -
+        # that cover needs replacing, which needs a real online search,
+        # exactly like write_tags() already treats a banned existing cover
+        # as no cover at all when deciding whether to remove it.
+        "already_applied": has_cover and tags_already_present and not is_banned_cover_image(current_cover_bytes),
     }
 
 
