@@ -58,6 +58,7 @@ import requests
 import keyring
 import platformdirs
 import acoustid
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from PIL import Image
 from mutagen import File as MutagenFile
 from mutagen.mp3 import MP3
@@ -173,22 +174,40 @@ def read_credential(key):
     return value.strip() if value else None
 
 
+# AES-256-GCM key for the embedded credentials below - generated once,
+# not a secret in any meaningful sense: the app must decrypt with it at
+# runtime, so whoever has the compiled binary has this key too. Upgrades
+# the previous plain base64 (trivially readable by eye, no tooling
+# needed) to something that at least survives a bare `strings` scan of
+# the binary - doesn't protect against actual reverse engineering
+# (debugger, decompiler, or just sniffing the app's own HTTPS traffic
+# locally), which no embedded-in-the-client secret ever can. See the
+# accepted-risk reasoning on each value below - this is about raising
+# the bar on casual extraction, not closing it off entirely.
+_EMBEDDED_SECRETS_KEY = base64.b64decode("HOsuPXl3ghlc2VunJeTRwCj+09my5mTwe0eKNTlWgrQ=")
+
+
+def _decrypt_embedded(blob_b64):
+    """Decrypts one of the AES-256-GCM blobs below (12-byte nonce +
+    ciphertext+tag, base64-encoded) using _EMBEDDED_SECRETS_KEY."""
+    raw = base64.b64decode(blob_b64)
+    nonce, ciphertext = raw[:12], raw[12:]
+    return AESGCM(_EMBEDDED_SECRETS_KEY).decrypt(nonce, ciphertext, None).decode("utf-8")
+
+
 # Shared, embedded default app credentials so most users don't have to
 # register their own SoundCloud app - Kevin's own, used as a fallback
-# whenever a user hasn't saved their own credentials in Settings.
-# base64, not encryption - same reasoning as DISCORD_REPORT_WEBHOOK_URL:
-# can't be kept truly secret from this app's own compiled binary, this
-# just keeps it off a plain `strings` scan. Unlike ACOUSTID_API_KEY,
-# distributing an app's client secret like this is against SoundCloud's
-# own developer terms - accepted risk (confirmed with Kevin): if it's
-# ever extracted and abused, SoundCloud could suspend the app
-# credentials entirely, breaking this for every user at once, not just
-# the abuser. Watch for SoundCloud auth suddenly failing for multiple
-# users if that ever happens.
-_SOUNDCLOUD_DEFAULT_CLIENT_ID_B64 = "STRsZVVVT0daemVSTlpVaDJUMjk1VVBhRjZhZXo0RjQ="
-_SOUNDCLOUD_DEFAULT_CLIENT_SECRET_B64 = "T25reGVEZVplM3RuTWJqR1kxRlNuZVJLdFIwT2EyMm8="
-SOUNDCLOUD_DEFAULT_CLIENT_ID = base64.b64decode(_SOUNDCLOUD_DEFAULT_CLIENT_ID_B64).decode("ascii")
-SOUNDCLOUD_DEFAULT_CLIENT_SECRET = base64.b64decode(_SOUNDCLOUD_DEFAULT_CLIENT_SECRET_B64).decode("ascii")
+# whenever a user hasn't saved their own credentials in Settings. Unlike
+# ACOUSTID_API_KEY, distributing an app's client secret like this is
+# against SoundCloud's own developer terms - accepted risk (confirmed
+# with Kevin): if it's ever extracted and abused, SoundCloud could
+# suspend the app credentials entirely, breaking this for every user at
+# once, not just the abuser. Watch for SoundCloud auth suddenly failing
+# for multiple users if that ever happens.
+_SOUNDCLOUD_DEFAULT_CLIENT_ID_ENC = "maLHNlTHgug2ZtKpKc/Q77UDc1GOFE34zMsTExpQoUkcXMAGoWGQY2cDbFMonpBX8RH8+D1jgKspXn5p"
+_SOUNDCLOUD_DEFAULT_CLIENT_SECRET_ENC = "NvPoDBpNps7jGVq3gzfULpo92kYkyGZ0gQKdTegKkGJuIzhqWql1rKpxpathmDw5yklGJRJtewE08kx4"
+SOUNDCLOUD_DEFAULT_CLIENT_ID = _decrypt_embedded(_SOUNDCLOUD_DEFAULT_CLIENT_ID_ENC)
+SOUNDCLOUD_DEFAULT_CLIENT_SECRET = _decrypt_embedded(_SOUNDCLOUD_DEFAULT_CLIENT_SECRET_ENC)
 
 SOUNDCLOUD_CLIENT_ID = read_credential(CLIENT_ID_KEY) or SOUNDCLOUD_DEFAULT_CLIENT_ID
 SOUNDCLOUD_CLIENT_SECRET = read_credential(CLIENT_SECRET_KEY) or SOUNDCLOUD_DEFAULT_CLIENT_SECRET
@@ -199,10 +218,10 @@ SOUNDCLOUD_CLIENT_SECRET = read_credential(CLIENT_SECRET_KEY) or SOUNDCLOUD_DEFA
 # iTunes, SoundCloud, AND the AcoustID-corrected retry of both have all
 # come up empty - see the end of scan_files()), not a normal priority
 # source, so this should get hit rarely.
-_SPOTIFY_DEFAULT_CLIENT_ID_B64 = "Y2ZmNTBlZWJkOTVmNDFhN2I4ZWI0NTRhOTg5ZjEzZGQ="
-_SPOTIFY_DEFAULT_CLIENT_SECRET_B64 = "ZjViZWJhOTE5MTU5NGU1ZmFhMzZhMzZlMDU5YWVjOTg="
-SPOTIFY_DEFAULT_CLIENT_ID = base64.b64decode(_SPOTIFY_DEFAULT_CLIENT_ID_B64).decode("ascii")
-SPOTIFY_DEFAULT_CLIENT_SECRET = base64.b64decode(_SPOTIFY_DEFAULT_CLIENT_SECRET_B64).decode("ascii")
+_SPOTIFY_DEFAULT_CLIENT_ID_ENC = "FA5/3DDIeuiE8KNn1iRch0obVetHCxY8nGQAzo4Ou7tOVPOlXK72HyItGsenCYpjRPrtfsARPdWuvCR/"
+_SPOTIFY_DEFAULT_CLIENT_SECRET_ENC = "82THohx99BN8Pq/YSMSn8Yc68c82chqy4T6lRyM+GNb9xwTC0exZxmAKnY1hahe5diqGQAMICL84hNKW"
+SPOTIFY_DEFAULT_CLIENT_ID = _decrypt_embedded(_SPOTIFY_DEFAULT_CLIENT_ID_ENC)
+SPOTIFY_DEFAULT_CLIENT_SECRET = _decrypt_embedded(_SPOTIFY_DEFAULT_CLIENT_SECRET_ENC)
 
 SPOTIFY_CLIENT_ID = read_credential(SPOTIFY_CLIENT_ID_KEY) or SPOTIFY_DEFAULT_CLIENT_ID
 SPOTIFY_CLIENT_SECRET = read_credential(SPOTIFY_CLIENT_SECRET_KEY) or SPOTIFY_DEFAULT_CLIENT_SECRET
@@ -467,16 +486,16 @@ def download_installer(url, dest_path, on_progress=None, timeout=30, expected_sh
 
 # --- Reporting a track (user -> developer, via Discord) ---
 
-# base64, not encryption - a Discord webhook URL is a bearer token with no
-# other auth, and this app ships the source compiled into the .exe, so it
-# can't be kept truly secret from someone determined to extract it. This
-# just keeps it from showing up in a plain `strings` scan of the binary.
-_DISCORD_REPORT_WEBHOOK_URL_B64 = (
-    "aHR0cHM6Ly9kaXNjb3JkLmNvbS9hcGkvd2ViaG9va3MvMTUzNjc2MTE2NTIwNjc4MjAzMy9x"
-    "UGNqTmk5WFBpNWFxV1lMUV9JYnJJOVVveEh5ZFgxU041SUFiVFRFSDk3NV9kZzZ2U2Zyc3Jx"
-    "UjgxRExVdFFyRThZag=="
+# A Discord webhook URL is a bearer token with no other auth, and this
+# app ships the source compiled into the .exe, so it can't be kept truly
+# secret from someone determined to extract it - see _decrypt_embedded's
+# own docstring for what this AES layer does and doesn't protect against.
+_DISCORD_REPORT_WEBHOOK_URL_ENC = (
+    "hUES/kai1yzXCuFgqck6eutijtvZm+9yw4ad4Wg1vKd1C/mKJcUnib9DNflz1/ooT4CeuR5H"
+    "ZoVqAHi4s2JGq2PqZ+Fe5Sjzxp7l2BrZKZadGQSgEpu6ksIBB86smd3Ti5tIFJRyjBxBDP3a"
+    "xjg7SpYJ4Kxzettk/jc9fEQbJBd/+TjF7X6qCyVoR8al5ccPTJsTCJ4="
 )
-DISCORD_REPORT_WEBHOOK_URL = base64.b64decode(_DISCORD_REPORT_WEBHOOK_URL_B64).decode("ascii")
+DISCORD_REPORT_WEBHOOK_URL = _decrypt_embedded(_DISCORD_REPORT_WEBHOOK_URL_ENC)
 
 def send_track_report(info, reporter_name=None, timeout=10):
     """
