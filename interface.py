@@ -100,6 +100,16 @@ def resource_path(filename):
 CHECKED_BOX = "☑"
 EMPTY_BOX = "☐"
 PROCESSED_CHECK = "✔"
+# Shown in the "apply" column instead of PROCESSED_CHECK for a row the
+# scan found already fully tagged (see track_tidy.py's "already_applied") -
+# distinguishes "nothing to do, already done before this scan" from "this
+# scan just processed it".
+ALREADY_APPLIED_MARK = "-"
+
+# How often a buffered scan result is revealed into the table - see
+# _reveal_next_scan_row(). Purely cosmetic pacing so tracks don't all pop
+# in at once; the actual scan underneath is unaffected.
+SCAN_REVEAL_INTERVAL_MS = 1000
 
 THUMBNAIL_SIZE = (44, 44)
 TABLE_ROW_HEIGHT = 48
@@ -127,6 +137,13 @@ SEARCH_RESULT_SUMMARY_ROW_ID = "__search_result_summary_row__"
 # intentionally leaves the native theme's own colors alone (see below).
 LIGHT_TABLE_SELECT_BG = "#cfe3f5"
 LIGHT_TABLE_SELECT_FG = "#1a1a1a"
+
+# Muted/secondary text (footer credits, version label) - a plain mid-grey
+# reads fine on light mode's near-white background, but is borderline-low
+# contrast against dark mode's near-black one, so it's brightened for dark
+# specifically (see MUTED_TEXT_COLOR's uses in _apply_theme).
+MUTED_TEXT_COLOR = "#888888"
+DARK_MUTED_TEXT_COLOR = "#a0a0a0"
 
 # Dark palette. There's no equivalent LIGHT_COLORS dict - "light" instead
 # means "leave the native theme's own colors alone", captured at startup
@@ -262,14 +279,9 @@ class TaggerInterface:
         # per Delete/"Remove from list" action, or ("edit", {...}) per Title/Artist cell edit.
         self._undo_stack = []
         self._drag_row_id = None  # row being dragged to reorder, if any
-        self._drag_moved = False
         self._table_font = tkfont.nametofont("TkDefaultFont")
-        self.soundcloud_rate_limit_warned = False
-        self.itunes_rate_limit_warned = False
-        self.source_auth_error_warned = {}  # "SoundCloud" -> already warned this scan
+        self._reset_scan_run_state()
         self.mention_counts = {}  # raw mention text -> number of times seen
-        self._pending_scan_reveals = []  # (info, scanned_count, total) queued for _reveal_next_scan_row
-        self._pending_scan_done = None  # (removed_files, number_before), held until reveals catch up
 
         self._native_theme = ttk.Style().theme_use()  # so "light" can restore it later
         self.theme_colors = None  # None while light/native; DARK_COLORS once dark is applied
@@ -281,10 +293,14 @@ class TaggerInterface:
         saved_settings = tagger.load_settings()
         self.auto_convert_var = tk.BooleanVar(value=saved_settings.get("auto_convert_mp3", False))
         self.auto_convert_wav_aiff_var = tk.BooleanVar(value=saved_settings.get("auto_convert_wav_to_aiff", True))
+        self.fix_track_file_name_var = tk.BooleanVar(value=saved_settings.get("fix_track_file_name", True))
+        self.use_spotify_var = tk.BooleanVar(value=saved_settings.get("use_spotify", False))
         self.show_log_var = tk.BooleanVar(value=saved_settings.get("show_log_section", False))
         self._tagger_resize_pending = False
         tagger.AUTO_CONVERT_MP3 = self.auto_convert_var.get()
         tagger.AUTO_CONVERT_WAV_TO_AIFF = self.auto_convert_wav_aiff_var.get()
+        tagger.FIX_TRACK_FILE_NAME = self.fix_track_file_name_var.get()
+        tagger.USE_SPOTIFY = self.use_spotify_var.get()
 
         self._build_interface()
         self._setup_drag_and_drop()
@@ -367,6 +383,16 @@ class TaggerInterface:
         tagger.AUTO_CONVERT_WAV_TO_AIFF = enabled
         tagger.save_setting("auto_convert_wav_to_aiff", enabled)
 
+    def _on_fix_track_file_name_changed(self):
+        enabled = self.fix_track_file_name_var.get()
+        tagger.FIX_TRACK_FILE_NAME = enabled
+        tagger.save_setting("fix_track_file_name", enabled)
+
+    def _on_use_spotify_changed(self):
+        enabled = self.use_spotify_var.get()
+        tagger.USE_SPOTIFY = enabled
+        tagger.save_setting("use_spotify", enabled)
+
     def _reset_settings_to_default(self):
         """Restores every Settings-tab option to its out-of-the-box value.
         Deliberately bypasses the individual _on_X_changed() handlers -
@@ -378,7 +404,7 @@ class TaggerInterface:
             "Reset settings",
             "Reset all settings to their default values?\n\n"
             "Your saved SoundCloud/AcoustID credentials won't be affected.",
-            parent=self.window,
+            parent=self.window, default=messagebox.NO,
         ):
             return
 
@@ -386,15 +412,21 @@ class TaggerInterface:
             ("theme", "light"),
             ("auto_convert_mp3", False),
             ("auto_convert_wav_to_aiff", True),
+            ("fix_track_file_name", True),
+            ("use_spotify", False),
             ("show_log_section", False),
         ):
             tagger.save_setting(key, value)
 
         tagger.AUTO_CONVERT_MP3 = False
         tagger.AUTO_CONVERT_WAV_TO_AIFF = True
+        tagger.FIX_TRACK_FILE_NAME = True
+        tagger.USE_SPOTIFY = False
 
         self.auto_convert_var.set(False)
         self.auto_convert_wav_aiff_var.set(True)
+        self.fix_track_file_name_var.set(True)
+        self.use_spotify_var.set(False)
 
         self.show_log_var.set(False)
         self._on_show_log_changed()
@@ -499,6 +531,40 @@ class TaggerInterface:
         y = max(0, min(y, dialog.winfo_screenheight() - dialog.winfo_height()))
         dialog.geometry(f"+{x}+{y}")
         dialog.deiconify()
+
+    def _bind_canvas_mousewheel(self, canvas):
+        """Makes a scrollable Canvas respond to the mouse wheel. Tk never
+        delivers wheel events to a Canvas on its own - bind_all is the
+        standard workaround, but since that's global, it's only active
+        while the cursor is actually over the canvas (wired/torn down on
+        Enter/Leave) so it doesn't hijack scrolling in the rest of the app.
+        Returns an unbind() callable - call it when the canvas's dialog
+        closes, in case it's torn down while the cursor is still hovering
+        (no Leave event would otherwise fire)."""
+        def _on_wheel(event):
+            # Windows/macOS deliver <MouseWheel> with event.delta; Windows
+            # reports it in multiples of 120, macOS in raw small steps.
+            if sys.platform == "darwin":
+                canvas.yview_scroll(-1 * event.delta, "units")
+            else:
+                canvas.yview_scroll(-1 * int(event.delta / 120), "units")
+
+        def _on_wheel_linux(event):
+            canvas.yview_scroll(-1 if event.num == 4 else 1, "units")
+
+        def _bind(_event=None):
+            canvas.bind_all("<MouseWheel>", _on_wheel)
+            canvas.bind_all("<Button-4>", _on_wheel_linux)
+            canvas.bind_all("<Button-5>", _on_wheel_linux)
+
+        def _unbind(_event=None):
+            canvas.unbind_all("<MouseWheel>")
+            canvas.unbind_all("<Button-4>")
+            canvas.unbind_all("<Button-5>")
+
+        canvas.bind("<Enter>", _bind)
+        canvas.bind("<Leave>", _unbind)
+        return _unbind
 
     def _make_themed_menu(self, parent):
         """A tk.Menu with the current theme's colors applied - tk.Menu is
@@ -832,6 +898,11 @@ class TaggerInterface:
             if not getattr(entry, "placeholder_active", False):
                 entry.configure(foreground=entry.normal_color)
 
+        muted_fg = DARK_MUTED_TEXT_COLOR if dark else MUTED_TEXT_COLOR
+        self.dev_credit_label.configure(foreground=muted_fg)
+        self.kevz_credit_label.configure(foreground=muted_fg)
+        self.legal_text_label.configure(foreground=muted_fg)
+
         self._folder_icon_photo = self._build_folder_icon_photo(dark)
         self.folder_icon_label.configure(image=self._folder_icon_photo)
 
@@ -944,15 +1015,15 @@ class TaggerInterface:
     def _check_source_health_on_startup(self):
         """Runs two background checks at most once every 24h (not every
         single launch - these force a fresh SoundCloud/Spotify token
-        request each time, which is quota every user shares, so re-running
-        this on every relaunch was pure waste on top of normal scanning
-        usage), since Settings can no longer disable a cover source to work
-        around a silent failure (see the comment above tagger.USE_ITUNES):
-        whether the shared SoundCloud/Spotify/AcoustID credentials still
-        authenticate, and whether iTunes/Spotify's own domains are
-        reachable at all (a restrictive firewall/network filter blocking
-        just those, while general internet access still works, would
-        otherwise look identical to "nothing found" with no explanation)."""
+        request each time against a real, limited rate limit, so re-
+        running this on every relaunch was pure waste on top of normal
+        scanning usage; skipped entirely for Spotify while it's turned
+        off, see tagger.check_source_credentials): whether the shared
+        SoundCloud/Spotify/AcoustID credentials still authenticate, and
+        whether iTunes/Spotify's own domains are reachable at all (a
+        restrictive firewall/network filter blocking just those, while
+        general internet access still works, would otherwise look
+        identical to "nothing found" with no explanation)."""
         last_checked = tagger.load_settings().get("last_source_health_check", 0)
         if time.time() - last_checked < 24 * 60 * 60:
             return
@@ -1115,12 +1186,12 @@ class TaggerInterface:
         if not raw_paths:
             return
 
-        first_path = os.path.normpath(raw_paths[0].strip("{}"))
+        paths = [os.path.normpath(p.strip("{}")) for p in raw_paths]
 
-        if os.path.isdir(first_path):
-            self._start_dropped_folder_scan(first_path)
+        if os.path.isdir(paths[0]):
+            self._start_dropped_folder_scan(paths[0])
         else:
-            self._start_single_file_scan(first_path)
+            self._start_multi_file_scan(paths)
 
     def _start_dropped_folder_scan(self, folder):
         """Drop of a folder: scans it fully, WITHOUT touching the visible
@@ -1130,11 +1201,7 @@ class TaggerInterface:
 
         tagger.MUSIC_FOLDER = folder
         self._sync_mentions_to_remove()
-        self.soundcloud_rate_limit_warned = False
-        self.itunes_rate_limit_warned = False
-        self.source_auth_error_warned = {}
-        self._pending_scan_reveals = []
-        self._pending_scan_done = None
+        self._reset_scan_run_state()
 
         if folder != getattr(self, "last_scanned_folder", None):
             for row in self.table.get_children():
@@ -1147,42 +1214,58 @@ class TaggerInterface:
 
         self.notebook.select(0)
         self._set_buttons_enabled(False)
-        self._run_in_background(self._run_scan)
+        self._launch_scan_after_already_applied_check()
 
-    def _start_single_file_scan(self, file_path):
-        """Drop of a single audio file: tag just that file, without scanning
-        everything else that happens to sit in the same folder."""
-        if not os.path.isfile(file_path):
-            return
-        if not file_path.lower().endswith(tagger.SUPPORTED_EXTENSIONS):
-            return
-        if (
-            not tagger.AUTO_CONVERT_MP3
-            and not file_path.lower().endswith((".mp3", ".wav", ".aiff", ".aif"))
-        ):
-            self._append_to_journal(
-                f"Ignored '{os.path.basename(file_path)}' - only MP3/WAV/AIFF can be tagged "
-                "without converting (Settings > Convert everything to MP3)."
-            )
+    def _start_multi_file_scan(self, file_paths):
+        """Drop of one or more individual audio files: tags just those
+        files, without scanning everything else that happens to sit in
+        the same folder. All dropped files are expected to share ONE
+        parent folder (the normal case - multi-selecting tracks in one
+        Explorer window and dragging them together), since tagger.
+        MUSIC_FOLDER/scanned_plan's relative paths only support a single
+        folder at a time - one dropped from a different folder than the
+        first valid file is skipped (logged, not silently mixed in or
+        left to collide with a same-named file)."""
+        valid_paths = [
+            path for path in file_paths
+            if os.path.isfile(path) and path.lower().endswith(tagger.SUPPORTED_EXTENSIONS)
+        ]
+        if not valid_paths:
             return
 
-        folder = os.path.dirname(file_path)
-        relative_name = os.path.basename(file_path)
+        folder = os.path.dirname(valid_paths[0])
+        relative_names = []
+        for path in valid_paths:
+            if os.path.dirname(path) != folder:
+                self._append_to_journal(
+                    f"Ignored '{os.path.basename(path)}' - dropped from a different folder than the rest."
+                )
+                continue
+            if (
+                not tagger.AUTO_CONVERT_MP3
+                and not path.lower().endswith((".mp3", ".wav", ".aiff", ".aif"))
+            ):
+                self._append_to_journal(
+                    f"Ignored '{os.path.basename(path)}' - only MP3/WAV/AIFF can be tagged "
+                    "without converting (Settings > Convert everything to MP3)."
+                )
+                continue
+            relative_name = os.path.basename(path)
+            if any(info["file"] == relative_name for info in self.scanned_plan):
+                continue  # already in the table
+            relative_names.append(relative_name)
 
-        if any(info["file"] == relative_name for info in self.scanned_plan):
-            return  # already in the table
+        if not relative_names:
+            return
 
         tagger.MUSIC_FOLDER = folder
         self.last_scanned_folder = folder
-        self.soundcloud_rate_limit_warned = False
-        self.itunes_rate_limit_warned = False
-        self.source_auth_error_warned = {}
-        self._pending_scan_reveals = []
-        self._pending_scan_done = None
+        self._reset_scan_run_state()
 
         self.notebook.select(0)
         self._set_buttons_enabled(False)
-        self._run_in_background(self._run_scan, [relative_name])
+        self._show_scan_progress_bar()
+        self._run_in_background(self._run_scan, relative_names)
 
     # --- UI construction ---
 
@@ -1474,6 +1557,14 @@ class TaggerInterface:
         )
         self.auto_convert_wav_aiff_checkbox.pack(anchor="w", padx=10, pady=(0, 0))
         ttk.Checkbutton(
+            behavior_frame, text="Fix track file name", variable=self.fix_track_file_name_var,
+            command=self._on_fix_track_file_name_changed,
+        ).pack(anchor="w", padx=10, pady=(0, 0))
+        ttk.Checkbutton(
+            behavior_frame, text="Use Spotify as a cover source", variable=self.use_spotify_var,
+            command=self._on_use_spotify_changed,
+        ).pack(anchor="w", padx=10, pady=(0, 0))
+        ttk.Checkbutton(
             behavior_frame, text="Show log section", variable=self.show_log_var,
             command=self._on_show_log_changed,
         ).pack(anchor="w", padx=10, pady=(0, 10))
@@ -1500,7 +1591,7 @@ class TaggerInterface:
         )
         self.internet_status_label.pack(anchor="w", padx=10, pady=(0, 10))
 
-        legal_text_label = ttk.Label(
+        self.legal_text_label = legal_text_label = ttk.Label(
             soundcloud_tab,
             text=(
                 "Track Tidy is an independent, personal tool and is not affiliated with, "
@@ -1516,7 +1607,7 @@ class TaggerInterface:
                 "finishes."
             ),
             justify="left",
-            foreground="#888888",
+            foreground=MUTED_TEXT_COLOR,
             font=("TkDefaultFont", 8),
         )
         legal_text_label.pack(anchor="w", fill="x", padx=10, pady=(0, 2), side="bottom")
@@ -1533,14 +1624,22 @@ class TaggerInterface:
 
         credit_frame = ttk.Frame(soundcloud_tab)
         credit_frame.pack(anchor="w", padx=10, pady=(0, 2), side="bottom")
-        ttk.Label(
-            credit_frame, text="Developped by", foreground="#888888", font=("TkDefaultFont", 8, "bold"),
-        ).pack(side="left", padx=(0, 3))
-        kevz_credit_label = ttk.Label(
-            credit_frame, text="KEVZ", foreground="#888888", font=("TkDefaultFont", 8, "bold"), cursor="hand2",
+        # Colored explicitly by _apply_theme (MUTED_TEXT_COLOR/DARK_COLORS'
+        # "muted_fg") rather than left at this light-mode default forever -
+        # #888888 is borderline-low contrast against the dark background,
+        # unlike virtually every other color in the app, which IS
+        # reassigned on every theme switch.
+        self.dev_credit_label = ttk.Label(
+            credit_frame, text="Developed by ", foreground=MUTED_TEXT_COLOR, font=("TkDefaultFont", 8, "bold"),
+            padding=0,
         )
-        kevz_credit_label.pack(side="left")
-        kevz_credit_label.bind("<Button-1>", self._open_kevz_instagram)
+        self.dev_credit_label.pack(side="left")
+        self.kevz_credit_label = ttk.Label(
+            credit_frame, text="KEVZ", foreground=MUTED_TEXT_COLOR, font=("TkDefaultFont", 8, "bold"), cursor="hand2",
+            padding=0,
+        )
+        self.kevz_credit_label.pack(side="left")
+        self.kevz_credit_label.bind("<Button-1>", self._open_kevz_instagram)
 
         ttk.Separator(soundcloud_tab, orient="horizontal").pack(fill="x", padx=10, pady=(20, 10), side="bottom")
 
@@ -1571,6 +1670,8 @@ class TaggerInterface:
         self.progress_canvas.itemconfigure(self.progress_text, text=text)
 
     def _toggle_advanced_section(self):
+        if self._is_run_active():
+            return  # locked during a scan/apply run, same as the other action buttons
         self.advanced_section_visible = not self.advanced_section_visible
         if self.advanced_section_visible:
             self.advanced_frame.pack(fill="x", padx=10, pady=(0, 10), after=self.advanced_toggle)
@@ -1796,6 +1897,23 @@ class TaggerInterface:
 
         self._adjust_window_height()
 
+    def _reset_scan_run_state(self):
+        """Resets everything that must start fresh for a new scan run
+        (Scan button, drag-a-folder, drag-a-single-file) - each "warned"
+        flag gates its rate-limit popup to once per scan (see the
+        matching message-loop handlers), and the pending-reveal state
+        feeds _reveal_next_scan_row(). Factored out since all 3 call
+        sites (plus __init__, for the very first scan) need the exact
+        same reset and had drifted into 4 hand-copied blocks."""
+        self.soundcloud_rate_limit_warned = False
+        self.itunes_rate_limit_warned = False
+        self.spotify_rate_limit_warned = False
+        self.acoustid_rate_limit_warned = False
+        self._rate_limited_messages_this_scan = []  # shown as one combined dialog in _finalize_scan
+        self.source_auth_error_warned = {}  # "SoundCloud" -> already warned this scan
+        self._pending_scan_reveals = []  # (info, scanned_count, total) queued for _reveal_next_scan_row
+        self._pending_scan_done = None  # (removed_files, number_before), held until reveals catch up
+
     def _update_apply_button_label(self):
         """Shows how many of the scanned tracks are currently checked to be applied."""
         checked = sum(1 for info in self.scanned_plan if info.get("apply_changes"))
@@ -1808,6 +1926,13 @@ class TaggerInterface:
         self.browse_button.configure(state=state)
         self.scan_button.configure(state=state)
         self.reset_button.configure(state=state)
+        # advanced_toggle is a plain Label (click-bound, not a real ttk
+        # Button - see _toggle_advanced_section, which also has its own
+        # _is_run_active() guard), so "disabling" it means faking the look
+        # instead of an actual state="disabled".
+        self.advanced_toggle.configure(
+            foreground="#1a73e8" if enabled else "#999999", cursor="hand2" if enabled else "arrow",
+        )
         if enabled:
             self.scan_button.configure(text="Scan")
             self._update_apply_button_label()
@@ -1840,11 +1965,7 @@ class TaggerInterface:
 
         tagger.MUSIC_FOLDER = folder
         self._sync_mentions_to_remove()
-        self.soundcloud_rate_limit_warned = False
-        self.itunes_rate_limit_warned = False
-        self.source_auth_error_warned = {}
-        self._pending_scan_reveals = []
-        self._pending_scan_done = None
+        self._reset_scan_run_state()
 
         if folder != getattr(self, "last_scanned_folder", None):
             for row in self.table.get_children():
@@ -1857,7 +1978,78 @@ class TaggerInterface:
 
         self._set_buttons_enabled(False)
 
-        self._run_in_background(self._run_scan)
+        self._launch_scan_after_already_applied_check()
+
+    def _launch_scan_after_already_applied_check(self, explicit_files=None):
+        """Runs right before every folder-level scan actually starts
+        (Scan button, drag-a-folder) - NOT the single-dropped-file case,
+        which has no "folder" to ask about. A cheap local-only precheck
+        (tag/cover reads only, no network - same cost class as
+        _choose_folder's own synchronous list_audio_files() call, so
+        blocking the main thread briefly here is consistent with existing
+        behavior) via tagger.find_already_applied_files() finds any file
+        this scan is about to touch that already looks fully applied (see
+        track_tidy.py's _is_already_applied). If there's at least one,
+        asks whether to rescan those too (unchanged behavior - they're
+        still skipped online, just re-added to the table) or skip them
+        entirely this time, before the real (network-calling) scan is
+        handed off to a background thread as usual."""
+        known_files = {info["file"] for info in self.scanned_plan}
+        if explicit_files is not None:
+            candidate_files = sorted(set(explicit_files) - known_files)
+        else:
+            candidate_files = sorted(set(tagger.list_audio_files()) - known_files)
+
+        already_applied_files = set(tagger.find_already_applied_files(candidate_files))
+
+        # Stays whatever the caller passed in (None for every current
+        # caller) unless the user actually chooses to filter something
+        # out below - passing None through to _run_scan lets IT recompute
+        # the file list itself, which is what also gets it to detect
+        # removed files (files gone from disk since the last scan of this
+        # folder - see _run_scan's own explicit_files handling). Passing
+        # an explicit list here, even one that's unfiltered, would
+        # silently lose that removed-file detection for no reason.
+        files_to_scan = explicit_files
+
+        if already_applied_files:
+            count = len(already_applied_files)
+            unit = "track" if count == 1 else "tracks"
+            rescan = messagebox.askyesno(
+                "Already-tagged tracks found",
+                f"{count} {unit} in this folder already look{'s' if count == 1 else ''} fully "
+                "tagged (a cover and complete Artist/Title already there - from a previous "
+                "Apply, or tagged elsewhere already).\n\n"
+                "Rescan them too? Either way they won't be searched online again - choosing "
+                "\"No\" just skips adding them to the list at all this time.",
+                parent=self.window,
+            )
+            if not rescan:
+                files_to_scan = [f for f in candidate_files if f not in already_applied_files]
+                if not files_to_scan:
+                    self._set_buttons_enabled(True)
+                    messagebox.showinfo(
+                        "Nothing to scan",
+                        "Every track in this folder is already tagged - nothing left to scan.",
+                        parent=self.window,
+                    )
+                    return
+
+        self._show_scan_progress_bar()
+        self._run_in_background(self._run_scan, files_to_scan)
+
+    def _show_scan_progress_bar(self):
+        """Shows the same progress bar Apply uses (progress_canvas, right
+        below the Apply button) - reused as-is rather than a second bar
+        near the Scan button, since Scan and Apply never run at once."""
+        if not self.progress_canvas.winfo_ismapped():
+            self.progress_canvas.pack(fill="x")
+            self._adjust_window_height()
+        self._update_progress_bar(0, "0 %")
+
+    def _update_scan_progress_bar(self, scanned_count, total):
+        fraction = scanned_count / total if total else 0
+        self._update_progress_bar(fraction, f"{round(fraction * 100)} %")
 
     def _run_scan(self, explicit_files=None):
         number_before = len(self.scanned_plan)
@@ -1885,9 +2077,9 @@ class TaggerInterface:
                 scanned_count["value"] += 1
                 # Not displayed the instant it's ready - see
                 # _reveal_next_scan_row(): queued here so the TABLE reveals
-                # tracks no faster than one per second, while the actual
-                # scan (this callback) keeps running at full speed
-                # underneath, unaffected.
+                # tracks no faster than SCAN_REVEAL_INTERVAL_MS apart, while
+                # the actual scan (this callback) keeps running at full
+                # speed underneath, unaffected.
                 self.message_queue.put(("file_scanned", (info, scanned_count["value"], total)))
 
             tagger.scan_files(
@@ -1899,6 +2091,8 @@ class TaggerInterface:
                 should_cancel=self.cancel_requested.is_set,
                 on_auth_error=self._on_source_auth_error,
                 on_itunes_rate_limited=lambda: self.message_queue.put(("itunes_rate_limited", None)),
+                on_spotify_rate_limited=lambda: self.message_queue.put(("spotify_rate_limited", None)),
+                on_acoustid_rate_limited=lambda: self.message_queue.put(("acoustid_rate_limited", None)),
             )
 
         except Exception as error:
@@ -1908,11 +2102,12 @@ class TaggerInterface:
         self.message_queue.put(("scan_done", (removed_files, number_before)))
 
     def _reveal_next_scan_row(self):
-        """Ticks once a second, for the app's entire lifetime: pops at most
-        one buffered scan result into the table (see the "file_scanned"
-        handler in _start_message_loop) so tracks visibly appear no faster
-        than one per second, no matter how fast the actual scan (running
-        unaffected in the background) produces them. Only finalizes the
+        """Ticks every SCAN_REVEAL_INTERVAL_MS, for the app's entire
+        lifetime: pops at most one buffered scan result into the table (see
+        the "file_scanned" handler in _start_message_loop) so tracks
+        visibly appear no faster than that, no matter how fast the actual
+        scan (running unaffected in the background) produces them. Only
+        finalizes the
         scan (see _finalize_scan) once every buffered result has actually
         been revealed - otherwise the summary/buttons would jump ahead of
         rows still trickling into view.
@@ -1927,16 +2122,18 @@ class TaggerInterface:
                 info, scanned_count, total = self._pending_scan_reveals.pop(0)
                 self._add_scan_row(info)
                 self.scan_button.configure(text=f"Scan - {scanned_count}/{total}")
+                self._update_scan_progress_bar(scanned_count, total)
         elif self._pending_scan_reveals:
             info, scanned_count, total = self._pending_scan_reveals.pop(0)
             self._add_scan_row(info)
             self.scan_button.configure(text=f"Scan - {scanned_count}/{total}")
+            self._update_scan_progress_bar(scanned_count, total)
 
         if not self._pending_scan_reveals and self._pending_scan_done is not None:
             content, self._pending_scan_done = self._pending_scan_done, None
             self._finalize_scan(content)
 
-        self.window.after(1000, self._reveal_next_scan_row)
+        self.window.after(SCAN_REVEAL_INTERVAL_MS, self._reveal_next_scan_row)
 
     def _add_scan_row(self, info):
         """Immediately adds a row to the table, ABOVE the previous ones, as soon as a file has just been scanned."""
@@ -2007,7 +2204,19 @@ class TaggerInterface:
 
             if query and query not in searchable:
                 continue
-            if no_cover_only and info.get("cover_source"):
+            # effective_cover_bytes(), not just cover_source/has_cover: a
+            # track that kept its existing cover (no online search matched/
+            # ran, including an already_applied track - see
+            # track_tidy.py) never gets its own cover_source, but IS a real
+            # cover - while a track whose existing cover is a banned
+            # generic image (is_banned_cover_image) has_cover=True too, yet
+            # is really cover-less. has_usable_cover() (not
+            # effective_cover_bytes()) so this stays correct even for an
+            # UNCHECKED row - effective_cover_bytes() skips the banned-cover
+            # check entirely once apply_changes is False (nothing being
+            # written, so the raw existing bytes are returned as-is),
+            # which wrongly hid an unchecked banned-cover row from here.
+            if no_cover_only and tagger.has_usable_cover(info):
                 hidden_with_cover += 1
                 continue
 
@@ -2064,10 +2273,7 @@ class TaggerInterface:
         say which (it's just "this file gets converted, whichever format
         that turns out to be"), so the actual target is re-derived from the
         current settings via tagger._resolve_conversion_target(), same as
-        process_files() itself used at Apply time. The cover breakdown
-        itself is shown right after scanning instead (see
-        _compute_cover_summary), since it's already known by then and
-        doesn't change during Apply."""
+        process_files() itself used at Apply time."""
         mp3_count = 0
         aiff_count = 0
         for info in self.scanned_plan:
@@ -2079,107 +2285,6 @@ class TaggerInterface:
             elif target == "aiff":
                 aiff_count += 1
         return mp3_count, aiff_count
-
-    def _compute_cover_summary(self):
-        """Counts, among all currently scanned tracks, how many got a cover
-        from each source, how many kept their original one, and how many
-        have none at all - independent of whether Apply has run yet.
-        acoustid_count is a separate, overlapping tally (not another
-        "source" like the others) - AcoustID never provides the cover
-        itself, only identifies the correct Artist/Title from the audio so
-        the iTunes/SoundCloud search above can find one; a track it
-        identified still gets counted under whichever of those actually
-        supplied the cover (or "no cover" if none did)."""
-        itunes_count = 0
-        spotify_count = 0
-        soundcloud_count = 0
-        kept_existing_count = 0
-        no_cover_count = 0
-        acoustid_count = 0
-
-        for info in self.scanned_plan:
-            if info.get("acoustid_identified"):
-                acoustid_count += 1
-
-            source = info.get("cover_source")
-            if source == "iTunes":
-                itunes_count += 1
-            elif source == "Spotify":
-                spotify_count += 1
-            elif source == "SoundCloud":
-                soundcloud_count += 1
-            elif info.get("has_cover"):
-                kept_existing_count += 1
-            else:
-                no_cover_count += 1
-
-        return itunes_count, spotify_count, soundcloud_count, kept_existing_count, no_cover_count, acoustid_count
-
-    def _show_scan_summary_dialog(self, no_cover_infos=None):
-        """Cover-source breakdown shown right after a scan finds new files -
-        this is the earliest point every track's cover_source is known.
-        A single dialog: "OK" alone, or "OK" plus a second button straight
-        into fixing Artist/Title for no-cover tracks when there are any -
-        not a separate yes/no confirmation chained after this one."""
-        itunes_count, spotify_count, soundcloud_count, kept_existing_count, no_cover_count, acoustid_count = (
-            self._compute_cover_summary()
-        )
-
-        dialog = tk.Toplevel(self.window)
-        self._style_toplevel(dialog)
-        dialog.title("Scan complete")
-        dialog.resizable(False, False)
-        dialog.transient(self.window)
-        dialog.grab_set()
-
-        ttk.Label(
-            dialog,
-            text=f"{PROCESSED_CHECK} Scan complete.",
-            justify="center",
-            padding=(20, 20, 20, 5),
-        ).pack()
-
-        # Only list sources that were actually enabled - a "Cover from
-        # SoundCloud: 0" line next to enabled sources reads as "SoundCloud
-        # was searched and came up empty", which is wrong when it wasn't
-        # searched at all (see enabled_cover_sources()).
-        source_counts = {"iTunes": itunes_count, "Spotify": spotify_count, "SoundCloud": soundcloud_count}
-        enabled_sources = tagger.enabled_cover_sources()
-        lines = [f"Cover from {name}: {source_counts[name]}" for name in enabled_sources]
-        lines.append(f"Kept original cover: {kept_existing_count}")
-        lines.append(f"No cover at all: {no_cover_count}")
-        summary_text = "\n".join(lines)
-
-        if acoustid_count:
-            # Not another bucket alongside the ones above (those already add
-            # up to every scanned track) - these overlap with them, since
-            # AcoustID only identifies Artist/Title, it doesn't supply the
-            # cover itself (see _compute_cover_summary).
-            unit = "track" if acoustid_count == 1 else "tracks"
-            summary_text += f"\n\nIdentified via audio (AcoustID): {acoustid_count} {unit}"
-        ttk.Label(dialog, text=summary_text, justify="left", foreground="#555555").pack(padx=20, pady=(0, 15))
-
-        button_row = ttk.Frame(dialog)
-        button_row.pack(pady=(0, 15))
-
-        def close():
-            dialog.destroy()
-
-        ttk.Button(button_row, text="OK", command=close).pack(side="left", padx=(0, 5) if no_cover_infos else 0)
-
-        if no_cover_infos:
-            count = len(no_cover_infos)
-            unit = "track" if count == 1 else "tracks"
-
-            def fix_no_cover():
-                dialog.destroy()
-                self._show_fix_no_cover_dialog(no_cover_infos)
-
-            ttk.Button(button_row, text=f"Fix {count} {unit}...", command=fix_no_cover).pack(side="left")
-
-        dialog.protocol("WM_DELETE_WINDOW", close)
-
-        self._center_dialog(dialog)
 
     def _show_processing_failures_dialog(self):
         """Shown right before the "Processing complete" dialog whenever
@@ -2277,6 +2382,33 @@ class TaggerInterface:
         removed_files, number_before = result
         self._set_buttons_enabled(True)
 
+        # Reset (not "Done ✓"/left showing, unlike Apply) - a scan's own
+        # progress is done being useful the moment it ends, and leaving it
+        # sitting there at 100% would be stale/misleading by the time the
+        # user gets around to clicking Apply, which starts its own run of
+        # this same bar from 0% anyway.
+        if self.progress_canvas.winfo_ismapped():
+            self.progress_canvas.pack_forget()
+            self._update_progress_bar(0, "")
+            self._adjust_window_height()
+
+        # One combined warning for every source that hit its rate limit
+        # during this scan, shown here instead of interrupting mid-scan
+        # per source (see the message-loop handlers, which just record
+        # into _rate_limited_messages_this_scan) - matches how
+        # _check_source_health_on_startup's own multi-source warning is
+        # already combined into one dialog, and lets the scan run to
+        # completion uninterrupted instead of stacking up to 4 separate
+        # modal popups if several sources happen to saturate in the same
+        # run.
+        if self._rate_limited_messages_this_scan:
+            messagebox.showwarning(
+                "Cover source rate limit reached",
+                "\n\n".join(self._rate_limited_messages_this_scan)
+                + "\n\nThe scan kept going with the other cover sources in the meantime.",
+                parent=self.window,
+            )
+
         # Removes files that no longer exist on disk
         for file_name in removed_files:
             if self.table.exists(file_name):
@@ -2301,7 +2433,8 @@ class TaggerInterface:
                 )
 
             no_cover_infos = [
-                info for info in self.scanned_plan if not info.get("processed") and not info.get("cover_source")
+                info for info in self.scanned_plan
+                if not info.get("processed") and not tagger.has_usable_cover(info)
             ]
             if no_cover_infos:
                 self._append_to_journal(f"{len(no_cover_infos)} track(s) currently have no cover match.")
@@ -2313,8 +2446,6 @@ class TaggerInterface:
                 # "0 new, 0 removed" notifications.
                 if number_new > 0 or removed_files:
                     self._notify_scan_complete(number_new, len(removed_files), len(self.scanned_plan))
-                if number_new > 0:
-                    self._show_scan_summary_dialog(no_cover_infos=no_cover_infos)
 
         self._check_for_duplicates()
 
@@ -2330,7 +2461,7 @@ class TaggerInterface:
             f"{len(duplicate_pairs)} duplicate file(s) detected (same name and duration, "
             f"just prefixed with '._').\n\nMerge them now? This will delete the '._' copies."
         )
-        if not messagebox.askyesno("Duplicate tracks found", message, parent=self.window):
+        if not messagebox.askyesno("Duplicate tracks found", message, parent=self.window, default=messagebox.NO):
             return
 
         for dot_file, normal_file in duplicate_pairs:
@@ -2445,6 +2576,12 @@ class TaggerInterface:
         rows_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(canvas_window, width=e.width))
 
+        # Mouse wheel events don't bubble to a Canvas by default - bind_all
+        # is the standard Tkinter workaround, but it's global, so it's only
+        # wired up while the cursor is actually over the canvas (via
+        # Enter/Leave) to avoid hijacking scrolling anywhere else in the app.
+        unbind_mousewheel = self._bind_canvas_mousewheel(canvas)
+
         if self.theme_colors:
             canvas.configure(bg=self.theme_colors["bg"])
 
@@ -2494,10 +2631,17 @@ class TaggerInterface:
         ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=(0, 10))
 
         def on_close():
+            unbind_mousewheel()
             self._fix_dialog_rows = {}
             dialog.destroy()
 
         dialog.protocol("WM_DELETE_WINDOW", on_close)
+
+        # <Control-z> is only bound on the main window's table, so it never
+        # fires while this Toplevel has keyboard focus - bind it here too so
+        # undo still works while fixing rows.
+        dialog.bind("<Control-z>", self._undo_last_action)
+
         self._center_dialog(dialog)
 
     def _search_fix_row(self, info, artist_entry, title_entry, search_button, status_label):
@@ -2628,6 +2772,18 @@ class TaggerInterface:
             # would be actively misleading until the next Apply catches up.
             if info.get("fix_pending"):
                 apply_box = CHECKED_BOX
+            elif info.get("already_applied") and not info.get("apply_changes"):
+                # Already had a cover + complete tags before this scan even
+                # ran (search skipped - see track_tidy.py's
+                # "already_applied") and still unchecked - distinct from
+                # PROCESSED_CHECK/EMPTY_BOX so it's clear nothing needed to
+                # happen here, rather than "this run processed it" or "the
+                # user unchecked it". A user who explicitly (re)checks the
+                # row still sees the normal PROCESSED_CHECK/EMPTY_BOX pair
+                # once Apply runs - only the untouched default gets the
+                # special mark, so the checkbox/select-all toggle keeps
+                # actually doing something visible for these rows too.
+                apply_box = ALREADY_APPLIED_MARK
             else:
                 apply_box = PROCESSED_CHECK if info.get("apply_changes") else EMPTY_BOX
             return (apply_box, displayed_title, displayed_artist, displayed_format)
@@ -2648,7 +2804,10 @@ class TaggerInterface:
         else:
             displayed_artist = info["current_artist"] or "(empty)"
 
-        apply_box = CHECKED_BOX if apply else EMPTY_BOX
+        if info.get("already_applied") and not apply:
+            apply_box = ALREADY_APPLIED_MARK
+        else:
+            apply_box = CHECKED_BOX if apply else EMPTY_BOX
 
         if needs_conversion:
             convert_box = CHECKED_BOX if info["convert"] else EMPTY_BOX
@@ -2676,6 +2835,12 @@ class TaggerInterface:
 
         self.table.heading("apply", text=CHECKED_BOX if checked else EMPTY_BOX)
         self._update_apply_button_label()
+
+        # See _toggle_cell's identical call for why - checked state affects
+        # has_usable_cover() (track_tidy.py), so a row can newly qualify
+        # for (or drop out of) the "no cover match" filter here too.
+        if self.no_cover_filter_var.get():
+            self._apply_table_filter()
 
     def _toggle_all(self):
         """Also clears the "format" column - a track that isn't going to be
@@ -2771,13 +2936,32 @@ class TaggerInterface:
 
         if column_id == f"#{COLUMNS.index('apply') + 1}":
             info["apply_changes"] = not info["apply_changes"]
+            # Keep the Format checkbox in sync: unchecking a row also
+            # unchecks its conversion (a track the user doesn't want
+            # touched at all this run shouldn't still get converted), and
+            # unchecking Format also unchecks the row below.
+            if not info["apply_changes"] and info["format"] == "WAV":
+                info["convert"] = False
             self._refresh_row(info)  # the image also changes based on current/suggested
             self._update_apply_button_label()
+            # Checked state affects has_usable_cover() (see track_tidy.py) -
+            # unchecking a row can put it back into (or checking it can take
+            # it out of) the "no cover match" filter, so re-apply it right
+            # away instead of leaving the row wherever it happened to be.
+            if self.no_cover_filter_var.get():
+                self._apply_table_filter()
         elif column_id == f"#{COLUMNS.index('format') + 1}":
             if info["format"] != "WAV":
                 return  # AIFF has no checkbox (see _build_row_values); every other non-MP3 format has no choice - it MUST convert to be taggable at all
             info["convert"] = not info["convert"]
-            self.table.item(item_id, values=self._build_row_values(info))
+            if not info["convert"] and info["apply_changes"]:
+                info["apply_changes"] = False
+                self._refresh_row(info)
+                self._update_apply_button_label()
+                if self.no_cover_filter_var.get():
+                    self._apply_table_filter()
+            else:
+                self.table.item(item_id, values=self._build_row_values(info))
 
     # --- Cover zoom ---
 
@@ -2819,11 +3003,20 @@ class TaggerInterface:
         self._append_to_journal(f"Cover {'updated' if new_bytes else 'removed'} for '{info['file']}'")
         return True
 
+    def _confirm_remove_cover(self, parent):
+        """Shared "Remove cover" confirmation - used by both the right-
+        click menu (_remove_cover_with_confirmation) and the zoom popup's
+        own button (_show_cover_zoom), which used to each hand-copy the
+        exact same title/message."""
+        return messagebox.askyesno(
+            "Remove cover", "Remove the cover from this file?", parent=parent, default=messagebox.NO,
+        )
+
     def _remove_cover_with_confirmation(self, info):
         """Right-click a cover thumbnail -> "Remove cover" - same action
         as the "Remove cover" button inside the zoom popup (_show_cover_
         zoom), just without opening it first."""
-        if not messagebox.askyesno("Remove cover", "Remove the cover from this file?", parent=self.window):
+        if not self._confirm_remove_cover(self.window):
             return
         self._apply_new_cover(info, None)
 
@@ -2899,7 +3092,7 @@ class TaggerInterface:
             apply_new_cover(jpeg_bytes)
 
         def remove_cover():
-            if messagebox.askyesno("Remove cover", "Remove the cover from this file?", parent=dialog):
+            if self._confirm_remove_cover(dialog):
                 apply_new_cover(None)
 
         render()
@@ -3079,7 +3272,7 @@ class TaggerInterface:
             else:
                 prompt = f"Restore {len(entries)} files to their previous tags and cover?\n\nThis changes the files on disk right now."
 
-            if not messagebox.askyesno("Restore previous version(s)", prompt, parent=dialog):
+            if not messagebox.askyesno("Restore previous version(s)", prompt, parent=dialog, default=messagebox.NO):
                 return
 
             successes, failures, restored_entries = 0, [], []
@@ -3145,7 +3338,7 @@ class TaggerInterface:
                 f"Delete {len(entries)} {unit} from the processing history?\n\n"
                 "This only removes the log entry - it doesn't touch the audio file itself. "
                 "This cannot be undone.",
-                parent=dialog,
+                parent=dialog, default=messagebox.NO,
             ):
                 return
 
@@ -3257,13 +3450,18 @@ class TaggerInterface:
     # --- Truncated-text tooltip ---
 
     def _update_cell_tooltip(self, row_id, column_id, event):
-        """Shows a tooltip with the full text of a Title/Artist cell, but
-        only when the displayed text doesn't actually fit in the column
-        (so it never fires on rows that don't need it)."""
-        col_name = {"#2": "title", "#3": "artist"}.get(column_id) if row_id else None
+        """Shows a tooltip with the full text of a Title/Artist cell when
+        it's too long to fit in its column, or - for the "apply" column,
+        whose single-character marks (☑/☐/✔/-) are never too long to fit
+        but aren't self-explanatory either - a plain-language explanation
+        of what that row's specific mark currently means."""
+        col_name = {"#1": "apply", "#2": "title", "#3": "artist"}.get(column_id) if row_id else None
         text = ""
 
-        if col_name and self.table.exists(row_id):
+        if col_name == "apply" and self.table.exists(row_id):
+            info = next((i for i in self.scanned_plan if i["file"] == row_id), None)
+            text = self._apply_mark_tooltip_text(info) if info else ""
+        elif col_name and self.table.exists(row_id):
             values = self.table.item(row_id, "values")
             col_index = COLUMNS.index(col_name)
             text = values[col_index] if col_index < len(values) else ""
@@ -3282,12 +3480,40 @@ class TaggerInterface:
         if key:
             self._show_tooltip(text, event)
 
+    def _apply_mark_tooltip_text(self, info):
+        """Plain-language meaning of this row's current "apply" column
+        mark - mirrors _build_row_values()'s own logic for which mark
+        shows, so the two can never drift out of sync."""
+        if info.get("processed"):
+            if info.get("fix_pending"):
+                return f"{CHECKED_BOX} Edited since Apply - will be re-applied next time."
+            if info.get("already_applied") and not info.get("apply_changes"):
+                return f"{ALREADY_APPLIED_MARK} Already had a cover and tags before this scan - nothing was applied."
+            return (
+                f"{PROCESSED_CHECK} Applied." if info.get("apply_changes")
+                else f"{EMPTY_BOX} Not selected - kept as-is."
+            )
+        if info.get("already_applied") and not info.get("apply_changes"):
+            return f"{ALREADY_APPLIED_MARK} Already has a cover and tags - nothing to apply. Click to select it anyway."
+        return (
+            f"{CHECKED_BOX} Selected for Apply - click to unselect." if info.get("apply_changes")
+            else f"{EMPTY_BOX} Not selected - click to include it in Apply."
+        )
+
     def _show_tooltip(self, text, event):
         self._tooltip_window = tk.Toplevel(self.window)
         self._tooltip_window.overrideredirect(True)
         self._tooltip_window.attributes("-topmost", True)
+        # Pale "sticky note" yellow reads fine in light mode, but stands out
+        # as a bright, jarring box against the dark UI - reuse the same
+        # menu colors already used for right-click menus in dark mode
+        # instead of leaving this the one un-themed popup in the app.
+        if self.theme_colors:
+            bg, fg = self.theme_colors["menu_bg"], self.theme_colors["menu_fg"]
+        else:
+            bg, fg = "#ffffe0", "#1a1a1a"
         ttk.Label(
-            self._tooltip_window, text=text, background="#ffffe0", foreground="#1a1a1a",
+            self._tooltip_window, text=text, background=bg, foreground=fg,
             relief="solid", borderwidth=1, padding=(6, 3),
         ).pack()
         self._position_tooltip(event)
@@ -3484,7 +3710,6 @@ class TaggerInterface:
         row_id = self.table.identify_row(event.y)
         info = next((i for i in self.scanned_plan if i["file"] == row_id), None) if row_id else None
         self._drag_row_id = row_id if info else None
-        self._drag_moved = False
 
     def _on_row_drag_motion(self, event):
         """Dragging a row onto another one reorders it there immediately -
@@ -3508,7 +3733,6 @@ class TaggerInterface:
 
         self.scanned_plan.remove(drag_info)
         self.scanned_plan.insert(self.scanned_plan.index(target_info), drag_info)
-        self._drag_moved = True
 
         visible_files = set(self.table.get_children())
         for info in self.scanned_plan:
@@ -3519,7 +3743,6 @@ class TaggerInterface:
 
     def _on_row_drag_release(self, event):
         self._drag_row_id = None
-        self._drag_moved = False
 
     def _show_context_menu(self, event):
         """Right-click on a row: shows a small context menu (e.g. open file location)."""
@@ -3549,12 +3772,14 @@ class TaggerInterface:
                 label="Remove cover", command=lambda: self._remove_cover_with_confirmation(info), state=cover_state,
             )
         menu.add_command(label=rescan_label, command=lambda: self._quick_rescan(selected_infos))
+        fix_label = "Fix Artist/Title..." if len(selected_infos) <= 1 else f"Fix Artist/Title ({len(selected_infos)})..."
+        menu.add_command(label=fix_label, command=lambda: self._show_fix_no_cover_dialog(selected_infos))
         menu.add_command(label="Open file location", command=lambda: self._open_file_location(info))
         menu.add_separator()
         menu.add_command(label="Move up", command=lambda: self._move_row(info, -1))
         menu.add_command(label="Move down", command=lambda: self._move_row(info, 1))
         menu.add_separator()
-        menu.add_command(label="Report track...", command=lambda: self._report_track(info))
+        menu.add_command(label="Report track...", command=lambda: self._report_track_menu_action(selected_infos, info))
         menu.add_separator()
         menu.add_command(label="Remove from list", command=self._delete_selected_rows)
         menu.tk_popup(event.x_root, event.y_root)
@@ -3628,6 +3853,23 @@ class TaggerInterface:
         dialog.bind("<Escape>", lambda _event: dialog.destroy())
 
         self._center_dialog(dialog)
+
+    def _report_track_menu_action(self, selected_infos, info):
+        """Gate in front of _report_track() for the context menu: unlike
+        "Rescan selected", reporting is deliberately NOT a bulk action -
+        multiple simultaneous reports to the same Discord channel from one
+        click looks like spam on the receiving end. If more than one row
+        is selected, explains that instead of silently reporting only the
+        right-clicked row (or all of them)."""
+        if len(selected_infos) > 1:
+            messagebox.showinfo(
+                "Report one track at a time",
+                "Reporting multiple tracks at once isn't supported, to avoid spamming the report "
+                "channel - select just one track and report it, then repeat for the others.",
+                parent=self.window,
+            )
+            return
+        self._report_track(info)
 
     def _report_track(self, info):
         """Sends this row's info (file name, current/suggested tags, cover
@@ -3752,7 +3994,7 @@ class TaggerInterface:
                 elif message_type == "file_scanned":
                     # Buffered, not shown immediately - see
                     # _reveal_next_scan_row(), which pops these into the
-                    # table no faster than one per second.
+                    # table no faster than SCAN_REVEAL_INTERVAL_MS apart.
                     self._pending_scan_reveals.append(content)
 
                 elif message_type == "mention_added":
@@ -3771,22 +4013,39 @@ class TaggerInterface:
                 elif message_type == "soundcloud_rate_limited":
                     if not self.soundcloud_rate_limit_warned:
                         self.soundcloud_rate_limit_warned = True
-                        messagebox.showwarning(
-                            "SoundCloud rate limit reached",
-                            "SoundCloud's request limit has been reached for now.\n"
-                            "No cover will be fetched for this scan — try again later.",
-                            parent=self.window,
+                        self._rate_limited_messages_this_scan.append(
+                            "SoundCloud's request limit has been reached - no cover will be fetched from it "
+                            "for the rest of this scan."
                         )
 
                 elif message_type == "itunes_rate_limited":
                     if not self.itunes_rate_limit_warned:
                         self.itunes_rate_limit_warned = True
-                        messagebox.showwarning(
-                            "iTunes rate limit reached",
-                            "iTunes' request limit has been reached for now.\n"
-                            f"iTunes will be paused for {tagger.ITUNES_RATE_LIMIT_COOLDOWN_SECONDS}s - "
-                            "the scan will keep going with the other cover sources in the meantime.",
-                            parent=self.window,
+                        self._rate_limited_messages_this_scan.append(
+                            "iTunes' request limit has been reached - it'll be paused for "
+                            f"{tagger.ITUNES_RATE_LIMIT_COOLDOWN_SECONDS}s."
+                        )
+
+                elif message_type == "spotify_rate_limited":
+                    # Logged only, no popup (unlike the other 3 sources
+                    # below) - per request, this one was showing up too
+                    # often to be worth interrupting the user for; Spotify
+                    # is the last-resort source anyway (see USE_SPOTIFY),
+                    # so the scan just keeps going on iTunes/SoundCloud
+                    # without it.
+                    if not self.spotify_rate_limit_warned:
+                        self.spotify_rate_limit_warned = True
+                        self._append_to_journal(
+                            "Spotify's request limit has been reached - no cover will be fetched from it "
+                            "for the rest of this scan."
+                        )
+
+                elif message_type == "acoustid_rate_limited":
+                    if not self.acoustid_rate_limit_warned:
+                        self.acoustid_rate_limit_warned = True
+                        self._rate_limited_messages_this_scan.append(
+                            "AcoustID's request limit has been reached - it'll be paused for "
+                            f"{tagger.ACOUSTID_RATE_LIMIT_COOLDOWN_SECONDS}s."
                         )
 
                 elif message_type == "auth_error":

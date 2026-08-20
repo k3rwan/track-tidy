@@ -377,12 +377,12 @@ class ITunesRetryTests(unittest.TestCase):
         self.original_get = tagger.requests.get
         self.original_sleep = tagger.time.sleep
         tagger.time.sleep = lambda seconds: None
-        tagger._itunes_rate_limited_until = 0
+        tagger._itunes_cooldown.until = 0
 
     def tearDown(self):
         tagger.requests.get = self.original_get
         tagger.time.sleep = self.original_sleep
-        tagger._itunes_rate_limited_until = 0
+        tagger._itunes_cooldown.until = 0
 
     class FakeResponse:
         def __init__(self, status_code, payload=None, content=b""):
@@ -447,7 +447,7 @@ class ITunesRetryTests(unittest.TestCase):
 
         self.assertIsNone(result)
         self.assertEqual(calls["search"], 3)  # this call still does its own retries
-        self.assertGreater(tagger._itunes_rate_limited_until, time.time())
+        self.assertGreater(tagger._itunes_cooldown.until, time.time())
 
         # A second call, still within the cooldown, is skipped outright -
         # no further HTTP request at all.
@@ -456,7 +456,7 @@ class ITunesRetryTests(unittest.TestCase):
         self.assertEqual(calls["search"], 3)  # unchanged - no new request made
 
     def test_cooldown_expiring_allows_requests_again(self):
-        tagger._itunes_rate_limited_until = time.time() - 1  # already expired
+        tagger._itunes_cooldown.until = time.time() - 1  # already expired
 
         def fake_get(url, params=None, timeout=None):
             return self.FakeResponse(200, {"results": [
@@ -667,14 +667,14 @@ class TryAcoustidCorrectionTests(unittest.TestCase):
         self.assertIsNone(prepared["detected_artist"])
 
     def test_no_match_returns_false(self):
-        tagger.identify_via_acoustid = lambda path, log=None: None
+        tagger.identify_via_acoustid = lambda path, log=None, on_rate_limited=None: None
         prepared = self._prepared()
 
         self.assertFalse(tagger._try_acoustid_correction(prepared))
         self.assertIsNone(prepared["detected_artist"])
 
     def test_confident_match_updates_prepared_fields(self):
-        tagger.identify_via_acoustid = lambda path, log=None: ("Daft Punk", "One More Time")
+        tagger.identify_via_acoustid = lambda path, log=None, on_rate_limited=None: ("Daft Punk", "One More Time")
         prepared = self._prepared()
 
         self.assertTrue(tagger._try_acoustid_correction(prepared))
@@ -684,7 +684,7 @@ class TryAcoustidCorrectionTests(unittest.TestCase):
         self.assertEqual(prepared["remix_qualified_title"], "One More Time")
 
     def test_confident_match_with_remix_qualifier_computes_search_titles(self):
-        tagger.identify_via_acoustid = lambda path, log=None: ("Artist", "Title (Some Remix)")
+        tagger.identify_via_acoustid = lambda path, log=None, on_rate_limited=None: ("Artist", "Title (Some Remix)")
         prepared = self._prepared()
 
         self.assertTrue(tagger._try_acoustid_correction(prepared))
@@ -1023,8 +1023,8 @@ class ListAudioFilesTests(unittest.TestCase):
 
 
 class ScanFilesParallelITunesTests(unittest.TestCase):
-    """scan_files() searches iTunes for every file concurrently (bounded by
-    ITUNES_SCAN_MAX_WORKERS), while SoundCloud stays sequential."""
+    """scan_files() searches every source (iTunes included) strictly
+    sequentially, one file at a time - no concurrency anywhere."""
 
     def setUp(self):
         self._original_music_folder = tagger.MUSIC_FOLDER
@@ -1066,7 +1066,7 @@ class ScanFilesParallelITunesTests(unittest.TestCase):
         tagger.get_soundcloud_token = self._original_get_soundcloud_token
         self._tmp_dir.cleanup()
 
-    def test_itunes_searches_run_concurrently(self):
+    def test_itunes_searches_run_sequentially(self):
         active = {"count": 0, "max": 0}
         lock = threading.Lock()
 
@@ -1074,7 +1074,7 @@ class ScanFilesParallelITunesTests(unittest.TestCase):
             with lock:
                 active["count"] += 1
                 active["max"] = max(active["max"], active["count"])
-            time.sleep(0.05)  # hold the "slot" briefly so overlap is observable
+            time.sleep(0.05)  # would overlap with a concurrent caller, if there were one
             with lock:
                 active["count"] -= 1
             return (b"cover", artist, title)
@@ -1085,8 +1085,7 @@ class ScanFilesParallelITunesTests(unittest.TestCase):
 
         self.assertEqual(len(results), len(self.file_names))
         self.assertTrue(all(info["cover_source"] == "iTunes" for info in results))
-        self.assertGreater(active["max"], 1, "expected genuine concurrency across files")
-        self.assertLessEqual(active["max"], tagger.ITUNES_SCAN_MAX_WORKERS)
+        self.assertEqual(active["max"], 1, "expected no concurrency across files")
 
     def test_falls_back_to_soundcloud_when_itunes_misses(self):
         tagger.search_cover_itunes = lambda artist, title, log=None, **kwargs: None
