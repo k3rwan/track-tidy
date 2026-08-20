@@ -500,6 +500,40 @@ class TaggerInterface:
         dialog.geometry(f"+{x}+{y}")
         dialog.deiconify()
 
+    def _bind_canvas_mousewheel(self, canvas):
+        """Makes a scrollable Canvas respond to the mouse wheel. Tk never
+        delivers wheel events to a Canvas on its own - bind_all is the
+        standard workaround, but since that's global, it's only active
+        while the cursor is actually over the canvas (wired/torn down on
+        Enter/Leave) so it doesn't hijack scrolling in the rest of the app.
+        Returns an unbind() callable - call it when the canvas's dialog
+        closes, in case it's torn down while the cursor is still hovering
+        (no Leave event would otherwise fire)."""
+        def _on_wheel(event):
+            # Windows/macOS deliver <MouseWheel> with event.delta; Windows
+            # reports it in multiples of 120, macOS in raw small steps.
+            if sys.platform == "darwin":
+                canvas.yview_scroll(-1 * event.delta, "units")
+            else:
+                canvas.yview_scroll(-1 * int(event.delta / 120), "units")
+
+        def _on_wheel_linux(event):
+            canvas.yview_scroll(-1 if event.num == 4 else 1, "units")
+
+        def _bind(_event=None):
+            canvas.bind_all("<MouseWheel>", _on_wheel)
+            canvas.bind_all("<Button-4>", _on_wheel_linux)
+            canvas.bind_all("<Button-5>", _on_wheel_linux)
+
+        def _unbind(_event=None):
+            canvas.unbind_all("<MouseWheel>")
+            canvas.unbind_all("<Button-4>")
+            canvas.unbind_all("<Button-5>")
+
+        canvas.bind("<Enter>", _bind)
+        canvas.bind("<Leave>", _unbind)
+        return _unbind
+
     def _make_themed_menu(self, parent):
         """A tk.Menu with the current theme's colors applied - tk.Menu is
         plain Tk, not ttk, so it doesn't pick up theme colors on its own
@@ -2445,6 +2479,12 @@ class TaggerInterface:
         rows_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(canvas_window, width=e.width))
 
+        # Mouse wheel events don't bubble to a Canvas by default - bind_all
+        # is the standard Tkinter workaround, but it's global, so it's only
+        # wired up while the cursor is actually over the canvas (via
+        # Enter/Leave) to avoid hijacking scrolling anywhere else in the app.
+        unbind_mousewheel = self._bind_canvas_mousewheel(canvas)
+
         if self.theme_colors:
             canvas.configure(bg=self.theme_colors["bg"])
 
@@ -2494,10 +2534,17 @@ class TaggerInterface:
         ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=(0, 10))
 
         def on_close():
+            unbind_mousewheel()
             self._fix_dialog_rows = {}
             dialog.destroy()
 
         dialog.protocol("WM_DELETE_WINDOW", on_close)
+
+        # <Control-z> is only bound on the main window's table, so it never
+        # fires while this Toplevel has keyboard focus - bind it here too so
+        # undo still works while fixing rows.
+        dialog.bind("<Control-z>", self._undo_last_action)
+
         self._center_dialog(dialog)
 
     def _search_fix_row(self, info, artist_entry, title_entry, search_button, status_label):
