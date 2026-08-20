@@ -2907,6 +2907,12 @@ class TaggerInterface:
 
         if column_id == f"#{COLUMNS.index('apply') + 1}":
             info["apply_changes"] = not info["apply_changes"]
+            # Keep the Format checkbox in sync: unchecking a row also
+            # unchecks its conversion (a track the user doesn't want
+            # touched at all this run shouldn't still get converted), and
+            # unchecking Format also unchecks the row below.
+            if not info["apply_changes"] and info["format"] == "WAV":
+                info["convert"] = False
             self._refresh_row(info)  # the image also changes based on current/suggested
             self._update_apply_button_label()
             # Checked state affects has_usable_cover() (see track_tidy.py) -
@@ -2919,7 +2925,14 @@ class TaggerInterface:
             if info["format"] != "WAV":
                 return  # AIFF has no checkbox (see _build_row_values); every other non-MP3 format has no choice - it MUST convert to be taggable at all
             info["convert"] = not info["convert"]
-            self.table.item(item_id, values=self._build_row_values(info))
+            if not info["convert"] and info["apply_changes"]:
+                info["apply_changes"] = False
+                self._refresh_row(info)
+                self._update_apply_button_label()
+                if self.no_cover_filter_var.get():
+                    self._apply_table_filter()
+            else:
+                self.table.item(item_id, values=self._build_row_values(info))
 
     # --- Cover zoom ---
 
