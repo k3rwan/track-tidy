@@ -846,37 +846,27 @@ SUPPORTED_EXTENSIONS = (
 # List of mentions to automatically strip out (add more if needed)
 MENTIONS_TO_REMOVE = []
 
-# Which cover sources are enabled (each set independently by the UI) -
-# whichever are enabled are tried in a fixed priority order: iTunes, then
-# Spotify, then SoundCloud - see _search_one_source() / search_cover_manual().
-# iTunes and Spotify are both curated commercial catalogs; SoundCloud is
-# community-uploaded and far more prone to a wrong match (an unrelated
-# repost, a fan edit...) - real report: SoundCloud "succeeded" with a
-# non-official image (a radio freestyle photo) before Spotify ever got a
-# chance to offer the track's actual official cover. SoundCloud stays
-# useful as the final fallback for remixes/edits that live there and
-# nowhere else.
-# Always on - Settings no longer offers a way to disable any cover source,
-# so these are fixed rather than a user-facing toggle. Kept as named
-# constants (instead of just inlining True everywhere they're checked) since
-# the rest of the codebase still reads them as "is this source active" -
-# only the ability to flip them off from the UI was removed.
+# Which cover sources are enabled - whichever are enabled are tried in a
+# fixed priority order: iTunes, then Spotify, then SoundCloud - see
+# _search_one_source() / search_cover_manual(). iTunes and Spotify are
+# both curated commercial catalogs; SoundCloud is community-uploaded and
+# far more prone to a wrong match (an unrelated repost, a fan edit...) -
+# real report: SoundCloud "succeeded" with a non-official image (a radio
+# freestyle photo) before Spotify ever got a chance to offer the track's
+# actual official cover. SoundCloud stays useful as the final fallback
+# for remixes/edits that live there and nowhere else.
+# iTunes/SoundCloud are always on - fixed, not a user-facing toggle (kept
+# as named constants rather than inlining True, since the rest of the
+# codebase still reads them as "is this source active"). USE_SPOTIFY is
+# the one exception: set by the UI (off by default) - Spotify's own
+# real-world rate limit (see SPOTIFY_SEARCH_RATE_LIMIT_COOLDOWN_SECONDS)
+# has repeatedly made it fail before ever contributing a cover, with
+# nothing actionable for the user beyond waiting on Spotify's own Extended
+# Quota Mode approval - a toggle lets it be skipped entirely instead of
+# wasting a request on every scan until then.
 USE_ITUNES = True
-USE_SPOTIFY = True
+USE_SPOTIFY = False
 USE_SOUNDCLOUD = True
-
-
-def enabled_cover_sources():
-    """Names (in search-priority order) of the cover sources currently
-    active - used to explain scan results that depend on which ones were
-    actually tried (see _show_scan_summary_dialog / _show_fix_no_cover_dialog).
-    All three are always on (see the comment above USE_ITUNES) - a name is
-    only ever missing here if its credentials are somehow unavailable."""
-    return [
-        name
-        for name, enabled in (("iTunes", USE_ITUNES), ("Spotify", USE_SPOTIFY), ("SoundCloud", USE_SOUNDCLOUD))
-        if enabled
-    ]
 
 # Last-resort audio-content identification (AcoustID/Chromaprint) for a file
 # whose filename/tags are too mangled for the normal text-based search to
@@ -3810,12 +3800,13 @@ def identify_via_acoustid(file_path, log=safe_print, on_rate_limited=None):
 def check_source_credentials(log=safe_print):
     """
     Verifies the SHARED credentials behind SoundCloud/Spotify/AcoustID
-    actually authenticate, once per app launch - since Settings no longer
-    offers a way to turn any of these off (see the comment above
-    USE_ITUNES), a revoked/expired shared credential would otherwise
-    silently degrade cover matching for every user with nothing visible
-    to explain why. iTunes needs no credentials, so it's not checked here
-    (see ITUNES_RATE_LIMIT_COOLDOWN_SECONDS/search_cover_itunes's
+    actually authenticate, once per app launch - SoundCloud/AcoustID can't
+    be turned off from Settings (see the comment above USE_ITUNES), so a
+    revoked/expired credential would otherwise silently degrade cover
+    matching with nothing visible to explain why. Spotify (USE_SPOTIFY)
+    IS a user-facing toggle now, and is skipped entirely here while it's
+    off. iTunes needs no credentials, so it's not checked here (see
+    ITUNES_RATE_LIMIT_COOLDOWN_SECONDS/search_cover_itunes's
     on_rate_limited instead for iTunes-specific trouble).
 
     Returns a list of source names ("SoundCloud"/"Spotify"/"AcoustID")
@@ -3834,10 +3825,15 @@ def check_source_credentials(log=safe_print):
     if not soundcloud_token and not soundcloud_rate_limited["value"] and SOUNDCLOUD_CLIENT_ID and SOUNDCLOUD_CLIENT_SECRET:
         broken.append("SoundCloud")
 
-    invalidate_spotify_token()
-    spotify_token = get_spotify_token(log=log)
-    if not spotify_token and SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
-        broken.append("Spotify")
+    # Skipped entirely while the user has Spotify turned off (see the
+    # comment above USE_SPOTIFY) - checking a source they've deliberately
+    # disabled would just spend a request against its own real rate limit
+    # for nothing actionable.
+    if USE_SPOTIFY:
+        invalidate_spotify_token()
+        spotify_token = get_spotify_token(log=log)
+        if not spotify_token and SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
+            broken.append("Spotify")
 
     if ACOUSTID_API_KEY:
         # acoustid.lookup() talks to the same web service as identify_via_acoustid()
