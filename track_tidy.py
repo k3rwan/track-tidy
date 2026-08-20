@@ -1138,8 +1138,15 @@ def reformat_trailing_dash_mix(text):
     If text ends with " - <mix descriptor>" (e.g. "Related - Original Mix"),
     converts it to "Related (Original Mix)". Returns the text unchanged if no
     such pattern is found.
+
+    The mix-descriptor group only excludes a REAL dash separator (" - ",
+    space on both sides) rather than every hyphen character - a plain
+    [^-]+ used to also reject a descriptor containing a hyphenated NAME
+    with no surrounding spaces (e.g. "Jean-Marc & Samson Remix"), silently
+    leaving the whole string unconverted instead of just excluding an
+    actual earlier dash-separated segment.
     """
-    match = re.match(r"^(.+?)\s+-\s+([^-]+)$", text)
+    match = re.match(r"^(.+?)\s+-\s+((?:(?!\s-\s).)+)$", text)
     if not match:
         return text
 
@@ -1812,7 +1819,9 @@ def _search_one_source(
                 a, t, log=log, allow_loose_remix_match=allow_loose_remix_match, on_rate_limited=on_itunes_rate_limited,
             )
         ) if source == "itunes" else (
-            lambda a, t, log, allow_loose_remix_match=False: search_cover_spotify(a, t, spotify_token, log=log)
+            lambda a, t, log, allow_loose_remix_match=False: search_cover_spotify(
+                a, t, spotify_token, log=log, allow_loose_remix_match=allow_loose_remix_match,
+            )
         )
         label = "iTunes" if source == "itunes" else "Spotify"
         if has_named_qualifier:
@@ -2406,17 +2415,45 @@ def strip_all_trailing_groups(text):
     return text.strip(), groups
 
 
-def loose_remix_match(expected_title, returned_title):
+def _qualifier_names_already_expected(qualifier_text, expected_artist):
+    """
+    Whether every name mentioned in a remix/edit qualifier (e.g. "Jean-Marc
+    & Samson Remix") is already among the expected artist credits for this
+    track. Strips the mix keyword itself first (remix/edit/mix/bootleg/
+    reboot), then splits what's left as a multi-artist string, same as any
+    other artist field. False if nothing's left to check (a purely generic
+    qualifier like "(Extended Remix)" would otherwise vacuously "pass" - a
+    qualifier_names empty set is never treated as a match).
+    """
+    stripped = re.sub(r"\b(?:remix|edit|mix|bootleg|reboot)\b", "", qualifier_text, flags=re.IGNORECASE)
+    qualifier_names = split_artist_names(stripped)
+    if not qualifier_names:
+        return False
+    return qualifier_names <= split_artist_names(expected_artist)
+
+
+def loose_remix_match(expected_title, returned_title, expected_artist=None):
     """
     Fallback for a specific remix rejected by the strict exact-match check
     because the store's listing has extra bracket groups ours doesn't know
     about (e.g. a subtitle, or "feat. X" positioned before the remix
     bracket instead of at the very end, so strip_feature_suffix() can't
-    reach it). Accepts it anyway if the core title matches and our specific
-    remix qualifier is one of the store's bracket groups verbatim
-    (case/whitespace-insensitive) - deliberately stricter than a generic
-    fuzzy match, since this is only meant to recognize the SAME named
-    remix, not just "some remix of the same song".
+    reach it). Accepts it anyway if the core title matches and EITHER:
+    - our specific remix qualifier is one of the store's bracket groups
+      verbatim (case/whitespace-insensitive) - deliberately stricter than a
+      generic fuzzy match, since this is only meant to recognize the SAME
+      named remix, not just "some remix of the same song"; OR
+    - expected_artist is given, and one of the store's bracket groups names
+      a remixer/editor who's already among our own expected artist credits
+      (see _qualifier_names_already_expected) - covers a store crediting
+      the remix by the actual remixer's name (e.g. "Jean-Marc & Samson
+      Remix") where our own filename only had a generic qualifier (e.g.
+      "Extended Remix") for the same release, real report: "Marshall
+      Jefferson, Samson, Maesic, Jean-Marc, Salomé Das - Life Is Simple
+      (Extended Remix)" vs. Spotify's own "Life Is Simple (Move Your Body)
+      [...] [Jean-Marc & Samson Remix]" - Jean-Marc and Samson are both
+      already in our own artist credit, just not called out by name in
+      OUR qualifier.
     """
     expected_core, expected_groups = strip_all_trailing_groups(expected_title)
     returned_core, returned_groups = strip_all_trailing_groups(returned_title)
@@ -2429,7 +2466,15 @@ def loose_remix_match(expected_title, returned_title):
 
     expected_set = {normalize_group(g) for g in expected_groups}
     returned_set = {normalize_group(g) for g in returned_groups}
-    return bool(expected_set & returned_set)
+    if expected_set & returned_set:
+        return True
+
+    if expected_artist:
+        for group in returned_groups:
+            if is_named_remix_qualifier(group) and _qualifier_names_already_expected(group, expected_artist):
+                return True
+
+    return False
 
 
 def extract_feature_names_from_groups(groups):
@@ -2804,7 +2849,10 @@ def search_cover_itunes(artist, title, log=safe_print, max_retries=2, allow_loos
             swapped_ok = exact_match(title, returned_artist) and artist_sets_match(artist, returned_title_normalized)
 
             loose_ok = False
-            if not (artist_ok or swapped_ok) and allow_loose_remix_match and loose_remix_match(title, returned_title):
+            if (
+                not (artist_ok or swapped_ok) and allow_loose_remix_match
+                and loose_remix_match(title, returned_title, expected_artist=artist)
+            ):
                 _, returned_groups = strip_all_trailing_groups(returned_title)
                 returned_artist_set = split_artist_names(returned_artist) | extract_feature_names_from_groups(returned_groups)
                 loose_ok = split_artist_names(artist) <= returned_artist_set
@@ -3165,7 +3213,7 @@ def get_spotify_token(log=safe_print, on_auth_error=None):
         return None
 
 
-def _search_cover_spotify_query(query, artist, title, token, log):
+def _search_cover_spotify_query(query, artist, title, token, log, allow_loose_remix_match=False):
     """
     Runs a single Spotify search query and validates its candidates -
     factored out of search_cover_spotify() so it can be tried with more
@@ -3173,6 +3221,9 @@ def _search_cover_spotify_query(query, artist, title, token, log):
     checking logic. Returns (image_bytes, returned_artist, returned_title)
     on a confirmed match, or None (also returning the raw result list, for
     logging) when nothing in this query's results checks out.
+
+    allow_loose_remix_match mirrors search_cover_itunes's own parameter of
+    the same name - see there.
     """
     response = requests.get(
         "https://api.spotify.com/v1/search",
@@ -3201,8 +3252,9 @@ def _search_cover_spotify_query(query, artist, title, token, log):
         # rather than our own "Title (X Remix)" convention, and/or drops a
         # droppable "Extended"/"Radio" modifier one side has and the other
         # doesn't (see strip_generic_qualifier_modifiers).
+        returned_title_reformatted = reformat_trailing_dash_mix(returned_title)
         returned_title_normalized = strip_feature_suffix(
-            strip_generic_qualifier_modifiers(strip_generic_mix_suffix(reformat_trailing_dash_mix(returned_title)))
+            strip_generic_qualifier_modifiers(strip_generic_mix_suffix(returned_title_reformatted))
         )
 
         artist_ok = (
@@ -3211,7 +3263,16 @@ def _search_cover_spotify_query(query, artist, title, token, log):
         )
         swapped_ok = exact_match(title, returned_artist) and artist_sets_match(artist, returned_title_normalized)
 
-        if not (artist_ok or swapped_ok):
+        loose_ok = False
+        if (
+            not (artist_ok or swapped_ok) and allow_loose_remix_match
+            and loose_remix_match(title, returned_title_reformatted, expected_artist=artist)
+        ):
+            _, returned_groups = strip_all_trailing_groups(returned_title_reformatted)
+            returned_artist_set = split_artist_names(returned_artist) | extract_feature_names_from_groups(returned_groups)
+            loose_ok = split_artist_names(artist) <= returned_artist_set
+
+        if not (artist_ok or swapped_ok or loose_ok):
             continue
 
         images = result.get("album", {}).get("images", [])
@@ -3235,7 +3296,7 @@ def _search_cover_spotify_query(query, artist, title, token, log):
     return None, results
 
 
-def search_cover_spotify(artist, title, token, log=safe_print):
+def search_cover_spotify(artist, title, token, log=safe_print, allow_loose_remix_match=False):
     """
     Checks up to 10 candidates (not just the top one), mirroring
     search_cover_itunes()/search_cover_soundcloud() - only ever called as
@@ -3256,12 +3317,17 @@ def search_cover_spotify(artist, title, token, log=safe_print):
     goes through the same artist_sets_match() validation either way, so
     this can only find a match that was already going to be accepted, not
     loosen what's accepted.
+
+    allow_loose_remix_match: see search_cover_itunes's identical parameter.
     """
     if not token:
         return None
 
     try:
-        match, results = _search_cover_spotify_query(build_search_query(artist, title), artist, title, token, log)
+        match, results = _search_cover_spotify_query(
+            build_search_query(artist, title), artist, title, token, log,
+            allow_loose_remix_match=allow_loose_remix_match,
+        )
         if match:
             return match
 
@@ -3278,7 +3344,9 @@ def search_cover_spotify(artist, title, token, log=safe_print):
 
         if artist.strip():
             log("  [Spotify] Retrying with a title-only query...")
-            match, title_only_results = _search_cover_spotify_query(title, artist, title, token, log)
+            match, title_only_results = _search_cover_spotify_query(
+                title, artist, title, token, log, allow_loose_remix_match=allow_loose_remix_match,
+            )
             if match:
                 return match
             if title_only_results:
