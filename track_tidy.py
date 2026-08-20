@@ -2880,8 +2880,22 @@ def build_search_query(artist, title):
     punctuation. A comma-separated multi-artist string or a parenthesized
     remix name can bury the exact version we want under a heap of
     same-song alternates, even when it's genuinely in the results.
+
+    A short (<=6 char) parenthesized group - almost always an artist
+    disambiguator (e.g. "Trace (UZ)", "Murphy's Law (UK)", same kind
+    split_artist_names() already strips before COMPARING artist names,
+    see its own docstring) - is dropped ENTIRELY rather than just having
+    its parens turned to spaces, unlike everything else here. Real
+    report: "Trace (UZ) - G.L.A.M" returned zero relevant iTunes results
+    at all - the literal "UZ" search term fuzzy-matched to unrelated
+    artists ("Lil Uzi Vert", "U2") and derailed ranking completely, even
+    though "Trace G.L.A.M" alone finds the exact right track as the #1
+    result. A real remix/edit qualifier (kept, just de-punctuated below)
+    is essentially never this short - "(Mix)"/"(Edit)" are the rare
+    exceptions, and losing a single generic word like that from the
+    query costs nothing.
     """
-    combined = f"{artist} {title}"
+    combined = re.sub(r"\([^()]{1,6}\)", " ", f"{artist} {title}")
     cleaned = re.sub(r"[,()\[\]]", " ", combined)
     return re.sub(r"\s+", " ", cleaned).strip()
 
