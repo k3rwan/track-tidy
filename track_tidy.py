@@ -3428,6 +3428,29 @@ def get_spotify_token(log=safe_print, on_auth_error=None, on_rate_limited=None):
 SPOTIFY_SEARCH_RATE_LIMIT_COOLDOWN_SECONDS = 60
 _spotify_search_cooldown = _SourceCooldown()
 
+# Paces every Spotify search request the same way _itunes_throttle() paces
+# iTunes (see there) - search_cover_spotify() can fire up to 4 of these
+# back-to-back for a single track (plain + remix-qualified retry, each with
+# its own title-only fallback - see its docstring), and it's tried for
+# every file iTunes didn't already resolve, which in practice is often most
+# of a scan, not "very few files" as originally assumed. Without any
+# pacing, that burst was tripping Spotify's real rate limit within the
+# first several files, making the "Spotify's request limit has been
+# reached" popup show up on nearly every scan. 0.5s apart keeps requests
+# under ~120/min, which real scans no longer trip.
+SPOTIFY_MIN_REQUEST_INTERVAL_SECONDS = 0.5
+_spotify_throttle_lock = threading.Lock()
+_spotify_last_request_time = 0.0
+
+
+def _spotify_throttle():
+    global _spotify_last_request_time
+    with _spotify_throttle_lock:
+        wait_seconds = _spotify_last_request_time + SPOTIFY_MIN_REQUEST_INTERVAL_SECONDS - time.time()
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
+        _spotify_last_request_time = time.time()
+
 
 def _search_cover_spotify_query(query, artist, title, token, log, allow_loose_remix_match=False, on_rate_limited=None):
     """
@@ -3446,6 +3469,8 @@ def _search_cover_spotify_query(query, artist, title, token, log, allow_loose_re
     if _spotify_search_cooldown.active():
         log("  [Spotify] Still rate limited from earlier in this scan - skipping.")
         return None, []
+
+    _spotify_throttle()
 
     response = requests.get(
         "https://api.spotify.com/v1/search",
