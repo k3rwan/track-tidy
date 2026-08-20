@@ -1226,6 +1226,7 @@ class TaggerInterface:
 
         self.notebook.select(0)
         self._set_buttons_enabled(False)
+        self._show_scan_progress_bar()
         self._run_in_background(self._run_scan, [relative_name])
 
     # --- UI construction ---
@@ -1958,7 +1959,21 @@ class TaggerInterface:
                     )
                     return
 
+        self._show_scan_progress_bar()
         self._run_in_background(self._run_scan, files_to_scan)
+
+    def _show_scan_progress_bar(self):
+        """Shows the same progress bar Apply uses (progress_canvas, right
+        below the Apply button) - reused as-is rather than a second bar
+        near the Scan button, since Scan and Apply never run at once."""
+        if not self.progress_canvas.winfo_ismapped():
+            self.progress_canvas.pack(fill="x")
+            self._adjust_window_height()
+        self._update_progress_bar(0, "0 %")
+
+    def _update_scan_progress_bar(self, scanned_count, total):
+        fraction = scanned_count / total if total else 0
+        self._update_progress_bar(fraction, f"{round(fraction * 100)} %")
 
     def _run_scan(self, explicit_files=None):
         number_before = len(self.scanned_plan)
@@ -2029,10 +2044,12 @@ class TaggerInterface:
                 info, scanned_count, total = self._pending_scan_reveals.pop(0)
                 self._add_scan_row(info)
                 self.scan_button.configure(text=f"Scan - {scanned_count}/{total}")
+                self._update_scan_progress_bar(scanned_count, total)
         elif self._pending_scan_reveals:
             info, scanned_count, total = self._pending_scan_reveals.pop(0)
             self._add_scan_row(info)
             self.scan_button.configure(text=f"Scan - {scanned_count}/{total}")
+            self._update_scan_progress_bar(scanned_count, total)
 
         if not self._pending_scan_reveals and self._pending_scan_done is not None:
             content, self._pending_scan_done = self._pending_scan_done, None
@@ -2388,6 +2405,10 @@ class TaggerInterface:
     def _finalize_scan(self, result):
         removed_files, number_before = result
         self._set_buttons_enabled(True)
+
+        if self.progress_canvas.winfo_ismapped():
+            cancelled = self.cancel_requested.is_set()
+            self._update_progress_bar(0 if cancelled else 1.0, "Cancelled" if cancelled else "Done ✓")
 
         # Removes files that no longer exist on disk
         for file_name in removed_files:
