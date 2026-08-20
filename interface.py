@@ -100,6 +100,16 @@ def resource_path(filename):
 CHECKED_BOX = "☑"
 EMPTY_BOX = "☐"
 PROCESSED_CHECK = "✔"
+# Shown in the "apply" column instead of PROCESSED_CHECK for a row the
+# scan found already fully tagged (see track_tidy.py's "already_applied") -
+# distinguishes "nothing to do, already done before this scan" from "this
+# scan just processed it".
+ALREADY_APPLIED_MARK = "●"
+
+# How often a buffered scan result is revealed into the table - see
+# _reveal_next_scan_row(). Purely cosmetic pacing so tracks don't all pop
+# in at once; the actual scan underneath is unaffected.
+SCAN_REVEAL_INTERVAL_MS = 500
 
 THUMBNAIL_SIZE = (44, 44)
 TABLE_ROW_HEIGHT = 48
@@ -1919,9 +1929,9 @@ class TaggerInterface:
                 scanned_count["value"] += 1
                 # Not displayed the instant it's ready - see
                 # _reveal_next_scan_row(): queued here so the TABLE reveals
-                # tracks no faster than one per second, while the actual
-                # scan (this callback) keeps running at full speed
-                # underneath, unaffected.
+                # tracks no faster than SCAN_REVEAL_INTERVAL_MS apart, while
+                # the actual scan (this callback) keeps running at full
+                # speed underneath, unaffected.
                 self.message_queue.put(("file_scanned", (info, scanned_count["value"], total)))
 
             tagger.scan_files(
@@ -1942,11 +1952,12 @@ class TaggerInterface:
         self.message_queue.put(("scan_done", (removed_files, number_before)))
 
     def _reveal_next_scan_row(self):
-        """Ticks once a second, for the app's entire lifetime: pops at most
-        one buffered scan result into the table (see the "file_scanned"
-        handler in _start_message_loop) so tracks visibly appear no faster
-        than one per second, no matter how fast the actual scan (running
-        unaffected in the background) produces them. Only finalizes the
+        """Ticks every SCAN_REVEAL_INTERVAL_MS, for the app's entire
+        lifetime: pops at most one buffered scan result into the table (see
+        the "file_scanned" handler in _start_message_loop) so tracks
+        visibly appear no faster than that, no matter how fast the actual
+        scan (running unaffected in the background) produces them. Only
+        finalizes the
         scan (see _finalize_scan) once every buffered result has actually
         been revealed - otherwise the summary/buttons would jump ahead of
         rows still trickling into view.
@@ -1970,7 +1981,7 @@ class TaggerInterface:
             content, self._pending_scan_done = self._pending_scan_done, None
             self._finalize_scan(content)
 
-        self.window.after(1000, self._reveal_next_scan_row)
+        self.window.after(SCAN_REVEAL_INTERVAL_MS, self._reveal_next_scan_row)
 
     def _add_scan_row(self, info):
         """Immediately adds a row to the table, ABOVE the previous ones, as soon as a file has just been scanned."""
@@ -2041,7 +2052,13 @@ class TaggerInterface:
 
             if query and query not in searchable:
                 continue
-            if no_cover_only and info.get("cover_source"):
+            # has_cover, not just cover_source: a track that already had a
+            # cover before this scan (kept as-is, including an
+            # already_applied track - see track_tidy.py) never gets a
+            # cover_source of its own, since no online search even ran for
+            # it - checking cover_source alone wrongly treated it as
+            # cover-less and showed it under this filter.
+            if no_cover_only and (info.get("cover_source") or info.get("has_cover")):
                 hidden_with_cover += 1
                 continue
 
@@ -2335,7 +2352,8 @@ class TaggerInterface:
                 )
 
             no_cover_infos = [
-                info for info in self.scanned_plan if not info.get("processed") and not info.get("cover_source")
+                info for info in self.scanned_plan
+                if not info.get("processed") and not info.get("cover_source") and not info.get("has_cover")
             ]
             if no_cover_infos:
                 self._append_to_journal(f"{len(no_cover_infos)} track(s) currently have no cover match.")
@@ -2673,7 +2691,13 @@ class TaggerInterface:
             # this back to a plain checked box instead - the file's own
             # tags no longer match what the table shows, so "done" (✔)
             # would be actively misleading until the next Apply catches up.
-            if info.get("fix_pending"):
+            if info.get("already_applied"):
+                # Already had a cover + complete tags before this scan even
+                # ran (search skipped - see track_tidy.py's
+                # "already_applied") - distinct from PROCESSED_CHECK, which
+                # means THIS run actually did something to the row.
+                apply_box = ALREADY_APPLIED_MARK
+            elif info.get("fix_pending"):
                 apply_box = CHECKED_BOX
             else:
                 apply_box = PROCESSED_CHECK if info.get("apply_changes") else EMPTY_BOX
@@ -2695,7 +2719,10 @@ class TaggerInterface:
         else:
             displayed_artist = info["current_artist"] or "(empty)"
 
-        apply_box = CHECKED_BOX if apply else EMPTY_BOX
+        if info.get("already_applied"):
+            apply_box = ALREADY_APPLIED_MARK
+        else:
+            apply_box = CHECKED_BOX if apply else EMPTY_BOX
 
         if needs_conversion:
             convert_box = CHECKED_BOX if info["convert"] else EMPTY_BOX
@@ -3799,7 +3826,7 @@ class TaggerInterface:
                 elif message_type == "file_scanned":
                     # Buffered, not shown immediately - see
                     # _reveal_next_scan_row(), which pops these into the
-                    # table no faster than one per second.
+                    # table no faster than SCAN_REVEAL_INTERVAL_MS apart.
                     self._pending_scan_reveals.append(content)
 
                 elif message_type == "mention_added":
