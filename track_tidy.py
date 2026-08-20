@@ -1883,6 +1883,44 @@ def search_cover_manual_with_tokens(artist, title, log=safe_print, on_auth_error
     )
 
 
+def _is_already_applied(has_cover, tags_already_present, current_cover_bytes):
+    """
+    Whether a file already has both a cover AND clean tags - true exactly
+    when a previous Apply already ran on it (or it came pre-tagged from
+    somewhere else). A BANNED existing cover (see is_banned_cover_image/
+    effective_cover_bytes) disqualifies this even with clean tags - that
+    cover needs replacing, which needs a real online search, exactly like
+    write_tags() already treats a banned existing cover as no cover at all
+    when deciding whether to remove it. Shared by _prepare_scan (per-file,
+    during a scan already underway) and find_already_applied_files (a
+    cheap local-only precheck run BEFORE a scan starts, so interface.py
+    can ask the user whether to bother rescanning these at all) so the two
+    can never drift apart on what counts as "already applied".
+    """
+    return has_cover and tags_already_present and not is_banned_cover_image(current_cover_bytes)
+
+
+def find_already_applied_files(file_list):
+    """
+    Local-only (no network) precheck: returns the subset of file_list that
+    already looks fully applied (see _is_already_applied) - meant to run
+    BEFORE a scan starts, so the caller can ask the user whether to
+    rescan those too or skip them entirely, without needing to run the
+    heavier _prepare_scan (mention detection, search-query computation)
+    just to find out.
+    """
+    already_applied = []
+    for file_name in file_list:
+        full_path = os.path.join(MUSIC_FOLDER, file_name)
+        has_cover, current_artist, current_title, current_cover_bytes = read_current_info(full_path)
+        _detected_artist, _detected_title, tags_already_present = resolve_artist_title(
+            file_name, current_artist, current_title
+        )
+        if _is_already_applied(has_cover, tags_already_present, current_cover_bytes):
+            already_applied.append(file_name)
+    return already_applied
+
+
 def _prepare_scan(file_name, log=safe_print, on_new_mention=None):
     """
     Local-only part of analyzing a file (no network): reads tags, resolves
@@ -1940,20 +1978,14 @@ def _prepare_scan(file_name, log=safe_print, on_new_mention=None):
         "search_title": search_title,
         "remix_qualified_title": remix_qualified_title,
         "acoustid_identified": False,  # set to True in place by _try_acoustid_correction, if it runs
-        # A file already has both a cover AND clean tags exactly when a
-        # previous Apply already ran on it (or it came pre-tagged from
-        # somewhere else) - either way there's nothing a fresh online
-        # search could improve, so scan_files() skips iTunes/Spotify/
-        # SoundCloud/AcoustID entirely for it instead of re-spending quota
-        # re-confirming what's already there (this is what "double scan"
-        # means in this codebase - rescanning a folder that still has
-        # already-applied files sitting in it).
-        # A BANNED existing cover (see is_banned_cover_image/
-        # effective_cover_bytes) disqualifies this even with clean tags -
-        # that cover needs replacing, which needs a real online search,
-        # exactly like write_tags() already treats a banned existing cover
-        # as no cover at all when deciding whether to remove it.
-        "already_applied": has_cover and tags_already_present and not is_banned_cover_image(current_cover_bytes),
+        # See _is_already_applied - there's nothing a fresh online search
+        # could improve on a file that's already fully tagged, so
+        # scan_files() skips iTunes/Spotify/SoundCloud/AcoustID entirely
+        # for it instead of re-spending quota re-confirming what's already
+        # there (this is what "double scan" means in this codebase -
+        # rescanning a folder that still has already-applied files sitting
+        # in it).
+        "already_applied": _is_already_applied(has_cover, tags_already_present, current_cover_bytes),
     }
 
 
