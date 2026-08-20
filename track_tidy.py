@@ -2954,8 +2954,13 @@ ITUNES_VARIOUS_ARTISTS_CREDITS = ("Multi-interprètes",)
 # result - its "cover" is the SHOW's own artwork, not the track's real
 # single/album cover. iTunes appends this exact marker in English
 # regardless of storefront locale (confirmed against the FR store), same
-# as ITUNES_VARIOUS_ARTISTS_CREDITS above.
-ITUNES_DJ_MIX_COLLECTION_MARKER = "(dj mix)"
+# as ITUNES_VARIOUS_ARTISTS_CREDITS above. Sometimes bracketed instead of
+# parenthesized (e.g. "Solardo at [UNVRS]: Aug 14, 2025 [DJ Mix] [DJ
+# Mix]", real report: "Amine Edge & DANCE - Halfway Crooks" picked up
+# that set's cover instead of its own release, since a plain "(dj mix)"
+# substring check doesn't match the "[DJ Mix]" bracketed form) - matched
+# with either bracket style below rather than a literal substring.
+ITUNES_DJ_MIX_COLLECTION_MARKER_RE = re.compile(r"[\(\[]dj mix[\)\]]")
 
 
 def search_cover_itunes(artist, title, log=safe_print, max_retries=2, allow_loose_remix_match=False, on_rate_limited=None):
@@ -3074,7 +3079,7 @@ def search_cover_itunes(artist, title, log=safe_print, max_retries=2, allow_loos
                 continue
 
             collection_name = result.get("collectionName") or ""
-            if ITUNES_DJ_MIX_COLLECTION_MARKER in collection_name.lower():
+            if ITUNES_DJ_MIX_COLLECTION_MARKER_RE.search(collection_name.lower()):
                 # Real report: "Roxe - You Do Change (Extended Mix)" -
                 # picked up the artwork of "Experts Only Radio 043 (DJ
                 # Mix)" (a John Summit radio show that happens to include
