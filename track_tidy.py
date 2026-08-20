@@ -2454,6 +2454,31 @@ def split_artist_names(text):
     return names
 
 
+def _artist_name_words_subset(name_a, name_b):
+    """
+    Looser, per-NAME fallback for a single pair of artist names that don't
+    match verbatim - whether name_a's significant (>=3 char) words are
+    (mostly) contained in name_b's. Bridges an aliasing/embellishment
+    difference where one side adds something the other doesn't credit at
+    all - real report: a filename credited "Dave Lee ZR" (a DJ's own
+    handle) for a track Spotify officially credits "Dave 'Love' Lee" -
+    same person, but neither string is a substring of the other, and a
+    plain word-set comparison of the FULL multi-artist strings never gets
+    to compare these two names against each other in isolation.
+
+    Requires at least 2 shared significant words, all of them from the
+    shorter name (not just one) - a single shared word (e.g. matching
+    "Alex Turner" to an unrelated "Alex Baker" on "alex" alone) isn't
+    enough evidence these are the same artist.
+    """
+    words_a = significant_words(name_a)
+    words_b = significant_words(name_b)
+    if len(words_a) < 2 or len(words_b) < 2:
+        return False
+    shorter, longer = (words_a, words_b) if len(words_a) <= len(words_b) else (words_b, words_a)
+    return shorter <= longer
+
+
 def artist_sets_match(expected_artist, returned_artist, returned_title=""):
     """
     Matches a list of artists, ignoring order and separator style (e.g.
@@ -2470,10 +2495,25 @@ def artist_sets_match(expected_artist, returned_artist, returned_title=""):
     Rejecting that as a mismatch let a legitimate single lose out to an
     unrelated compilation whose artist field happened to list every name
     verbatim, including the collective's.
+
+    Falls back to a looser per-name word-overlap comparison
+    (_artist_name_words_subset) when the strict, verbatim version finds no
+    match at all - catches an aliasing difference on an individual artist
+    name (handle vs. official credit) that a whole-string comparison can
+    never bridge. Only tried as a fallback, and only once no name in
+    either side matches verbatim, to keep the common case exactly as
+    strict as before.
     """
     returned_names = split_artist_names(returned_artist) | extract_feature_names(returned_title)
     expected_names = split_artist_names(expected_artist)
-    return expected_names <= returned_names or returned_names <= expected_names
+
+    if expected_names <= returned_names or returned_names <= expected_names:
+        return True
+
+    return (
+        all(any(_artist_name_words_subset(e, r) for r in returned_names) for e in expected_names)
+        or all(any(_artist_name_words_subset(r, e) for e in expected_names) for r in returned_names)
+    )
 
 
 def artist_names_match(expected_artist, returned_artist):
@@ -2706,7 +2746,15 @@ def search_cover_itunes(artist, title, log=safe_print, max_retries=2, allow_loos
             # are represented.
             returned_artist = unicodedata.normalize("NFC", result.get("artistName", ""))
             returned_title = unicodedata.normalize("NFC", result.get("trackName", ""))
-            returned_title_normalized = strip_feature_suffix(strip_generic_mix_suffix(returned_title))
+            # A store crediting a named remix as "Title - X Remix" (dash)
+            # instead of our own "Title (X Remix)" convention would
+            # otherwise never exact_match, even for the exact right track -
+            # reformat_trailing_dash_mix() is the same normalization
+            # resolve_artist_title() already applies to OUR OWN file's
+            # title for this exact reason.
+            returned_title_normalized = strip_feature_suffix(
+                strip_generic_mix_suffix(reformat_trailing_dash_mix(returned_title))
+            )
 
             artist_ok = artist_sets_match(artist, returned_artist, returned_title) and exact_match(title_normalized, returned_title_normalized)
             swapped_ok = exact_match(title, returned_artist) and artist_sets_match(artist, returned_title_normalized)
@@ -3104,7 +3152,12 @@ def _search_cover_spotify_query(query, artist, title, token, log):
             "NFC", ", ".join(a.get("name", "") for a in result.get("artists", []))
         )
         returned_title = unicodedata.normalize("NFC", result.get("name", ""))
-        returned_title_normalized = strip_feature_suffix(strip_generic_mix_suffix(returned_title))
+        # See search_cover_itunes's identical normalization for why -
+        # Spotify commonly credits a remix as "Title - X Remix" (dash)
+        # rather than our own "Title (X Remix)" convention.
+        returned_title_normalized = strip_feature_suffix(
+            strip_generic_mix_suffix(reformat_trailing_dash_mix(returned_title))
+        )
 
         artist_ok = (
             artist_sets_match(artist, returned_artist, returned_title)
