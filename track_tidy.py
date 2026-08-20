@@ -2456,18 +2456,27 @@ def strip_all_trailing_groups(text):
     return text.strip(), groups
 
 
+def _qualifier_name_set(qualifier_text):
+    """
+    The set of person/artist names credited in a remix/edit qualifier (e.g.
+    "Jean-Marc & Samson Remix" -> {"jean-marc", "samson"}) - strips the mix
+    keyword itself first (remix/edit/mix/bootleg/reboot), then splits what's
+    left the same way any other multi-artist field is split (ignoring
+    separator style - "X, Y Remix" and "X & Y Remix" credit the same people).
+    """
+    stripped = re.sub(r"\b(?:remix|edit|mix|bootleg|reboot)\b", "", qualifier_text, flags=re.IGNORECASE)
+    return split_artist_names(stripped)
+
+
 def _qualifier_names_already_expected(qualifier_text, expected_artist):
     """
     Whether every name mentioned in a remix/edit qualifier (e.g. "Jean-Marc
     & Samson Remix") is already among the expected artist credits for this
-    track. Strips the mix keyword itself first (remix/edit/mix/bootleg/
-    reboot), then splits what's left as a multi-artist string, same as any
-    other artist field. False if nothing's left to check (a purely generic
-    qualifier like "(Extended Remix)" would otherwise vacuously "pass" - a
-    qualifier_names empty set is never treated as a match).
+    track. False if nothing's left to check (a purely generic qualifier
+    like "(Extended Remix)" would otherwise vacuously "pass" - an empty
+    qualifier name set is never treated as a match).
     """
-    stripped = re.sub(r"\b(?:remix|edit|mix|bootleg|reboot)\b", "", qualifier_text, flags=re.IGNORECASE)
-    qualifier_names = split_artist_names(stripped)
+    qualifier_names = _qualifier_name_set(qualifier_text)
     if not qualifier_names:
         return False
     return qualifier_names <= split_artist_names(expected_artist)
@@ -2494,7 +2503,12 @@ def loose_remix_match(expected_title, returned_title, expected_artist=None):
       (Extended Remix)" vs. Spotify's own "Life Is Simple (Move Your Body)
       [...] [Jean-Marc & Samson Remix]" - Jean-Marc and Samson are both
       already in our own artist credit, just not called out by name in
-      OUR qualifier.
+      OUR qualifier; OR
+    - a qualifier on each side names the exact same set of people, just
+      with a different separator style (see _qualifier_name_set - "X, Y
+      Remix" and "X & Y Remix" credit the same two remixers) - real
+      report: "Bedouin - Better Than This (Dorian Craft, Baron Remix)"
+      vs. iTunes's own "Better Than This (Dorian Craft & Baron Remix)".
     """
     expected_core, expected_groups = strip_all_trailing_groups(expected_title)
     returned_core, returned_groups = strip_all_trailing_groups(returned_title)
@@ -2510,6 +2524,14 @@ def loose_remix_match(expected_title, returned_title, expected_artist=None):
     returned_set = {normalize_group(g) for g in returned_groups}
     if expected_set & returned_set:
         return True
+
+    for expected_group in expected_groups:
+        expected_names = _qualifier_name_set(expected_group)
+        if not expected_names:
+            continue
+        for returned_group in returned_groups:
+            if expected_names == _qualifier_name_set(returned_group):
+                return True
 
     if expected_artist:
         for group in returned_groups:
