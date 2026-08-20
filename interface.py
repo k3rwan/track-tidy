@@ -1843,6 +1843,7 @@ class TaggerInterface:
         self.itunes_rate_limit_warned = False
         self.spotify_rate_limit_warned = False
         self.acoustid_rate_limit_warned = False
+        self._rate_limited_messages_this_scan = []  # shown as one combined dialog in _finalize_scan
         self.source_auth_error_warned = {}  # "SoundCloud" -> already warned this scan
         self._pending_scan_reveals = []  # (info, scanned_count, total) queued for _reveal_next_scan_row
         self._pending_scan_done = None  # (removed_files, number_before), held until reveals catch up
@@ -2428,6 +2429,23 @@ class TaggerInterface:
             self.progress_canvas.pack_forget()
             self._update_progress_bar(0, "")
             self._adjust_window_height()
+
+        # One combined warning for every source that hit its rate limit
+        # during this scan, shown here instead of interrupting mid-scan
+        # per source (see the message-loop handlers, which just record
+        # into _rate_limited_messages_this_scan) - matches how
+        # _check_source_health_on_startup's own multi-source warning is
+        # already combined into one dialog, and lets the scan run to
+        # completion uninterrupted instead of stacking up to 4 separate
+        # modal popups if several sources happen to saturate in the same
+        # run.
+        if self._rate_limited_messages_this_scan:
+            messagebox.showwarning(
+                "Cover source rate limit reached",
+                "\n\n".join(self._rate_limited_messages_this_scan)
+                + "\n\nThe scan kept going with the other cover sources in the meantime.",
+                parent=self.window,
+            )
 
         # Removes files that no longer exist on disk
         for file_name in removed_files:
@@ -3450,13 +3468,18 @@ class TaggerInterface:
     # --- Truncated-text tooltip ---
 
     def _update_cell_tooltip(self, row_id, column_id, event):
-        """Shows a tooltip with the full text of a Title/Artist cell, but
-        only when the displayed text doesn't actually fit in the column
-        (so it never fires on rows that don't need it)."""
-        col_name = {"#2": "title", "#3": "artist"}.get(column_id) if row_id else None
+        """Shows a tooltip with the full text of a Title/Artist cell when
+        it's too long to fit in its column, or - for the "apply" column,
+        whose single-character marks (☑/☐/✔/-) are never too long to fit
+        but aren't self-explanatory either - a plain-language explanation
+        of what that row's specific mark currently means."""
+        col_name = {"#1": "apply", "#2": "title", "#3": "artist"}.get(column_id) if row_id else None
         text = ""
 
-        if col_name and self.table.exists(row_id):
+        if col_name == "apply" and self.table.exists(row_id):
+            info = next((i for i in self.scanned_plan if i["file"] == row_id), None)
+            text = self._apply_mark_tooltip_text(info) if info else ""
+        elif col_name and self.table.exists(row_id):
             values = self.table.item(row_id, "values")
             col_index = COLUMNS.index(col_name)
             text = values[col_index] if col_index < len(values) else ""
@@ -3474,6 +3497,26 @@ class TaggerInterface:
         self._tooltip_key = key
         if key:
             self._show_tooltip(text, event)
+
+    def _apply_mark_tooltip_text(self, info):
+        """Plain-language meaning of this row's current "apply" column
+        mark - mirrors _build_row_values()'s own logic for which mark
+        shows, so the two can never drift out of sync."""
+        if info.get("processed"):
+            if info.get("fix_pending"):
+                return f"{CHECKED_BOX} Edited since Apply - will be re-applied next time."
+            if info.get("already_applied") and not info.get("apply_changes"):
+                return f"{ALREADY_APPLIED_MARK} Already had a cover and tags before this scan - nothing was applied."
+            return (
+                f"{PROCESSED_CHECK} Applied." if info.get("apply_changes")
+                else f"{EMPTY_BOX} Not selected - kept as-is."
+            )
+        if info.get("already_applied") and not info.get("apply_changes"):
+            return f"{ALREADY_APPLIED_MARK} Already has a cover and tags - nothing to apply. Click to select it anyway."
+        return (
+            f"{CHECKED_BOX} Selected for Apply - click to unselect." if info.get("apply_changes")
+            else f"{EMPTY_BOX} Not selected - click to include it in Apply."
+        )
 
     def _show_tooltip(self, text, event):
         self._tooltip_window = tk.Toplevel(self.window)
@@ -3981,44 +4024,33 @@ class TaggerInterface:
                 elif message_type == "soundcloud_rate_limited":
                     if not self.soundcloud_rate_limit_warned:
                         self.soundcloud_rate_limit_warned = True
-                        messagebox.showwarning(
-                            "SoundCloud rate limit reached",
-                            "SoundCloud's request limit has been reached for now.\n"
-                            "No cover will be fetched for this scan — try again later.",
-                            parent=self.window,
+                        self._rate_limited_messages_this_scan.append(
+                            "SoundCloud's request limit has been reached - no cover will be fetched from it "
+                            "for the rest of this scan."
                         )
 
                 elif message_type == "itunes_rate_limited":
                     if not self.itunes_rate_limit_warned:
                         self.itunes_rate_limit_warned = True
-                        messagebox.showwarning(
-                            "iTunes rate limit reached",
-                            "iTunes' request limit has been reached for now.\n"
-                            f"iTunes will be paused for {tagger.ITUNES_RATE_LIMIT_COOLDOWN_SECONDS}s - "
-                            "the scan will keep going with the other cover sources in the meantime.",
-                            parent=self.window,
+                        self._rate_limited_messages_this_scan.append(
+                            "iTunes' request limit has been reached - it'll be paused for "
+                            f"{tagger.ITUNES_RATE_LIMIT_COOLDOWN_SECONDS}s."
                         )
 
                 elif message_type == "spotify_rate_limited":
                     if not self.spotify_rate_limit_warned:
                         self.spotify_rate_limit_warned = True
-                        messagebox.showwarning(
-                            "Spotify rate limit reached",
-                            "Spotify's request limit has been reached for now.\n"
-                            f"Spotify will be paused for {tagger.SPOTIFY_SEARCH_RATE_LIMIT_COOLDOWN_SECONDS}s - "
-                            "the scan will keep going with the other cover sources in the meantime.",
-                            parent=self.window,
+                        self._rate_limited_messages_this_scan.append(
+                            "Spotify's request limit has been reached - it'll be paused for "
+                            f"{tagger.SPOTIFY_SEARCH_RATE_LIMIT_COOLDOWN_SECONDS}s."
                         )
 
                 elif message_type == "acoustid_rate_limited":
                     if not self.acoustid_rate_limit_warned:
                         self.acoustid_rate_limit_warned = True
-                        messagebox.showwarning(
-                            "AcoustID rate limit reached",
-                            "AcoustID's request limit has been reached for now.\n"
-                            f"AcoustID will be paused for {tagger.ACOUSTID_RATE_LIMIT_COOLDOWN_SECONDS}s - "
-                            "the scan will keep going with the other cover sources in the meantime.",
-                            parent=self.window,
+                        self._rate_limited_messages_this_scan.append(
+                            "AcoustID's request limit has been reached - it'll be paused for "
+                            f"{tagger.ACOUSTID_RATE_LIMIT_COOLDOWN_SECONDS}s."
                         )
 
                 elif message_type == "auth_error":
