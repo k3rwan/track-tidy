@@ -109,7 +109,7 @@ ALREADY_APPLIED_MARK = "-"
 # How often a buffered scan result is revealed into the table - see
 # _reveal_next_scan_row(). Purely cosmetic pacing so tracks don't all pop
 # in at once; the actual scan underneath is unaffected.
-SCAN_REVEAL_INTERVAL_MS = 500
+SCAN_REVEAL_INTERVAL_MS = 1000
 
 THUMBNAIL_SIZE = (44, 44)
 TABLE_ROW_HEIGHT = 48

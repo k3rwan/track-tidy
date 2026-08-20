@@ -3233,6 +3233,27 @@ def looks_like_mix_variant(text):
     return bool(MIX_VARIANT_RE.search(text))
 
 
+# Paces every SoundCloud search request the same way _itunes_throttle()/
+# _spotify_throttle() pace their own sources (see there) - SoundCloud is
+# tried for every file iTunes AND Spotify (when reached) didn't already
+# resolve, and unlike those two this endpoint had no pacing at all before,
+# only a reactive cooldown on the separate TOKEN endpoint. 1.5s apart,
+# matching the other two, to stay under SoundCloud's real per-app limit
+# instead of only reacting after a 429 already happened.
+SOUNDCLOUD_MIN_REQUEST_INTERVAL_SECONDS = 1.5
+_soundcloud_throttle_lock = threading.Lock()
+_soundcloud_last_request_time = 0.0
+
+
+def _soundcloud_throttle():
+    global _soundcloud_last_request_time
+    with _soundcloud_throttle_lock:
+        wait_seconds = _soundcloud_last_request_time + SOUNDCLOUD_MIN_REQUEST_INTERVAL_SECONDS - time.time()
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
+        _soundcloud_last_request_time = time.time()
+
+
 def search_cover_soundcloud(artist, title, token, log=safe_print):
     """
     Checks up to 10 candidates, not just the top one - SoundCloud's
@@ -3242,6 +3263,8 @@ def search_cover_soundcloud(artist, title, token, log=safe_print):
     """
     if not token:
         return None
+
+    _soundcloud_throttle()
 
     try:
         response = requests.get(
