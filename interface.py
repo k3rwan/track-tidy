@@ -276,6 +276,8 @@ class TaggerInterface:
         self._table_font = tkfont.nametofont("TkDefaultFont")
         self.soundcloud_rate_limit_warned = False
         self.itunes_rate_limit_warned = False
+        self.spotify_rate_limit_warned = False
+        self.acoustid_rate_limit_warned = False
         self.source_auth_error_warned = {}  # "SoundCloud" -> already warned this scan
         self.mention_counts = {}  # raw mention text -> number of times seen
         self._pending_scan_reveals = []  # (info, scanned_count, total) queued for _reveal_next_scan_row
@@ -1176,6 +1178,8 @@ class TaggerInterface:
         self._sync_mentions_to_remove()
         self.soundcloud_rate_limit_warned = False
         self.itunes_rate_limit_warned = False
+        self.spotify_rate_limit_warned = False
+        self.acoustid_rate_limit_warned = False
         self.source_auth_error_warned = {}
         self._pending_scan_reveals = []
         self._pending_scan_done = None
@@ -1220,6 +1224,8 @@ class TaggerInterface:
         self.last_scanned_folder = folder
         self.soundcloud_rate_limit_warned = False
         self.itunes_rate_limit_warned = False
+        self.spotify_rate_limit_warned = False
+        self.acoustid_rate_limit_warned = False
         self.source_auth_error_warned = {}
         self._pending_scan_reveals = []
         self._pending_scan_done = None
@@ -1896,6 +1902,8 @@ class TaggerInterface:
         self._sync_mentions_to_remove()
         self.soundcloud_rate_limit_warned = False
         self.itunes_rate_limit_warned = False
+        self.spotify_rate_limit_warned = False
+        self.acoustid_rate_limit_warned = False
         self.source_auth_error_warned = {}
         self._pending_scan_reveals = []
         self._pending_scan_done = None
@@ -2024,6 +2032,8 @@ class TaggerInterface:
                 should_cancel=self.cancel_requested.is_set,
                 on_auth_error=self._on_source_auth_error,
                 on_itunes_rate_limited=lambda: self.message_queue.put(("itunes_rate_limited", None)),
+                on_spotify_rate_limited=lambda: self.message_queue.put(("spotify_rate_limited", None)),
+                on_acoustid_rate_limited=lambda: self.message_queue.put(("acoustid_rate_limited", None)),
             )
 
         except Exception as error:
@@ -3993,6 +4003,28 @@ class TaggerInterface:
                             "iTunes rate limit reached",
                             "iTunes' request limit has been reached for now.\n"
                             f"iTunes will be paused for {tagger.ITUNES_RATE_LIMIT_COOLDOWN_SECONDS}s - "
+                            "the scan will keep going with the other cover sources in the meantime.",
+                            parent=self.window,
+                        )
+
+                elif message_type == "spotify_rate_limited":
+                    if not self.spotify_rate_limit_warned:
+                        self.spotify_rate_limit_warned = True
+                        messagebox.showwarning(
+                            "Spotify rate limit reached",
+                            "Spotify's request limit has been reached for now.\n"
+                            f"Spotify will be paused for {tagger.SPOTIFY_SEARCH_RATE_LIMIT_COOLDOWN_SECONDS}s - "
+                            "the scan will keep going with the other cover sources in the meantime.",
+                            parent=self.window,
+                        )
+
+                elif message_type == "acoustid_rate_limited":
+                    if not self.acoustid_rate_limit_warned:
+                        self.acoustid_rate_limit_warned = True
+                        messagebox.showwarning(
+                            "AcoustID rate limit reached",
+                            "AcoustID's request limit has been reached for now.\n"
+                            f"AcoustID will be paused for {tagger.ACOUSTID_RATE_LIMIT_COOLDOWN_SECONDS}s - "
                             "the scan will keep going with the other cover sources in the meantime.",
                             parent=self.window,
                         )
