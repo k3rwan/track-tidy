@@ -2298,6 +2298,32 @@ def strip_generic_mix_suffix(text):
     return text
 
 
+GENERIC_QUALIFIER_MODIFIER_RE = re.compile(
+    r"\b(?:extended|radio)\s+(?=(?:remix|edit|mix|bootleg|reboot)\b)", re.IGNORECASE
+)
+
+
+def strip_generic_qualifier_modifiers(text):
+    """
+    Drops a generic modifier word ("Extended"/"Radio") immediately before a
+    remix/edit/mix keyword WITHIN a named qualifier (e.g. "Samm Extended
+    Remix" -> "Samm Remix") - comparison purposes only, never written to a
+    file's own tags. Unlike strip_generic_mix_suffix() (which only strips a
+    qualifier that's PURELY generic, e.g. a bare "(Extended Mix)"), this
+    reaches inside an otherwise-named one.
+
+    "X Extended Remix" and "X Remix" commonly refer to the same underlying
+    remix (just a longer mix length, often not even released as a
+    separately credited version) - real report: our title "iLanga (Samm
+    Extended Remix)" vs. Spotify's own "iLanga - Samm Remix" for the
+    identical release. Scoped to only the word directly modifying the mix
+    keyword, so it can't touch an actual name (e.g. "Extended" isn't
+    dropped from "DJ Extended Vibes Remix" - it isn't immediately before
+    "remix" there).
+    """
+    return GENERIC_QUALIFIER_MODIFIER_RE.sub("", text)
+
+
 FEATURE_SUFFIX_RE = re.compile(r"\s*[\(\[](?:feat\.?|ft\.?|featuring)\s+([^)\]]*)[\)\]]\s*$", re.IGNORECASE)
 
 
@@ -2742,7 +2768,7 @@ def search_cover_itunes(artist, title, log=safe_print, max_retries=2, allow_loos
             log(f"  [iTunes] No result at all for '{artist} - {title}'")
             return None
 
-        title_normalized = strip_feature_suffix(strip_generic_mix_suffix(title))
+        title_normalized = strip_feature_suffix(strip_generic_qualifier_modifiers(strip_generic_mix_suffix(title)))
 
         for result in results:
             # iTunes sometimes returns accented text in NFD form (e.g. "a" + a
@@ -2758,9 +2784,11 @@ def search_cover_itunes(artist, title, log=safe_print, max_retries=2, allow_loos
             # otherwise never exact_match, even for the exact right track -
             # reformat_trailing_dash_mix() is the same normalization
             # resolve_artist_title() already applies to OUR OWN file's
-            # title for this exact reason.
+            # title for this exact reason. strip_generic_qualifier_modifiers()
+            # further drops a droppable "Extended"/"Radio" modifier on both
+            # sides (see its docstring).
             returned_title_normalized = strip_feature_suffix(
-                strip_generic_mix_suffix(reformat_trailing_dash_mix(returned_title))
+                strip_generic_qualifier_modifiers(strip_generic_mix_suffix(reformat_trailing_dash_mix(returned_title)))
             )
 
             artist_ok = artist_sets_match(artist, returned_artist, returned_title) and exact_match(title_normalized, returned_title_normalized)
@@ -3152,7 +3180,7 @@ def _search_cover_spotify_query(query, artist, title, token, log):
     if not results:
         return None, []
 
-    title_normalized = strip_feature_suffix(strip_generic_mix_suffix(title))
+    title_normalized = strip_feature_suffix(strip_generic_qualifier_modifiers(strip_generic_mix_suffix(title)))
 
     for result in results:
         returned_artist = unicodedata.normalize(
@@ -3161,9 +3189,11 @@ def _search_cover_spotify_query(query, artist, title, token, log):
         returned_title = unicodedata.normalize("NFC", result.get("name", ""))
         # See search_cover_itunes's identical normalization for why -
         # Spotify commonly credits a remix as "Title - X Remix" (dash)
-        # rather than our own "Title (X Remix)" convention.
+        # rather than our own "Title (X Remix)" convention, and/or drops a
+        # droppable "Extended"/"Radio" modifier one side has and the other
+        # doesn't (see strip_generic_qualifier_modifiers).
         returned_title_normalized = strip_feature_suffix(
-            strip_generic_mix_suffix(reformat_trailing_dash_mix(returned_title))
+            strip_generic_qualifier_modifiers(strip_generic_mix_suffix(reformat_trailing_dash_mix(returned_title)))
         )
 
         artist_ok = (
