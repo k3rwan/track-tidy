@@ -3073,76 +3073,125 @@ def get_spotify_token(log=safe_print, on_auth_error=None):
         return None
 
 
+def _search_cover_spotify_query(query, artist, title, token, log):
+    """
+    Runs a single Spotify search query and validates its candidates -
+    factored out of search_cover_spotify() so it can be tried with more
+    than one query string (see there) without duplicating the candidate-
+    checking logic. Returns (image_bytes, returned_artist, returned_title)
+    on a confirmed match, or None (also returning the raw result list, for
+    logging) when nothing in this query's results checks out.
+    """
+    response = requests.get(
+        "https://api.spotify.com/v1/search",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"q": query, "type": "track", "limit": 10},
+        timeout=10,
+    )
+
+    if response.status_code != 200:
+        log(f"  [Spotify] Search failed: HTTP {response.status_code} - {response.text[:300]}")
+        return None, []
+
+    results = response.json().get("tracks", {}).get("items", [])
+    if not results:
+        return None, []
+
+    title_normalized = strip_feature_suffix(strip_generic_mix_suffix(title))
+
+    for result in results:
+        returned_artist = unicodedata.normalize(
+            "NFC", ", ".join(a.get("name", "") for a in result.get("artists", []))
+        )
+        returned_title = unicodedata.normalize("NFC", result.get("name", ""))
+        returned_title_normalized = strip_feature_suffix(strip_generic_mix_suffix(returned_title))
+
+        artist_ok = (
+            artist_sets_match(artist, returned_artist, returned_title)
+            and exact_match(title_normalized, returned_title_normalized)
+        )
+        swapped_ok = exact_match(title, returned_artist) and artist_sets_match(artist, returned_title_normalized)
+
+        if not (artist_ok or swapped_ok):
+            continue
+
+        images = result.get("album", {}).get("images", [])
+        if not images:
+            log(f"  [Spotify] Match found for '{artist} - {title}' but it has no artwork.")
+            continue
+
+        # Spotify lists images largest-first already; the first one is
+        # typically 640x640, more than enough for an embedded cover.
+        cover_url = images[0].get("url")
+        image_response = requests.get(cover_url, timeout=10)
+
+        if image_response.status_code == 200:
+            if is_banned_cover_image(image_response.content):
+                log(f"  [Spotify] Match found for '{artist} - {title}' but its cover is a known placeholder - skipping.")
+                continue
+            return (image_response.content, returned_artist, returned_title), results
+
+        log(f"  [Spotify] Image download failed (HTTP {image_response.status_code}) for '{artist} - {title}'")
+
+    return None, results
+
+
 def search_cover_spotify(artist, title, token, log=safe_print):
     """
     Checks up to 10 candidates (not just the top one), mirroring
     search_cover_itunes()/search_cover_soundcloud() - only ever called as
     the absolute last resort (see USE_SPOTIFY), so being thorough here
     doesn't cost much - it runs for very few files in a normal scan.
+
+    Tries the artist+title query first, then falls back to a TITLE-ONLY
+    query if that comes back empty/unmatched and there's actually an
+    artist to drop. Real report: "Raven Maize, Dave Lee ZR - Forever
+    Together (CASSIMM Remix)" - a multi-artist credit that includes a
+    garbled/handle-style name ("Dave Lee ZR") - returned only 2, completely
+    unrelated results when searched as artist+title combined, while the
+    exact right track (correctly credited "Dave 'Love' Lee, Raven Maize,
+    CASSIMM" on Spotify) was the #1 result for the title alone. Combining
+    every artist token into the query can apparently derail Spotify's own
+    relevance ranking badly enough to drop the real match out of the top
+    10 entirely - safe to retry title-only since every candidate still
+    goes through the same artist_sets_match() validation either way, so
+    this can only find a match that was already going to be accepted, not
+    loosen what's accepted.
     """
     if not token:
         return None
 
     try:
-        response = requests.get(
-            "https://api.spotify.com/v1/search",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"q": build_search_query(artist, title), "type": "track", "limit": 10},
-            timeout=10,
-        )
+        match, results = _search_cover_spotify_query(build_search_query(artist, title), artist, title, token, log)
+        if match:
+            return match
 
-        if response.status_code != 200:
-            log(f"  [Spotify] Search failed: HTTP {response.status_code} - {response.text[:300]}")
-            return None
-
-        results = response.json().get("tracks", {}).get("items", [])
         if not results:
             log(f"  [Spotify] No result at all for '{artist} - {title}'")
-            return None
-
-        title_normalized = strip_feature_suffix(strip_generic_mix_suffix(title))
-
-        for result in results:
-            returned_artist = unicodedata.normalize(
-                "NFC", ", ".join(a.get("name", "") for a in result.get("artists", []))
+        else:
+            top_result = results[0]
+            top_artist = unicodedata.normalize("NFC", ", ".join(a.get("name", "") for a in top_result.get("artists", [])))
+            top_title = unicodedata.normalize("NFC", top_result.get("name", ""))
+            log(
+                f"  [Spotify] Match rejected (not an exact match among {len(results)} candidate(s)): "
+                f"expected '{artist} - {title}', got '{top_artist} - {top_title}'"
             )
-            returned_title = unicodedata.normalize("NFC", result.get("name", ""))
-            returned_title_normalized = strip_feature_suffix(strip_generic_mix_suffix(returned_title))
 
-            artist_ok = (
-                artist_sets_match(artist, returned_artist, returned_title)
-                and exact_match(title_normalized, returned_title_normalized)
-            )
-            swapped_ok = exact_match(title, returned_artist) and artist_sets_match(artist, returned_title_normalized)
+        if artist.strip():
+            log("  [Spotify] Retrying with a title-only query...")
+            match, title_only_results = _search_cover_spotify_query(title, artist, title, token, log)
+            if match:
+                return match
+            if title_only_results:
+                top_result = title_only_results[0]
+                top_artist = unicodedata.normalize("NFC", ", ".join(a.get("name", "") for a in top_result.get("artists", [])))
+                top_title = unicodedata.normalize("NFC", top_result.get("name", ""))
+                log(
+                    f"  [Spotify] Title-only retry also rejected (not an exact match among "
+                    f"{len(title_only_results)} candidate(s)): expected '{artist} - {title}', "
+                    f"got '{top_artist} - {top_title}'"
+                )
 
-            if not (artist_ok or swapped_ok):
-                continue
-
-            images = result.get("album", {}).get("images", [])
-            if not images:
-                log(f"  [Spotify] Match found for '{artist} - {title}' but it has no artwork.")
-                continue
-
-            # Spotify lists images largest-first already; the first one is
-            # typically 640x640, more than enough for an embedded cover.
-            cover_url = images[0].get("url")
-            image_response = requests.get(cover_url, timeout=10)
-
-            if image_response.status_code == 200:
-                if is_banned_cover_image(image_response.content):
-                    log(f"  [Spotify] Match found for '{artist} - {title}' but its cover is a known placeholder - skipping.")
-                    continue
-                return image_response.content, returned_artist, returned_title
-
-            log(f"  [Spotify] Image download failed (HTTP {image_response.status_code}) for '{artist} - {title}'")
-
-        top_result = results[0]
-        top_artist = unicodedata.normalize("NFC", ", ".join(a.get("name", "") for a in top_result.get("artists", [])))
-        top_title = unicodedata.normalize("NFC", top_result.get("name", ""))
-        log(
-            f"  [Spotify] Match rejected (not an exact match among {len(results)} candidate(s)): "
-            f"expected '{artist} - {title}', got '{top_artist} - {top_title}'"
-        )
         return None
 
     except Exception as error:
