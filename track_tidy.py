@@ -3266,7 +3266,20 @@ def search_cover_soundcloud(artist, title, token, log=safe_print):
                 artist_names_match(artist, track_title) or artist_names_match(artist, uploader_name)
             ) and title_words_overlap(title, track_title)
 
-            swapped_ok = (
+            # Requires a real (non-blank) artist - it exists to catch OUR
+            # OWN artist/title fields being swapped (e.g. the filename put
+            # the title where the artist should be), which is meaningless
+            # with no artist at all to have been swapped in the first
+            # place. Without this guard, a blank artist made
+            # title_words_overlap(artist, track_title) trivially True (see
+            # its own "nothing meaningful to compare against" shortcut),
+            # collapsing swapped_ok down to just artist_names_match(title,
+            # track_title) - a bare substring check against the ENTIRE raw
+            # title, loose enough to false-positive on an unrelated upload
+            # for a file with only a title tag and no artist (e.g. a bare
+            # "Titre.mp3" with nothing else to go on). Real report: too
+            # many wrong matches on exactly this kind of no-artist file.
+            swapped_ok = bool(artist) and (
                 artist_names_match(title, track_title) or artist_names_match(title, uploader_name)
             ) and title_words_overlap(artist, track_title)
 
@@ -3449,9 +3462,13 @@ _spotify_search_cooldown = _SourceCooldown()
 # of a scan, not "very few files" as originally assumed. Without any
 # pacing, that burst was tripping Spotify's real rate limit within the
 # first several files, making the "Spotify's request limit has been
-# reached" popup show up on nearly every scan. 0.5s apart keeps requests
-# under ~120/min, which real scans no longer trip.
-SPOTIFY_MIN_REQUEST_INTERVAL_SECONDS = 0.5
+# reached" popup show up on nearly every scan. A first attempt at 0.5s
+# (~120/min) still wasn't enough - real report: the popup kept showing up
+# too often even with that in place. Matched to iTunes' own already-proven
+# 1.5s (~40/min, see ITUNES_MIN_REQUEST_INTERVAL_SECONDS) instead of
+# re-guessing a new number, since that pacing already stopped the
+# identical problem there.
+SPOTIFY_MIN_REQUEST_INTERVAL_SECONDS = 1.5
 _spotify_throttle_lock = threading.Lock()
 _spotify_last_request_time = 0.0
 
