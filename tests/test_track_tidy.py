@@ -667,14 +667,14 @@ class TryAcoustidCorrectionTests(unittest.TestCase):
         self.assertIsNone(prepared["detected_artist"])
 
     def test_no_match_returns_false(self):
-        tagger.identify_via_acoustid = lambda path, log=None: None
+        tagger.identify_via_acoustid = lambda path, log=None, on_rate_limited=None: None
         prepared = self._prepared()
 
         self.assertFalse(tagger._try_acoustid_correction(prepared))
         self.assertIsNone(prepared["detected_artist"])
 
     def test_confident_match_updates_prepared_fields(self):
-        tagger.identify_via_acoustid = lambda path, log=None: ("Daft Punk", "One More Time")
+        tagger.identify_via_acoustid = lambda path, log=None, on_rate_limited=None: ("Daft Punk", "One More Time")
         prepared = self._prepared()
 
         self.assertTrue(tagger._try_acoustid_correction(prepared))
@@ -684,7 +684,7 @@ class TryAcoustidCorrectionTests(unittest.TestCase):
         self.assertEqual(prepared["remix_qualified_title"], "One More Time")
 
     def test_confident_match_with_remix_qualifier_computes_search_titles(self):
-        tagger.identify_via_acoustid = lambda path, log=None: ("Artist", "Title (Some Remix)")
+        tagger.identify_via_acoustid = lambda path, log=None, on_rate_limited=None: ("Artist", "Title (Some Remix)")
         prepared = self._prepared()
 
         self.assertTrue(tagger._try_acoustid_correction(prepared))
