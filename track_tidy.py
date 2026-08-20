@@ -1856,7 +1856,19 @@ def _search_one_source(
         if has_named_qualifier:
             match_result = search_function(artist, remix_qualified_title, log=log, allow_loose_remix_match=True)
             return match_result, (label if match_result else None)
-        match_result = search_function(artist, search_title, log=log)
+        # allow_loose_remix_match=True even here (no named qualifier of
+        # our own to retry with) - loose_remix_match() itself now also
+        # accepts a store's title once ANY of its own extra trailing
+        # groups are stripped away, as long as the base core title and
+        # artist still match exactly, when OUR side has no groups to
+        # compare against in the first place (see its docstring) - real
+        # report: "Crystal Waters - Gypsy Woman (Extended Mix)" vs. the
+        # store's actual "Gypsy Woman (She's Homeless) (La Da Dee La Da
+        # Da) [Basement Boy Strip To The Bone Mix]" - three extra groups
+        # our simple "(Extended Mix)" (a purely generic qualifier, so
+        # search_title/remix_qualified_title are identical here) had no
+        # way to account for.
+        match_result = search_function(artist, search_title, log=log, allow_loose_remix_match=True)
         if not match_result and remix_qualified_title != search_title:
             match_result = search_function(artist, remix_qualified_title, log=log, allow_loose_remix_match=True)
         return match_result, (label if match_result else None)
@@ -2558,12 +2570,26 @@ def loose_remix_match(expected_title, returned_title, expected_artist=None):
       Remix" and "X & Y Remix" credit the same two remixers) - real
       report: "Bedouin - Better Than This (Dorian Craft, Baron Remix)"
       vs. iTunes's own "Better Than This (Dorian Craft & Baron Remix)".
+
+    A title with NO groups of its own (expected_groups empty - e.g. a
+    bare "Gypsy Woman" once a purely generic "(Extended Mix)" qualifier
+    is stripped for search, nothing specific left to compare against) is
+    accepted outright once the core matches - there's nothing left for
+    the store's own extra groups (a subtitle, a hook, a specifically-
+    named official remix credit) to conflict with. Real report: "Crystal
+    Waters - Gypsy Woman (Extended Mix)" vs. the store's actual "Gypsy
+    Woman (She's Homeless) (La Da Dee La Da Da) [Basement Boy Strip To
+    The Bone Mix]" - three extra groups a plain "(Extended Mix)" simply
+    has no specific information to accept or reject.
     """
     expected_core, expected_groups = strip_all_trailing_groups(expected_title)
     returned_core, returned_groups = strip_all_trailing_groups(returned_title)
 
-    if not expected_groups or not exact_match(expected_core, returned_core):
+    if not exact_match(expected_core, returned_core):
         return False
+
+    if not expected_groups:
+        return True
 
     def normalize_group(text):
         text = strip_generic_qualifier_modifiers(text)
