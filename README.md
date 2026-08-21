@@ -57,6 +57,9 @@ understand the hesitation. A few things that should help:
   mismatches.
 - The source code below is the real thing that gets built into the installer
   - nothing hidden.
+- The Windows installer is scanned with
+  [VirusTotal](https://www.virustotal.com/gui/file/eff644203f1fef3f5cf115e5466a2e6e461322fd7ebd2ab49523c95022fecaee/detection)
+  on every release: **0/69** security vendors flag it.
 
 ## Install
 
