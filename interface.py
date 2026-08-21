@@ -111,6 +111,11 @@ ALREADY_APPLIED_MARK = "-"
 # in at once; the actual scan underneath is unaffected.
 SCAN_REVEAL_INTERVAL_MS = 1000
 
+# Track Tidy is still in beta - large libraries haven't had enough
+# real-world mileage yet, so a single scan is capped at this many tracks
+# for now (see _enforce_track_count_limit).
+MAX_TRACKS_PER_SCAN = 100
+
 THUMBNAIL_SIZE = (44, 44)
 TABLE_ROW_HEIGHT = 48
 # Widened from the original 500px so the bigger thumbnails and wider
@@ -1206,6 +1211,9 @@ class TaggerInterface:
             return
 
         tagger.MUSIC_FOLDER = folder
+        if not self._enforce_track_count_limit(len(tagger.list_audio_files())):
+            return
+
         self._sync_mentions_to_remove()
         self._reset_scan_run_state()
 
@@ -1262,6 +1270,9 @@ class TaggerInterface:
             relative_names.append(relative_name)
 
         if not relative_names:
+            return
+
+        if not self._enforce_track_count_limit(len(relative_names)):
             return
 
         tagger.MUSIC_FOLDER = folder
@@ -1963,6 +1974,22 @@ class TaggerInterface:
             else:
                 self.notebook.tab(index, state="normal")
 
+    def _enforce_track_count_limit(self, count):
+        """Blocks a scan outright (rather than silently truncating it) when
+        it would cover more than MAX_TRACKS_PER_SCAN tracks - returns True
+        to proceed, False if the caller should stop here."""
+        if count <= MAX_TRACKS_PER_SCAN:
+            return True
+
+        messagebox.showinfo(
+            "Beta limit reached",
+            f"Track Tidy is still in beta, so a single scan is capped at "
+            f"{MAX_TRACKS_PER_SCAN} tracks for now - this folder has {count}.\n\n"
+            "Try a smaller folder, or a subfolder, for the moment.",
+            parent=self.window,
+        )
+        return False
+
     def _start_scan(self):
         folder = self.folder_variable.get().strip()
         if not folder:
@@ -1970,6 +1997,9 @@ class TaggerInterface:
             return
 
         tagger.MUSIC_FOLDER = folder
+        if not self._enforce_track_count_limit(len(tagger.list_audio_files())):
+            return
+
         self._sync_mentions_to_remove()
         self._reset_scan_run_state()
 
