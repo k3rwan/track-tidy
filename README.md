@@ -53,9 +53,10 @@ understand the hesitation. A few things that should help:
   touches files outside the folder you point it at, and never uploads your
   actual audio anywhere.
 - It also sends the developer two small, anonymous-ish pings (your OS
-  username, no other machine info) on install and after each scan, just so
-  he knows the app is actually being used - this is disclosed in Settings'
-  "View license & third-party notices" and isn't currently toggleable.
+  username, no other machine info) on install and after each scan (even a
+  cancelled one), just so he knows the app is actually being used - this
+  is disclosed in Settings' "View license & third-party notices" and
+  isn't currently toggleable.
   Separately, the in-app "Report track" button (only when you press it) sends
   that one track's info (title/artist/filename + its cover) to help fix
   mismatches.

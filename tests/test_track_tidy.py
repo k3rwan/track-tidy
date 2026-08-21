@@ -1545,6 +1545,24 @@ class ScanCompleteNotificationTests(unittest.TestCase):
         self.assertEqual(fields[2], {"name": "Removed files", "value": "1", "inline": True})
         self.assertEqual(fields[3], {"name": "Total files", "value": "10", "inline": True})
 
+    def test_cancelled_scan_still_notifies_with_relabeled_title(self):
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["json"] = json
+
+            class FakeResponse:
+                status_code = 204
+            return FakeResponse()
+
+        tagger.requests.post = fake_post
+        result = tagger.send_scan_complete_notification(
+            reporter_name="someuser", number_new=2, number_removed=0, total=5, cancelled=True,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(captured["json"]["embeds"][0]["title"], "Scan cancelled")
+
     def test_excluded_user_is_not_notified(self):
         calls = []
         tagger.requests.post = lambda *a, **k: calls.append(1)

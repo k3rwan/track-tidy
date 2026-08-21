@@ -598,21 +598,26 @@ def send_new_install_notification(reporter_name=None, timeout=10):
         return False
 
 
-def send_scan_complete_notification(reporter_name=None, number_new=0, number_removed=0, total=0, timeout=10):
+def send_scan_complete_notification(
+    reporter_name=None, number_new=0, number_removed=0, total=0, cancelled=False, timeout=10,
+):
     """
     Posts a scan-complete ping to the same Discord webhook as
     send_new_install_notification/send_track_report, so the developer
     knows when a user actually uses the app day to day, not just installs
-    it. Called once per finished scan (see _finalize_scan in interface.py).
-    Returns True on success, False on any failure (never raises) - also
-    False without posting anything for an excluded account (see
-    DISCORD_NOTIFICATION_EXCLUDED_USERS).
+    it. Called once per finished scan, including a scan the user cancelled
+    partway through - cancelled=True just relabels the embed so it's
+    still visible when someone's actively using the app even if they
+    didn't let a scan run to completion (see _finalize_scan in
+    interface.py). Returns True on success, False on any failure (never
+    raises) - also False without posting anything for an excluded account
+    (see DISCORD_NOTIFICATION_EXCLUDED_USERS).
     """
     if _is_discord_notification_excluded(reporter_name) or not DISCORD_REPORT_WEBHOOK_URL:
         return False
     embed = {
-        "title": "Scan complete",
-        "color": 0x3498DB,
+        "title": "Scan cancelled" if cancelled else "Scan complete",
+        "color": 0xE67E22 if cancelled else 0x3498DB,
         "fields": [
             {"name": "User", "value": reporter_name or "(unknown)", "inline": True},
             {"name": "New files", "value": str(number_new), "inline": True},

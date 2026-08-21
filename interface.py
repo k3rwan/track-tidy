@@ -979,13 +979,15 @@ class TaggerInterface:
 
         self._run_in_background(_send)
 
-    def _notify_scan_complete(self, number_new, number_removed, total):
-        """Pings Discord once per finished scan, so the developer knows
-        when the app is actually being used day to day (not just
-        installed) - disclosed alongside the "new install" ping in
-        Settings' legal notice text. Excluded for the developer's own
-        Windows account (see tagger.DISCORD_NOTIFICATION_EXCLUDED_USERS),
-        so day-to-day testing doesn't spam the channel."""
+    def _notify_scan_complete(self, number_new, number_removed, total, cancelled=False):
+        """Pings Discord once per finished scan (including a scan the user
+        cancelled partway through - cancelled=True just relabels the
+        embed), so the developer knows when the app is actually being
+        used day to day (not just installed) - disclosed alongside the
+        "new install" ping in Settings' legal notice text. Excluded for
+        the developer's own Windows account (see
+        tagger.DISCORD_NOTIFICATION_EXCLUDED_USERS), so day-to-day
+        testing doesn't spam the channel."""
         try:
             reporter_name = getpass.getuser()
         except Exception:
@@ -993,7 +995,8 @@ class TaggerInterface:
 
         def _send():
             tagger.send_scan_complete_notification(
-                reporter_name=reporter_name, number_new=number_new, number_removed=number_removed, total=total,
+                reporter_name=reporter_name, number_new=number_new, number_removed=number_removed,
+                total=total, cancelled=cancelled,
             )
 
         self._run_in_background(_send)
@@ -2439,13 +2442,18 @@ class TaggerInterface:
             if no_cover_infos:
                 self._append_to_journal(f"{len(no_cover_infos)} track(s) currently have no cover match.")
 
-            if not self.cancel_requested.is_set():
-                # Skip the Discord ping for a no-op rescan (nothing new,
-                # nothing removed) - otherwise repeatedly clicking Scan on an
-                # already-scanned folder spams the channel with empty
-                # "0 new, 0 removed" notifications.
-                if number_new > 0 or removed_files:
-                    self._notify_scan_complete(number_new, len(removed_files), len(self.scanned_plan))
+            # Skip the Discord ping for a no-op rescan (nothing new,
+            # nothing removed) - otherwise repeatedly clicking Scan on an
+            # already-scanned folder spams the channel with empty
+            # "0 new, 0 removed" notifications. Sent even if the user
+            # cancelled partway through (cancelled=True relabels the
+            # embed) - Kevin wants visibility into a cancelled scan too,
+            # not just ones that ran to completion.
+            if number_new > 0 or removed_files:
+                self._notify_scan_complete(
+                    number_new, len(removed_files), len(self.scanned_plan),
+                    cancelled=self.cancel_requested.is_set(),
+                )
 
         self._check_for_duplicates()
 
