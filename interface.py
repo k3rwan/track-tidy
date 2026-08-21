@@ -981,7 +981,7 @@ class TaggerInterface:
 
     def _notify_scan_complete(
         self, number_new, number_removed, total, number_no_cover=0,
-        number_rate_limited_sources=0, cancelled=False,
+        number_rate_limited_sources=0, auth_error_sources=None, cancelled=False,
     ):
         """Pings Discord once per finished scan (including a scan the user
         cancelled partway through - cancelled=True just relabels the
@@ -1000,7 +1000,8 @@ class TaggerInterface:
             tagger.send_scan_complete_notification(
                 reporter_name=reporter_name, number_new=number_new, number_removed=number_removed,
                 total=total, number_no_cover=number_no_cover,
-                number_rate_limited_sources=number_rate_limited_sources, cancelled=cancelled,
+                number_rate_limited_sources=number_rate_limited_sources,
+                auth_error_sources=auth_error_sources, cancelled=cancelled,
             )
 
         self._run_in_background(_send)
@@ -2458,6 +2459,7 @@ class TaggerInterface:
                     number_new, len(removed_files), len(self.scanned_plan),
                     number_no_cover=len(no_cover_infos),
                     number_rate_limited_sources=len(self._rate_limited_messages_this_scan),
+                    auth_error_sources=sorted(self.source_auth_error_warned),
                     cancelled=self.cancel_requested.is_set(),
                 )
 

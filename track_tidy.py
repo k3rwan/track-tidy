@@ -600,7 +600,7 @@ def send_new_install_notification(reporter_name=None, timeout=10):
 
 def send_scan_complete_notification(
     reporter_name=None, number_new=0, number_removed=0, total=0, number_no_cover=0,
-    number_rate_limited_sources=0, cancelled=False, timeout=10,
+    number_rate_limited_sources=0, auth_error_sources=None, cancelled=False, timeout=10,
 ):
     """
     Posts a scan-complete ping to the same Discord webhook as
@@ -626,6 +626,7 @@ def send_scan_complete_notification(
             {"name": "Total files", "value": str(total), "inline": True},
             {"name": "No cover match", "value": str(number_no_cover), "inline": True},
             {"name": "Rate-limited sources", "value": str(number_rate_limited_sources), "inline": True},
+            {"name": "Auth errors", "value": ", ".join(auth_error_sources) if auth_error_sources else "None", "inline": True},
             {"name": "App version", "value": APP_VERSION, "inline": True},
         ],
     }
