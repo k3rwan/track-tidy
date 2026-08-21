@@ -9,24 +9,28 @@ PR workflow, without asking for confirmation each time:
 - Pushing branches
 
 **Exception - always ask first:** building/publishing a release (bumping
-the version, building the installer, `gh release create` on either
-`track-tidy` or `track-tidy-releases`). This is the one step in the
-workflow Kevin wants to explicitly approve each time, even though the PR
-steps before it don't need approval.
+the version, building the installer, `gh release create` on
+`track-tidy`). This is the one step in the workflow Kevin wants to
+explicitly approve each time, even though the PR steps before it don't
+need approval.
 
 **GPL compliance:** the project is licensed GPL-2.0-or-later (mutagen is
 GPL and imported directly into the packaged app - see LICENSE /
-THIRD-PARTY-NOTICES.md). v0.10 and v0.11 briefly attached a manually
-generated source archive + a `.sha256` checksum file to each
-`track-tidy-releases` GitHub release - Kevin asked for those to stop
-appearing, and they were removed (`gh release delete-asset`). This is
-still GPL-compliant without them: GitHub auto-generates "Source code
-(zip)"/"(tar.gz)" links for every tagged release from the underlying git
-tag, with no way to disable them (verified - no `gh release`/API option
-for it) - that satisfies the source-availability requirement on its own,
-so there's no need to manually attach a source archive going forward.
+THIRD-PARTY-NOTICES.md). Releases and source now live in the same
+`track-tidy` repo (merged from a separate `track-tidy-releases` on
+2026-08-21 - see that section below), so GitHub's auto-generated "Source
+code (zip)"/"(tar.gz)" links on every tagged release now actually
+contain the real source, satisfying the source-availability requirement
+on its own - no need to manually attach a source archive. This was
+quietly NOT true for the few releases (v0.17-v0.19) published on the old
+`track-tidy-releases` while `track-tidy` was still private - that repo
+had no source in it at all, so its auto-generated zips were empty
+shells. Not something to worry about retroactively (those releases are
+gone now, replaced by ones on `track-tidy` itself with real tags), just
+worth knowing the split briefly created a real, unnoticed compliance gap
+- another reason the merge was worth doing beyond convenience.
 The `.sha256` checksum file (for the auto-updater's checksum
-verification, added in PR #103) is also no longer uploaded - briefly
+verification, added in PR #103) is not currently uploaded - briefly
 brought back after a 2026-08-21 security review, then Kevin asked for it
 to stop again the same day once he saw it show up on a real release. The
 verification code in `check_for_update`/`download_installer` is still
@@ -71,13 +75,14 @@ Instead:
   published. This is a standing rule (confirmed twice - once explicitly
   asked for, once as a correction after this step was skipped), not a
   one-off - don't wait to be asked again.
-  **Update `track-tidy-releases`' README on every release** - its big
+  **Update `track-tidy`'s own README on every release** - its big
   "Download for Windows"/"Download for macOS" buttons link directly to
   that release's two assets (`.../releases/download/vX.Y/Track-Tidy-
   Setup-vX.Y.exe`/`.dmg`), so a non-technical visitor (e.g. from Reddit)
   gets one obvious button instead of having to pick the right asset off
   the versioned Releases list themselves. An earlier version of this
-  (2026-08-21) also uploaded two extra stably-named duplicate assets
+  (2026-08-21, back when releases lived on a separate `track-tidy-
+  releases` repo) also uploaded two extra stably-named duplicate assets
   (`Track-Tidy-Setup-latest.exe`/`.dmg`) so the buttons never needed
   updating - Kevin asked for that dropped the same day, since it left
   4 files sitting in the release assets instead of just the 2 real
@@ -128,9 +133,24 @@ Instead:
   (A prior session accidentally tagged 9 real library files this way.)
 - `gh` CLI is at `/c/Program Files/GitHub CLI/gh.exe` (not on PATH in this
   shell).
-- Distribution split: `k3rwan/track-tidy` (private, source) and
-  `k3rwan/track-tidy-releases` (public, installer-only, no source code) -
-  colleagues download from the second one.
+- Single repo: `k3rwan/track-tidy`, public since 2026-08-21 - both source
+  and Releases (installers) live here. Was split into a private
+  `track-tidy` (source) + public `track-tidy-releases` (installer-only)
+  before that; merged back into one once the source itself went public,
+  since the split no longer served a purpose and had quietly created a
+  GPL compliance gap (see "GPL compliance" above) - `track-tidy-releases`
+  was deleted entirely (Kevin's call - no archive) after moving its
+  releases over.
+  Before making a repo public or touching its default branch/tags, check
+  for anything sensitive first - going public here required moving the
+  shared default SoundCloud/Spotify/Discord-webhook credentials out of
+  the source entirely (now in a local, gitignored
+  `default_credentials.json` - see `load_default_credentials()`'s
+  docstring in track_tidy.py) and rewriting the full git history (all
+  branches/tags, via `git filter-repo --replace-text`) to scrub every
+  past appearance of the old embedded values, since encryption alone
+  doesn't protect a value once the decrypting code sits in the same
+  public repo.
 
 ## AcoustID audio-identification fallback
 
