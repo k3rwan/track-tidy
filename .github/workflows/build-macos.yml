@@ -11,12 +11,16 @@ on:
 
 jobs:
   build:
+    # macos-13 (Intel) was tried here too, but GitHub's Intel macOS
+    # runners are chronically unavailable - every attempt sat queued for
+    # 19-24h before being auto-cancelled, never actually running (see run
+    # history). Apple Silicon (macos-14) runs reliably in ~1 minute, so
+    # that's the only leg for now - revisit Intel if GitHub's runner
+    # availability ever improves.
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-13
-            arch: intel
           - os: macos-14
             arch: apple-silicon
     runs-on: ${{ matrix.os }}
@@ -66,6 +70,29 @@ jobs:
           echo "--- bundled dylib count and total size ---"
           ls -la ./ffmpeg-libs | wc -l
           du -sh ./ffmpeg ./ffmpeg-libs
+
+      - name: Write shared default credentials
+        # Same file load_default_credentials() reads on Kevin's own local
+        # build (see track_tidy.py) - the runner has no access to that
+        # local file, so it's reconstructed here from GitHub Actions
+        # secrets instead. A fork's build (no access to these secrets)
+        # just gets an empty file - jq still produces valid (all-empty)
+        # JSON, so the app runs fine, just without shared defaults.
+        env:
+          SOUNDCLOUD_CLIENT_ID: ${{ secrets.SOUNDCLOUD_CLIENT_ID }}
+          SOUNDCLOUD_CLIENT_SECRET: ${{ secrets.SOUNDCLOUD_CLIENT_SECRET }}
+          SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
+          SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          jq -n \
+            --arg soundcloud_client_id "$SOUNDCLOUD_CLIENT_ID" \
+            --arg soundcloud_client_secret "$SOUNDCLOUD_CLIENT_SECRET" \
+            --arg spotify_client_id "$SPOTIFY_CLIENT_ID" \
+            --arg spotify_client_secret "$SPOTIFY_CLIENT_SECRET" \
+            --arg discord_webhook_url "$DISCORD_WEBHOOK_URL" \
+            '{soundcloud_client_id: $soundcloud_client_id, soundcloud_client_secret: $soundcloud_client_secret, spotify_client_id: $spotify_client_id, spotify_client_secret: $spotify_client_secret, discord_webhook_url: $discord_webhook_url}' \
+            > default_credentials.json
 
       - name: Build .app and .dmg
         run: |

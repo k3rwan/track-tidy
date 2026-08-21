@@ -58,7 +58,6 @@ import requests
 import keyring
 import platformdirs
 import acoustid
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from PIL import Image
 from mutagen import File as MutagenFile
 from mutagen.mp3 import MP3
@@ -174,40 +173,47 @@ def read_credential(key):
     return value.strip() if value else None
 
 
-# AES-256-GCM key for the embedded credentials below - generated once,
-# not a secret in any meaningful sense: the app must decrypt with it at
-# runtime, so whoever has the compiled binary has this key too. Upgrades
-# the previous plain base64 (trivially readable by eye, no tooling
-# needed) to something that at least survives a bare `strings` scan of
-# the binary - doesn't protect against actual reverse engineering
-# (debugger, decompiler, or just sniffing the app's own HTTPS traffic
-# locally), which no embedded-in-the-client secret ever can. See the
-# accepted-risk reasoning on each value below - this is about raising
-# the bar on casual extraction, not closing it off entirely.
-_EMBEDDED_SECRETS_KEY = base64.b64decode("SECRET_REMOVED")
+def load_default_credentials():
+    """
+    The shared default app credentials (SoundCloud, Spotify, Discord
+    webhook) used to be embedded directly in this file (base64, then
+    AES-256-GCM) - fine while the compiled binary was the only thing
+    anyone could get, since extracting them needed actual reverse
+    engineering. Now that this source is public, an embedded value is
+    worthless the moment it's committed - no amount of encryption helps
+    when the decrypting code sits right next to it in the same public
+    repo. Real secrets now live ONLY in "default_credentials.json"
+    (gitignored, never committed) next to the app - present on Kevin's
+    own build machine and bundled into the installer he ships (see
+    installer.iss/build_mac.sh), but simply absent from this repo and
+    from anyone else's build. Building from source without that file
+    still works - the app just has no shared defaults, same as if a user
+    hasn't configured their own credentials.
+    """
+    path = os.path.join(app_base_dir(), "default_credentials.json")
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as error:
+        print(f"  Could not read default_credentials.json: {error}")
+        return {}
 
 
-def _decrypt_embedded(blob_b64):
-    """Decrypts one of the AES-256-GCM blobs below (12-byte nonce +
-    ciphertext+tag, base64-encoded) using _EMBEDDED_SECRETS_KEY."""
-    raw = base64.b64decode(blob_b64)
-    nonce, ciphertext = raw[:12], raw[12:]
-    return AESGCM(_EMBEDDED_SECRETS_KEY).decrypt(nonce, ciphertext, None).decode("utf-8")
+_default_credentials = load_default_credentials()
 
-
-# Shared, embedded default app credentials so most users don't have to
-# register their own SoundCloud app - Kevin's own, used as a fallback
-# whenever a user hasn't saved their own credentials in Settings. Unlike
+# Shared default app credentials so most users don't have to register
+# their own SoundCloud app - Kevin's own, used as a fallback whenever a
+# user hasn't saved their own credentials in Settings. Unlike
 # ACOUSTID_API_KEY, distributing an app's client secret like this is
 # against SoundCloud's own developer terms - accepted risk (confirmed
 # with Kevin): if it's ever extracted and abused, SoundCloud could
 # suspend the app credentials entirely, breaking this for every user at
 # once, not just the abuser. Watch for SoundCloud auth suddenly failing
 # for multiple users if that ever happens.
-_SOUNDCLOUD_DEFAULT_CLIENT_ID_ENC = "SECRET_REMOVED"
-_SOUNDCLOUD_DEFAULT_CLIENT_SECRET_ENC = "SECRET_REMOVED"
-SOUNDCLOUD_DEFAULT_CLIENT_ID = _decrypt_embedded(_SOUNDCLOUD_DEFAULT_CLIENT_ID_ENC)
-SOUNDCLOUD_DEFAULT_CLIENT_SECRET = _decrypt_embedded(_SOUNDCLOUD_DEFAULT_CLIENT_SECRET_ENC)
+SOUNDCLOUD_DEFAULT_CLIENT_ID = _default_credentials.get("soundcloud_client_id", "")
+SOUNDCLOUD_DEFAULT_CLIENT_SECRET = _default_credentials.get("soundcloud_client_secret", "")
 
 SOUNDCLOUD_CLIENT_ID = read_credential(CLIENT_ID_KEY) or SOUNDCLOUD_DEFAULT_CLIENT_ID
 SOUNDCLOUD_CLIENT_SECRET = read_credential(CLIENT_SECRET_KEY) or SOUNDCLOUD_DEFAULT_CLIENT_SECRET
@@ -218,10 +224,8 @@ SOUNDCLOUD_CLIENT_SECRET = read_credential(CLIENT_SECRET_KEY) or SOUNDCLOUD_DEFA
 # iTunes, SoundCloud, AND the AcoustID-corrected retry of both have all
 # come up empty - see the end of scan_files()), not a normal priority
 # source, so this should get hit rarely.
-_SPOTIFY_DEFAULT_CLIENT_ID_ENC = "SECRET_REMOVED"
-_SPOTIFY_DEFAULT_CLIENT_SECRET_ENC = "SECRET_REMOVED"
-SPOTIFY_DEFAULT_CLIENT_ID = _decrypt_embedded(_SPOTIFY_DEFAULT_CLIENT_ID_ENC)
-SPOTIFY_DEFAULT_CLIENT_SECRET = _decrypt_embedded(_SPOTIFY_DEFAULT_CLIENT_SECRET_ENC)
+SPOTIFY_DEFAULT_CLIENT_ID = _default_credentials.get("spotify_client_id", "")
+SPOTIFY_DEFAULT_CLIENT_SECRET = _default_credentials.get("spotify_client_secret", "")
 
 SPOTIFY_CLIENT_ID = read_credential(SPOTIFY_CLIENT_ID_KEY) or SPOTIFY_DEFAULT_CLIENT_ID
 SPOTIFY_CLIENT_SECRET = read_credential(SPOTIFY_CLIENT_SECRET_KEY) or SPOTIFY_DEFAULT_CLIENT_SECRET
@@ -486,16 +490,13 @@ def download_installer(url, dest_path, on_progress=None, timeout=30, expected_sh
 
 # --- Reporting a track (user -> developer, via Discord) ---
 
-# A Discord webhook URL is a bearer token with no other auth, and this
-# app ships the source compiled into the .exe, so it can't be kept truly
-# secret from someone determined to extract it - see _decrypt_embedded's
-# own docstring for what this AES layer does and doesn't protect against.
-_DISCORD_REPORT_WEBHOOK_URL_ENC = (
-    "SECRET_REMOVED"
-    "SECRET_REMOVED"
-    "SECRET_REMOVED"
-)
-DISCORD_REPORT_WEBHOOK_URL = _decrypt_embedded(_DISCORD_REPORT_WEBHOOK_URL_ENC)
+# A Discord webhook URL is a bearer token with no other auth - see
+# load_default_credentials()'s docstring for why this comes from a local,
+# gitignored file instead of being embedded here now that the source is
+# public. send_track_report/send_new_install_notification/
+# send_scan_complete_notification all no-op harmlessly (see their own
+# early-return on a falsy URL) when that file isn't present.
+DISCORD_REPORT_WEBHOOK_URL = _default_credentials.get("discord_webhook_url", "")
 
 def send_track_report(info, reporter_name=None, timeout=10):
     """
@@ -513,6 +514,9 @@ def send_track_report(info, reporter_name=None, timeout=10):
     Discord - a real connectivity problem). Kept distinct so the UI doesn't
     blame "no internet connection" for what's actually a Discord-side issue.
     """
+    if not DISCORD_REPORT_WEBHOOK_URL:
+        return False, "network_error"
+
     fields = [
         {"name": "Reported by", "value": reporter_name or "(unknown)", "inline": False},
         {"name": "File", "value": info.get("file") or "(unknown)", "inline": False},
@@ -577,7 +581,7 @@ def send_new_install_notification(reporter_name=None, timeout=10):
     False without posting anything for an excluded account (see
     DISCORD_NOTIFICATION_EXCLUDED_USERS).
     """
-    if _is_discord_notification_excluded(reporter_name):
+    if _is_discord_notification_excluded(reporter_name) or not DISCORD_REPORT_WEBHOOK_URL:
         return False
     embed = {
         "title": "New install",
@@ -604,7 +608,7 @@ def send_scan_complete_notification(reporter_name=None, number_new=0, number_rem
     False without posting anything for an excluded account (see
     DISCORD_NOTIFICATION_EXCLUDED_USERS).
     """
-    if _is_discord_notification_excluded(reporter_name):
+    if _is_discord_notification_excluded(reporter_name) or not DISCORD_REPORT_WEBHOOK_URL:
         return False
     embed = {
         "title": "Scan complete",

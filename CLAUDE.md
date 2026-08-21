@@ -26,18 +26,12 @@ tag, with no way to disable them (verified - no `gh release`/API option
 for it) - that satisfies the source-availability requirement on its own,
 so there's no need to manually attach a source archive going forward.
 The `.sha256` checksum file (for the auto-updater's checksum
-verification, added in PR #103) stopped being uploaded at the same time,
-then Kevin asked for it back (2026-08-21, security review) - unlike the
-source archive above, GitHub has no auto-generated equivalent for this,
-so it needs to be attached manually again on every release from here on:
-after building the installer, write its checksum to a file with
-`python -c "import track_tidy as tt; open('<installer>.sha256', 'w').write(tt.compute_sha256('<installer>'))"`
-(reuses the exact same function the client later verifies with, so the
-format always matches - `_fetch_expected_sha256` also tolerates plain
-`sha256sum`-style output if that's ever easier) and `gh release upload`
-it alongside the installer on `track-tidy-releases`, named exactly
-`<installer filename>.sha256` (case-insensitive match, but the name
-must otherwise be exact - see `check_for_update`).
+verification, added in PR #103) is also no longer uploaded - briefly
+brought back after a 2026-08-21 security review, then Kevin asked for it
+to stop again the same day once he saw it show up on a real release. The
+verification code in `check_for_update`/`download_installer` is still
+there and harmless (gracefully skips verification when no matching
+asset exists), just permanently dormant unless that's revisited later.
 
 Still flag before doing, even for the PR workflow:
 - Anything hard to reverse or unusual for this workflow: force-push,
@@ -77,6 +71,16 @@ Instead:
   published. This is a standing rule (confirmed twice - once explicitly
   asked for, once as a correction after this step was skipped), not a
   one-off - don't wait to be asked again.
+  **Also upload two extra, stably-named copies of each installer**
+  (`Track-Tidy-Setup-latest.exe`, `Track-Tidy-Setup-latest.dmg` - added
+  2026-08-21) alongside the normal versioned ones, on every release. This
+  is what `track-tidy-releases`' README's big "Download for
+  Windows"/"Download for macOS" buttons link to
+  (`.../releases/latest/download/Track-Tidy-Setup-latest.exe`/`.dmg`) so
+  they always resolve to the current version without editing the README
+  each release - a non-technical visitor coming from somewhere like
+  Reddit gets one obvious button instead of having to pick the right
+  asset off the versioned Releases list themselves.
 - Test before committing: `python -m unittest discover -s tests` (run from
   the project root with the venv's Python).
 - For GUI changes, actually launch the app and screenshot it rather than

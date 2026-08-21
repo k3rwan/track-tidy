@@ -112,6 +112,12 @@ if [ -f "ffmpeg" ]; then
     fi
 fi
 
+if [ -f "default_credentials.json" ]; then
+    echo
+    echo "Bundling shared default credentials into the .app..."
+    cp default_credentials.json "dist/Track-Tidy.app/Contents/MacOS/default_credentials.json"
+fi
+
 if [ -f "fpcalc" ]; then
     echo
     echo "Bundling fpcalc into the .app..."
