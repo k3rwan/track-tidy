@@ -176,8 +176,10 @@ def read_credential(key):
 def load_default_credentials():
     """
     The shared default app credentials (SoundCloud, Spotify, Discord
-    webhook) used to be embedded directly in this file (base64, then
-    AES-256-GCM) - fine while the compiled binary was the only thing
+    webhook, AcoustID) used to be embedded directly in this file (base64,
+    then AES-256-GCM, then - for AcoustID specifically, since it was never
+    treated as sensitive - a bare literal) - fine while the compiled
+    binary was the only thing
     anyone could get, since extracting them needed actual reverse
     engineering. Now that this source is public, an embedded value is
     worthless the moment it's committed - no amount of encryption helps
@@ -232,9 +234,15 @@ SPOTIFY_CLIENT_SECRET = read_credential(SPOTIFY_CLIENT_SECRET_KEY) or SPOTIFY_DE
 
 # AcoustID API keys are meant to be per-APPLICATION, one key shared by every
 # user of that app - unlike SoundCloud, which needs each user's own app
-# credentials, so this one is just hardcoded rather than something every
-# user has to configure.
-ACOUSTID_API_KEY = "REDACTED-ACOUSTID-KEY"
+# credentials, so this one was never something every user has to
+# configure. It also carries no real abuse risk beyond the free-tier rate
+# limit being shared (unlike SOUNDCLOUD/SPOTIFY_DEFAULT_CLIENT_SECRET
+# above, leaking it doesn't violate any ToS or risk a suspension) - but it
+# still doesn't need to sit in the public source as a bare literal when
+# the same default_credentials.json mechanism already exists for exactly
+# this. Building from source without that file just means no AcoustID
+# fallback, same as an unconfigured user.
+ACOUSTID_API_KEY = _default_credentials.get("acoustid_api_key", "")
 
 
 def load_id_txt_credentials(filename="id.txt"):
