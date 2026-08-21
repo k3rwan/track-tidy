@@ -3,6 +3,30 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.20]
+
+### Added
+- VirusTotal scan badge/link in the README, so a first-time downloader
+  from Reddit/GitHub can verify the installer isn't flagged by any
+  antivirus vendor.
+- Scan-complete Discord notifications now include the no-cover-match
+  count, the rate-limited-source count, and any source with an auth
+  error - and fire even for a scan the user cancelled partway through
+  (relabeled "Scan cancelled" instead of being skipped).
+
+### Changed
+- Source is now public on GitHub. Shared default credentials
+  (SoundCloud/Spotify/Discord webhook) were moved out of the source
+  entirely - now supplied only via a local, gitignored file or CI
+  secrets - and the full git history was rewritten to scrub every past
+  appearance of the old embedded values.
+- Releases now live in this same repo instead of the old, separate
+  `track-tidy-releases` repo, which has been retired.
+- macOS CI builds now only target Apple Silicon - the Intel runner was
+  chronically stuck in queue for 19-24h on every attempt.
+- Repo root cleaned up: license/notice files moved into `licenses/`,
+  icon/sound assets moved into `assets/`.
+
 ## [0.19]
 
 ### Added
