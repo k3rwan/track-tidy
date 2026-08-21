@@ -10,9 +10,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/k3rwan/track-tidy/releases/download/v0.19/Track-Tidy-Setup-v0.19.exe"><img src="https://img.shields.io/badge/Download-Windows-0078D6?style=for-the-badge&logo=windows" alt="Download for Windows"></a>
+  <a href="https://github.com/k3rwan/track-tidy/releases/download/v0.19/Track-Tidy-Setup-v0.19.exe"><img src="https://img.shields.io/badge/Download-Windows-gray?style=for-the-badge&logo=windows&labelColor=0078D6" alt="Download for Windows"></a>
   &nbsp;
-  <a href="https://github.com/k3rwan/track-tidy/releases/download/v0.19/Track-Tidy-Setup-v0.19.dmg"><img src="https://img.shields.io/badge/Download-macOS-000000?style=for-the-badge&logo=apple" alt="Download for macOS"></a>
+  <a href="https://github.com/k3rwan/track-tidy/releases/download/v0.19/Track-Tidy-Setup-v0.19.dmg"><img src="https://img.shields.io/badge/Download-macOS-gray?style=for-the-badge&logo=apple&labelColor=000000" alt="Download for macOS"></a>
 </p>
 <p align="center">
   <sub>v0.19 - see <a href="../../releases/latest">Releases</a> for older versions.</sub>
