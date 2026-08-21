@@ -69,20 +69,20 @@ pip install -r requirements.txt pyinstaller --quiet
 echo
 echo "Building the app (this can take a minute)..."
 ICON_ARGS=()
-if [ -f "track-tidy_icon.icns" ]; then
-    ICON_ARGS=(--icon "track-tidy_icon.icns")
+if [ -f "assets/track-tidy_icon.icns" ]; then
+    ICON_ARGS=(--icon "assets/track-tidy_icon.icns")
 else
-    echo "[WARNING] track-tidy_icon.icns not found - building without a custom app icon."
-    echo "Generate one from track-tidy_icon.png with 'iconutil' (see Apple's docs) if you want one."
+    echo "[WARNING] assets/track-tidy_icon.icns not found - building without a custom app icon."
+    echo "Generate one from assets/track-tidy_icon.png with 'iconutil' (see Apple's docs) if you want one."
 fi
 
 pyinstaller --windowed --noconfirm \
   --name "Track-Tidy" \
   "${ICON_ARGS[@]}" \
-  --add-data "track-tidy_icon.ico:." \
-  --add-data "track-tidy_icon.png:." \
-  --add-data "fart.wav:." \
-  --add-data "success.wav:." \
+  --add-data "assets/track-tidy_icon.ico:." \
+  --add-data "assets/track-tidy_icon.png:." \
+  --add-data "assets/fart.wav:." \
+  --add-data "assets/success.wav:." \
   --collect-all tkinterdnd2 \
   --collect-all keyring \
   interface.py

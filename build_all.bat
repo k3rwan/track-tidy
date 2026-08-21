@@ -50,11 +50,11 @@ echo.
 echo Building the app (this can take a minute)...
 pyinstaller --onedir --windowed --noconfirm ^
   --name "Track-Tidy" ^
-  --icon "track-tidy_icon.ico" ^
-  --add-data "track-tidy_icon.ico;." ^
-  --add-data "track-tidy_icon.png;." ^
-  --add-data "fart.wav;." ^
-  --add-data "success.wav;." ^
+  --icon "assets\track-tidy_icon.ico" ^
+  --add-data "assets\track-tidy_icon.ico;." ^
+  --add-data "assets\track-tidy_icon.png;." ^
+  --add-data "assets\fart.wav;." ^
+  --add-data "assets\success.wav;." ^
   --collect-all tkinterdnd2 ^
   --collect-all keyring ^
   interface.py

@@ -249,8 +249,8 @@ class TaggerInterface:
         self.window.withdraw()
         self.base_title = "Track Tidy (beta)"
         self.window.title(self.base_title)
-        icon_path = resource_path("track-tidy_icon.ico")
-        icon_png_path = resource_path("track-tidy_icon.png")
+        icon_path = resource_path("assets/track-tidy_icon.ico")
+        icon_png_path = resource_path("assets/track-tidy_icon.png")
 
         if os.path.exists(icon_path):
             self.window.iconbitmap(icon_path)
@@ -2244,7 +2244,7 @@ class TaggerInterface:
 
     def _show_no_files_dialog(self):
         """Custom error dialog that plays a fart sound instead of the default OS error beep."""
-        sound_path = resource_path("fart.wav")
+        sound_path = resource_path("assets/fart.wav")
         try:
             play_short_sound(sound_path)
         except Exception:
@@ -2337,7 +2337,7 @@ class TaggerInterface:
         """Custom success dialog with a green checkmark and a distinct chime
         sound - the cover breakdown is shown earlier at scan time, so this
         one just confirms the run finished and how many files were converted."""
-        sound_path = resource_path("success.wav")
+        sound_path = resource_path("assets/success.wav")
         try:
             play_short_sound(sound_path)
         except Exception:

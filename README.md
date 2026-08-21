@@ -128,5 +128,5 @@ GNU General Public License v2 or later (GPL-2.0-or-later) - see
 [LICENSE](LICENSE). This is required by `mutagen`, a GPL-2.0-or-later
 dependency imported directly into the app. The bundled `ffmpeg` (invoked as a
 separate process, not linked in) is GPLv3. See
-[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for every dependency's
-license.
+[THIRD-PARTY-NOTICES.md](licenses/THIRD-PARTY-NOTICES.md) for every
+dependency's license.

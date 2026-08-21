@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('track-tidy_icon.ico', '.'), ('track-tidy_icon.png', '.'), ('fart.wav', '.'), ('success.wav', '.')]
+datas = [('assets/track-tidy_icon.ico', '.'), ('assets/track-tidy_icon.png', '.'), ('assets/fart.wav', '.'), ('assets/success.wav', '.')]
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('tkinterdnd2')
@@ -41,7 +41,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['track-tidy_icon.ico'],
+    icon=['assets/track-tidy_icon.ico'],
 )
 coll = COLLECT(
     exe,

@@ -32,7 +32,7 @@ RestartApplications=yes
 ; Shows a mandatory license-acceptance page (Setup won't proceed past it
 ; without "I accept the agreement") - required because mutagen (GPL,
 ; imported directly into the app) makes this whole distribution GPL.
-LicenseFile=INSTALLER-LICENSE.txt
+LicenseFile=licenses\INSTALLER-LICENSE.txt
 
 [Files]
 Source: "dist\Track-Tidy\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -47,11 +47,11 @@ Source: "default_credentials.json"; DestDir: "{app}"; Flags: ignoreversion skipi
 ; (GPLv3, bundled as a separate executable), and Chromaprint (LGPL 2.1,
 ; also a separate executable) all require their license text to
 ; accompany the distribution - see THIRD-PARTY-NOTICES.md.
-Source: "THIRD-PARTY-NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
-Source: "INSTALLER-LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
-Source: "LICENSE-GPLv2-mutagen.txt"; DestDir: "{app}"; Flags: ignoreversion
-Source: "LICENSE-GPLv3-FFmpeg.txt"; DestDir: "{app}"; Flags: ignoreversion
-Source: "LICENSE-Chromaprint.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "licenses\THIRD-PARTY-NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "licenses\INSTALLER-LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "licenses\LICENSE-GPLv2-mutagen.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "licenses\LICENSE-GPLv3-FFmpeg.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "licenses\LICENSE-Chromaprint.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\Track Tidy"; Filename: "{app}\Track-Tidy.exe"

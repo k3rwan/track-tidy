@@ -1196,7 +1196,7 @@ class RestoreHistoryEntryTests(unittest.TestCase):
         self._tmp_dir = tempfile.TemporaryDirectory()
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.file_path = os.path.join(self._tmp_dir.name, "Current Artist - Current Title.wav")
-        shutil.copy(os.path.join(project_root, "fart.wav"), self.file_path)
+        shutil.copy(os.path.join(project_root, "assets", "fart.wav"), self.file_path)
         tagger.write_tags(
             self.file_path, "Current Artist", "Current Title", None, False,
             update_title=True, update_artist=True, update_cover=False,
@@ -1299,7 +1299,7 @@ class WriteTagsWavRiffInfoTests(unittest.TestCase):
         self._tmp_dir = tempfile.TemporaryDirectory()
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.file_path = os.path.join(self._tmp_dir.name, "song.wav")
-        shutil.copy(os.path.join(project_root, "fart.wav"), self.file_path)
+        shutil.copy(os.path.join(project_root, "assets", "fart.wav"), self.file_path)
 
     def tearDown(self):
         self._tmp_dir.cleanup()
@@ -1348,7 +1348,7 @@ class ProcessFilesTests(unittest.TestCase):
         self._original_music_folder = tagger.MUSIC_FOLDER
         tagger.MUSIC_FOLDER = self._tmp_dir.name
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self._good_source = os.path.join(project_root, "fart.wav")
+        self._good_source = os.path.join(project_root, "assets", "fart.wav")
 
     def tearDown(self):
         tagger.MUSIC_FOLDER = self._original_music_folder
