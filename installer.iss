@@ -38,6 +38,11 @@ LicenseFile=INSTALLER-LICENSE.txt
 Source: "dist\Track-Tidy\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "ffmpeg.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "fpcalc.exe"; DestDir: "{app}"; Flags: ignoreversion
+; Shared default SoundCloud/Spotify/Discord credentials (gitignored, see
+; load_default_credentials() in track_tidy.py) - present on Kevin's own
+; build machine, absent for anyone else building from source, so this
+; must not fail the build when missing.
+Source: "default_credentials.json"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 ; mutagen (GPL-2.0-or-later, imported directly into the app), FFmpeg
 ; (GPLv3, bundled as a separate executable), and Chromaprint (LGPL 2.1,
 ; also a separate executable) all require their license text to
