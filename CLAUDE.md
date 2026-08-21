@@ -26,18 +26,12 @@ tag, with no way to disable them (verified - no `gh release`/API option
 for it) - that satisfies the source-availability requirement on its own,
 so there's no need to manually attach a source archive going forward.
 The `.sha256` checksum file (for the auto-updater's checksum
-verification, added in PR #103) stopped being uploaded at the same time,
-then Kevin asked for it back (2026-08-21, security review) - unlike the
-source archive above, GitHub has no auto-generated equivalent for this,
-so it needs to be attached manually again on every release from here on:
-after building the installer, write its checksum to a file with
-`python -c "import track_tidy as tt; open('<installer>.sha256', 'w').write(tt.compute_sha256('<installer>'))"`
-(reuses the exact same function the client later verifies with, so the
-format always matches - `_fetch_expected_sha256` also tolerates plain
-`sha256sum`-style output if that's ever easier) and `gh release upload`
-it alongside the installer on `track-tidy-releases`, named exactly
-`<installer filename>.sha256` (case-insensitive match, but the name
-must otherwise be exact - see `check_for_update`).
+verification, added in PR #103) is also no longer uploaded - briefly
+brought back after a 2026-08-21 security review, then Kevin asked for it
+to stop again the same day once he saw it show up on a real release. The
+verification code in `check_for_update`/`download_installer` is still
+there and harmless (gracefully skips verification when no matching
+asset exists), just permanently dormant unless that's revisited later.
 
 Still flag before doing, even for the PR workflow:
 - Anything hard to reverse or unusual for this workflow: force-push,
