@@ -398,12 +398,10 @@ class TaggerInterface:
         Deliberately bypasses the individual _on_X_changed() handlers -
         several of them (auto-convert) pop up an explanatory messagebox on
         every change, which would mean a wall of unwanted dialogs to click
-        through here. Credentials (SoundCloud/AcoustID) are untouched -
-        resetting "settings" shouldn't force re-entering those."""
+        through here."""
         if not messagebox.askyesno(
             "Reset settings",
-            "Reset all settings to their default values?\n\n"
-            "Your saved SoundCloud/AcoustID credentials won't be affected.",
+            "Reset all settings to their default values?",
             parent=self.window, default=messagebox.NO,
         ):
             return
