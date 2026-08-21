@@ -979,7 +979,10 @@ class TaggerInterface:
 
         self._run_in_background(_send)
 
-    def _notify_scan_complete(self, number_new, number_removed, total, cancelled=False):
+    def _notify_scan_complete(
+        self, number_new, number_removed, total, number_no_cover=0,
+        number_rate_limited_sources=0, cancelled=False,
+    ):
         """Pings Discord once per finished scan (including a scan the user
         cancelled partway through - cancelled=True just relabels the
         embed), so the developer knows when the app is actually being
@@ -996,7 +999,8 @@ class TaggerInterface:
         def _send():
             tagger.send_scan_complete_notification(
                 reporter_name=reporter_name, number_new=number_new, number_removed=number_removed,
-                total=total, cancelled=cancelled,
+                total=total, number_no_cover=number_no_cover,
+                number_rate_limited_sources=number_rate_limited_sources, cancelled=cancelled,
             )
 
         self._run_in_background(_send)
@@ -2452,6 +2456,8 @@ class TaggerInterface:
             if number_new > 0 or removed_files:
                 self._notify_scan_complete(
                     number_new, len(removed_files), len(self.scanned_plan),
+                    number_no_cover=len(no_cover_infos),
+                    number_rate_limited_sources=len(self._rate_limited_messages_this_scan),
                     cancelled=self.cancel_requested.is_set(),
                 )
 

@@ -1535,6 +1535,7 @@ class ScanCompleteNotificationTests(unittest.TestCase):
         tagger.requests.post = fake_post
         result = tagger.send_scan_complete_notification(
             reporter_name="someuser", number_new=3, number_removed=1, total=10,
+            number_no_cover=2, number_rate_limited_sources=1,
         )
 
         self.assertTrue(result)
@@ -1544,6 +1545,8 @@ class ScanCompleteNotificationTests(unittest.TestCase):
         self.assertEqual(fields[1], {"name": "New files", "value": "3", "inline": True})
         self.assertEqual(fields[2], {"name": "Removed files", "value": "1", "inline": True})
         self.assertEqual(fields[3], {"name": "Total files", "value": "10", "inline": True})
+        self.assertEqual(fields[4], {"name": "No cover match", "value": "2", "inline": True})
+        self.assertEqual(fields[5], {"name": "Rate-limited sources", "value": "1", "inline": True})
 
     def test_cancelled_scan_still_notifies_with_relabeled_title(self):
         captured = {}
