@@ -1221,6 +1221,22 @@ class RestoreHistoryEntryTests(unittest.TestCase):
         self.assertEqual(title, "Old Title")
         self.assertIsNone(cover)
 
+    def test_restores_to_no_tags_when_none_was_logged(self):
+        """Regression test: a file that had NO artist/title before ever
+        being scanned must end up with none again on restore, not keep
+        whatever a later Apply wrote (real user-reported bug)."""
+        entry = {
+            "folder": self._tmp_dir.name,
+            "new_file": "Current Artist - Current Title.wav",
+            "old_artist": "", "old_title": "",
+            "old_cover_b64": None,
+        }
+        restored_path = tagger.restore_history_entry(entry, log=lambda *_: None)
+
+        _, artist, title, cover = tagger.read_current_info(restored_path)
+        self.assertFalse(artist)
+        self.assertFalse(title)
+
     def test_raises_filenotfound_when_file_missing(self):
         entry = {
             "folder": self._tmp_dir.name, "new_file": "Does Not Exist.mp3",

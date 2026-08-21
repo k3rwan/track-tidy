@@ -782,7 +782,12 @@ def restore_history_entry(entry, log=safe_print, override_path=None):
     write_tags(
         full_path, old_artist, old_title, cover_image=old_cover_bytes,
         force_remove_if_missing=True,  # no old cover logged -> remove whatever cover is there now
-        update_title=bool(old_title), update_artist=bool(old_artist), update_cover=True,
+        # Always True, same reasoning as force_remove_if_missing above: an
+        # empty old_artist/old_title means the file had no tag at all
+        # before, so restoring must actively clear it (see write_tags'
+        # delall branch), not skip touching it and leave Apply's tags in
+        # place - a real user-reported bug (fixed 2026-08-22).
+        update_title=True, update_artist=True, update_cover=True,
         log=log,
     )
     log(f"  Restored tags on: '{full_path}'")
@@ -4255,9 +4260,15 @@ def write_tags(file_path, artist, title, cover_image, force_remove_if_missing,
     tags = audio.tags
 
     if update_title:
-        tags.setall("TIT2", [TIT2(encoding=3, text=[title])])
+        if title:
+            tags.setall("TIT2", [TIT2(encoding=3, text=[title])])
+        else:
+            tags.delall("TIT2")
     if update_artist:
-        tags.setall("TPE1", [TPE1(encoding=3, text=[artist])])
+        if artist:
+            tags.setall("TPE1", [TPE1(encoding=3, text=[artist])])
+        else:
+            tags.delall("TPE1")
 
     if update_cover:
         if cover_image:
