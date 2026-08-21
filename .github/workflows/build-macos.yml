@@ -11,12 +11,16 @@ on:
 
 jobs:
   build:
+    # macos-13 (Intel) was tried here too, but GitHub's Intel macOS
+    # runners are chronically unavailable - every attempt sat queued for
+    # 19-24h before being auto-cancelled, never actually running (see run
+    # history). Apple Silicon (macos-14) runs reliably in ~1 minute, so
+    # that's the only leg for now - revisit Intel if GitHub's runner
+    # availability ever improves.
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-13
-            arch: intel
           - os: macos-14
             arch: apple-silicon
     runs-on: ${{ matrix.os }}
