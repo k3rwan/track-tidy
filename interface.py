@@ -2273,25 +2273,6 @@ class TaggerInterface:
 
         self._center_dialog(dialog)
 
-    def _compute_processing_summary(self):
-        """Counts, among the files actually processed in this session, how
-        many were converted to MP3 vs. AIFF - info["convert"] alone doesn't
-        say which (it's just "this file gets converted, whichever format
-        that turns out to be"), so the actual target is re-derived from the
-        current settings via tagger._resolve_conversion_target(), same as
-        process_files() itself used at Apply time."""
-        mp3_count = 0
-        aiff_count = 0
-        for info in self.scanned_plan:
-            if not (info.get("processed") and info.get("convert")):
-                continue
-            target = tagger._resolve_conversion_target(info["file"])
-            if target == "mp3":
-                mp3_count += 1
-            elif target == "aiff":
-                aiff_count += 1
-        return mp3_count, aiff_count
-
     def _show_processing_failures_dialog(self):
         """Shown right before the "Processing complete" dialog whenever
         Apply hit one or more files it couldn't actually process (most
@@ -2339,50 +2320,15 @@ class TaggerInterface:
 
         self._center_dialog(dialog)
 
-    def _show_success_dialog(self):
-        """Custom success dialog with a green checkmark and a distinct chime
-        sound - the cover breakdown is shown earlier at scan time, so this
-        one just confirms the run finished and how many files were converted."""
+    def _play_success_sound(self):
+        """Distinct chime on a successful Apply run - the progress bar
+        already shows "Done ✓" once process_files() finishes, so this is
+        just an audible confirmation, not a modal to click through."""
         sound_path = resource_path("assets/success.wav")
         try:
             play_short_sound(sound_path)
         except Exception:
-            pass  # if the sound file is missing, just show the dialog silently
-
-        mp3_count, aiff_count = self._compute_processing_summary()
-
-        dialog = tk.Toplevel(self.window)
-        self._style_toplevel(dialog)
-        dialog.title("Processing complete")
-        dialog.resizable(False, False)
-        dialog.transient(self.window)
-        dialog.grab_set()
-
-        ttk.Label(
-            dialog,
-            text=f"{PROCESSED_CHECK} All files have been processed.",
-            justify="center",
-            padding=(20, 20, 20, 5),
-        ).pack()
-
-        # Only a line for a target format that actually happened at least
-        # once - showing "Converted to AIFF: 0" next to "Converted to MP3: 5"
-        # would misleadingly suggest AIFF conversion was tried and failed.
-        lines = []
-        if mp3_count:
-            lines.append(f"Converted to MP3: {mp3_count}")
-        if aiff_count:
-            lines.append(f"Converted to AIFF: {aiff_count}")
-        if not lines:
-            lines.append("No files were converted.")
-
-        ttk.Label(
-            dialog, text="\n".join(lines), justify="left", foreground="#555555",
-        ).pack(padx=20, pady=(0, 15))
-
-        ttk.Button(dialog, text="OK", command=dialog.destroy).pack(pady=(0, 15))
-
-        self._center_dialog(dialog)
+            pass  # if the sound file is missing, just stay silent
 
     def _finalize_scan(self, result):
         removed_files, number_before = result
@@ -4003,7 +3949,7 @@ class TaggerInterface:
                     if not cancelled:
                         if self._processing_failures:
                             self._show_processing_failures_dialog()
-                        self._show_success_dialog()
+                        self._play_success_sound()
 
                 elif message_type == "file_scanned":
                     # Buffered, not shown immediately - see
