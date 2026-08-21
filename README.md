@@ -19,6 +19,10 @@
 </p>
 
 <p align="center">
+  <a href="https://www.virustotal.com/gui/file/eff644203f1fef3f5cf115e5466a2e6e461322fd7ebd2ab49523c95022fecaee/detection"><img src="https://img.shields.io/badge/VirusTotal-0%2F69-brightgreen?style=for-the-badge&logo=virustotal&logoColor=white" alt="VirusTotal: 0/69 detections"></a>
+</p>
+
+<p align="center">
   <img src="screenshots/scan-in-progress.png" alt="Track Tidy scanning a folder" width="600">
 </p>
 
