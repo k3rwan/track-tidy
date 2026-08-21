@@ -71,16 +71,18 @@ Instead:
   published. This is a standing rule (confirmed twice - once explicitly
   asked for, once as a correction after this step was skipped), not a
   one-off - don't wait to be asked again.
-  **Also upload two extra, stably-named copies of each installer**
-  (`Track-Tidy-Setup-latest.exe`, `Track-Tidy-Setup-latest.dmg` - added
-  2026-08-21) alongside the normal versioned ones, on every release. This
-  is what `track-tidy-releases`' README's big "Download for
-  Windows"/"Download for macOS" buttons link to
-  (`.../releases/latest/download/Track-Tidy-Setup-latest.exe`/`.dmg`) so
-  they always resolve to the current version without editing the README
-  each release - a non-technical visitor coming from somewhere like
-  Reddit gets one obvious button instead of having to pick the right
-  asset off the versioned Releases list themselves.
+  **Update `track-tidy-releases`' README on every release** - its big
+  "Download for Windows"/"Download for macOS" buttons link directly to
+  that release's two assets (`.../releases/download/vX.Y/Track-Tidy-
+  Setup-vX.Y.exe`/`.dmg`), so a non-technical visitor (e.g. from Reddit)
+  gets one obvious button instead of having to pick the right asset off
+  the versioned Releases list themselves. An earlier version of this
+  (2026-08-21) also uploaded two extra stably-named duplicate assets
+  (`Track-Tidy-Setup-latest.exe`/`.dmg`) so the buttons never needed
+  updating - Kevin asked for that dropped the same day, since it left
+  4 files sitting in the release assets instead of just the 2 real
+  installers. Bump the two URLs in the README by hand each release
+  instead.
 - Test before committing: `python -m unittest discover -s tests` (run from
   the project root with the venv's Python).
 - For GUI changes, actually launch the app and screenshot it rather than
