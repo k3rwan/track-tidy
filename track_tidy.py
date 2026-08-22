@@ -526,32 +526,49 @@ MAX_DISCORD_HISTORY_PAGES = 50
 # explicit manual test string, not an install by anyone.
 DISCORD_UNIQUE_USER_COUNT_EXCLUDED = {"runner", "test-install-verification"}
 
+# Where count_unique_discord_users() remembers how far it's already read -
+# see its own docstring for why this only meaningfully helps repeat calls
+# on THE SAME machine (mainly Kevin's own dev/testing use), not the
+# population of real users overall (each of whom calls this only a
+# handful of times in their install's whole lifetime).
+DISCORD_USER_COUNT_CACHE_SETTINGS_KEY = "discord_user_count_cache"
+
 
 def count_unique_discord_users(log=safe_print):
     """
-    Walks the full message history of the Discord report channel (paginated
-    100 at a time, oldest reachable message last) and returns the set of
-    every distinct "User" embed-field value ever seen there (lowercased) -
-    every notification function in this module (send_track_report,
+    Returns the set of every distinct "User" embed-field value ever posted
+    in the Discord report channel (lowercased) - every notification
+    function in this module (send_track_report,
     send_new_install_notification, send_scan_complete_notification,
     send_no_cover_report, send_rate_limit_report) includes that field, so
     this naturally counts a unique person the first time ANY of them fired
     for that person, not just "New install" specifically.
 
+    Incremental: remembers the newest message ID it's already accounted
+    for (see DISCORD_USER_COUNT_CACHE_SETTINGS_KEY) and only walks
+    (paginated, 100 at a time, newest first) as far back as that ID before
+    stopping, instead of re-reading the entire channel every time - a full
+    read only happens the first time this is ever called (empty cache).
+    Bounded to MAX_DISCORD_HISTORY_PAGES pages either way, so a runaway
+    pagination loop can't hang a "New install" notification or hammer
+    Discord's API.
+
     Returns None on any failure (no bot token configured, network error,
     Discord API error/rate limit) rather than an empty set, so a caller can
     tell "couldn't determine this" apart from "genuinely nobody yet" and
-    skip showing a count instead of showing a wrong one. Bounded to
-    MAX_DISCORD_HISTORY_PAGES pages (a channel with a plausible, bounded
-    amount of history) so a runaway pagination loop can't hang a "New
-    install" notification or hammer Discord's API.
+    skip showing a count instead of showing a wrong one - the cache is only
+    updated on a fully successful read, never on a partial/failed one.
     """
     if not DISCORD_BOT_TOKEN or not DISCORD_LOG_CHANNEL_ID:
         return None
 
+    cache = load_settings().get(DISCORD_USER_COUNT_CACHE_SETTINGS_KEY) or {}
+    cached_last_id = cache.get("last_message_id")
+    usernames = set(cache.get("usernames") or [])
+
     headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
-    usernames = set()
     before = None
+    newest_id_seen = None
 
     try:
         for _page in range(MAX_DISCORD_HISTORY_PAGES):
@@ -571,7 +588,15 @@ def count_unique_discord_users(log=safe_print):
             if not messages:
                 break
 
+            if newest_id_seen is None:
+                newest_id_seen = messages[0].get("id")
+
+            reached_cache_boundary = False
             for message in messages:
+                message_id = message.get("id")
+                if cached_last_id and message_id and int(message_id) <= int(cached_last_id):
+                    reached_cache_boundary = True
+                    break
                 for embed in message.get("embeds", []):
                     for field in embed.get("fields", []):
                         if field.get("name") == "User":
@@ -579,9 +604,18 @@ def count_unique_discord_users(log=safe_print):
                             if value and value != "(unknown)" and value not in DISCORD_UNIQUE_USER_COUNT_EXCLUDED:
                                 usernames.add(value)
 
+            if reached_cache_boundary:
+                break
+
             before = messages[-1].get("id")
             if len(messages) < 100 or not before:
                 break
+
+        if newest_id_seen:
+            save_setting(DISCORD_USER_COUNT_CACHE_SETTINGS_KEY, {
+                "last_message_id": newest_id_seen,
+                "usernames": sorted(usernames),
+            })
 
         return usernames
 

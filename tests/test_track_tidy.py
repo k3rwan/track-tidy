@@ -1636,10 +1636,17 @@ class CountUniqueDiscordUsersTests(unittest.TestCase):
         self.original_get = tagger.requests.get
         self.original_token = tagger.DISCORD_BOT_TOKEN
         tagger.DISCORD_BOT_TOKEN = "fake-bot-token"
+        # Isolate the incremental cache (see DISCORD_USER_COUNT_CACHE_SETTINGS_KEY)
+        # from whatever real settings.json happens to exist on this machine.
+        self._original_settings_file = tagger.SETTINGS_FILE
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        tagger.SETTINGS_FILE = os.path.join(self._tmp_dir.name, "settings.json")
 
     def tearDown(self):
         tagger.requests.get = self.original_get
         tagger.DISCORD_BOT_TOKEN = self.original_token
+        tagger.SETTINGS_FILE = self._original_settings_file
+        self._tmp_dir.cleanup()
 
     def _message(self, username):
         return {"id": "123", "embeds": [{"fields": [{"name": "User", "value": username}]}]}
@@ -1740,6 +1747,45 @@ class CountUniqueDiscordUsersTests(unittest.TestCase):
 
         tagger.requests.get = fake_get
         self.assertIsNone(tagger.count_unique_discord_users())
+
+    def test_second_call_only_fetches_messages_newer_than_the_cache(self):
+        old_message = self._message("old_user")
+        old_message["id"] = "100"
+        new_message = self._message("new_user")
+        new_message["id"] = "200"
+        calls = []
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self.status_code = 200
+                self._payload = payload
+            def json(self):
+                return self._payload
+
+        def fake_get_first(url, headers=None, params=None, timeout=None):
+            calls.append(dict(params))
+            return FakeResponse([old_message])
+
+        tagger.requests.get = fake_get_first
+        first_result = tagger.count_unique_discord_users()
+        self.assertEqual(first_result, {"old_user"})
+
+        def fake_get_second(url, headers=None, params=None, timeout=None):
+            calls.append(dict(params))
+            # Only the genuinely new message is returned this time - a real
+            # Discord "after"-less "before" walk would stop as soon as it
+            # reaches the cached boundary, so only one page is ever needed.
+            return FakeResponse([new_message, old_message])
+
+        tagger.requests.get = fake_get_second
+        second_result = tagger.count_unique_discord_users()
+
+        self.assertEqual(second_result, {"old_user", "new_user"})
+        # Second call's cache already knows about "100" - the request made
+        # is unchanged (still just a plain page-1 fetch, no "before" yet),
+        # but the loop must stop at the cached message instead of paginating
+        # further back for messages it already has.
+        self.assertEqual(len(calls), 2)
 
 
 class NewInstallNotificationTests(unittest.TestCase):
