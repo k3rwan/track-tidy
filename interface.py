@@ -530,6 +530,19 @@ class TaggerInterface:
         self._adjust_window_height()
         if self.notebook.index("current") == 2:  # Settings - recheck right away rather than
             self._check_internet_connection()      # waiting for the next background 10s poll
+            # Windows' native theme draws a visible focus rectangle around
+            # whichever radiobutton last had keyboard focus - with nothing
+            # having focused this group yet, that defaults to the first
+            # one in tab order ("Light"), regardless of which is actually
+            # SELECTED (the filled dot). Misleading on first look at
+            # Settings - real report: a focus box around "Light" while
+            # "Automatic" was the actual saved theme. Point it at whichever
+            # is really selected instead, every time this tab is shown (a
+            # theme change elsewhere - e.g. Reset settings - could have
+            # moved the selection without ever touching this focus ring).
+            selected = self._theme_radio_buttons.get(self.theme_var.get())
+            if selected:
+                selected.focus_set()
 
     def _style_toplevel(self, dialog):
         """Applies the current theme's background (and title bar) to a dialog
@@ -1648,11 +1661,14 @@ class TaggerInterface:
 
         appearance_frame = ttk.LabelFrame(soundcloud_tab, text="Appearance")
         appearance_frame.pack(fill="x", padx=10, pady=(15, 10))
+        self._theme_radio_buttons = {}
         for value, label in (("light", "Light"), ("dark", "Dark"), ("auto", "Automatic (time of day)")):
-            ttk.Radiobutton(
+            theme_radio = ttk.Radiobutton(
                 appearance_frame, text=label, value=value, variable=self.theme_var,
                 command=self._on_theme_changed,
-            ).pack(side="left", padx=10, pady=10)
+            )
+            theme_radio.pack(side="left", padx=10, pady=10)
+            self._theme_radio_buttons[value] = theme_radio
 
         # Renamed from "Behavior" - now holds only actual file-handling
         # toggles, not one-off maintenance actions (those moved to "App").
