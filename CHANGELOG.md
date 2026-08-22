@@ -3,6 +3,17 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.23.3]
+
+### Fixed
+- Windows and macOS: the app icon and both sound effects (fart/success)
+  were being bundled at the wrong path inside the packaged app, so
+  `os.path.exists()` silently failed to find them at runtime - Tk's
+  default feather icon kept showing (in the taskbar and title bar) even
+  in a build made with the correct PyInstaller flags, and the two sounds
+  never played. The 0.23.2 fix only addressed a build that had omitted
+  those flags entirely, not this separate path mismatch underneath.
+
 ## [0.23.2]
 
 ### Fixed
