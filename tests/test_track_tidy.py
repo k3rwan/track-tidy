@@ -154,6 +154,15 @@ class CleanTitleTests(unittest.TestCase):
         tagger.MENTIONS_TO_REMOVE[:] = []
         self.assertEqual(tagger.clean_title("Untouched Title"), "Untouched Title")
 
+    def test_strips_bare_version_suffix_without_dash(self):
+        # Real report: "Retrograde (MIAMO Edit) v2" broke the search
+        # itself (not just the match check) - the cover was found
+        # instantly once "v2" was manually removed.
+        self.assertEqual(tagger.clean_title("Retrograde (MIAMO Edit) v2"), "Retrograde (MIAMO Edit)")
+
+    def test_does_not_strip_v_digit_glued_to_a_real_word(self):
+        self.assertEqual(tagger.clean_title("Motiv2"), "Motiv2")
+
 
 class StripHelpersTests(unittest.TestCase):
     def test_strip_generic_mix_suffix_removes_generic_label(self):

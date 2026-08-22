@@ -978,7 +978,14 @@ FIX_TRACK_FILE_NAME = True
 # 2. FILENAME & TITLE CLEANING
 # ============================================================================
 
-VERSION_SUFFIX_RE = re.compile(r"\s*-\s*v\d+\s*$", re.IGNORECASE)
+# A trailing "-v6"/"- v6" OR a bare "v2" preceded only by whitespace (no
+# dash) - real report: "Retrograde (MIAMO Edit) v2" wasn't caught by the
+# dash-only pattern, so the literal "v2" ended up in the search query and
+# broke the search itself (not just the match check) even though the
+# cover was found instantly once "v2" was removed. \b before "v" (via the
+# whitespace/dash requirement) keeps this from ever touching a real word
+# that happens to end in "v" + digits with no separator (e.g. "Motiv2").
+VERSION_SUFFIX_RE = re.compile(r"(?:\s*-\s*|\s+)v\d+\s*$", re.IGNORECASE)
 
 # DJ-pool export convention: "Title - <Camelot key> - <BPM>" (e.g.
 # "Juno - 4A - 122") - the key is always 1-2 digits + A/B, the BPM 2-3
