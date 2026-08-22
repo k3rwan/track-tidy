@@ -3,6 +3,59 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.23]
+
+### Added
+- Smooth UI animations: new scan rows flash in, the progress bar glides
+  toward its target instead of jumping, and removed rows fade out instead
+  of vanishing instantly.
+- An "Automatic (time of day)" appearance option (now the default for new
+  installs) - light during the day, dark in the evening/night, rechecked
+  periodically while the app stays open.
+- A file whose name is flagged "unreleased" no longer defaults to
+  auto-applying - the search still runs, but the row starts unchecked
+  since there's no official release to have verified the match against.
+- The Extractor tab's "Extract" button becomes "Cancel" while a folder is
+  being flattened, and a Discord ping now fires either way (completed,
+  cancelled, or failed).
+- The "Only show tracks with no cover match" filter (and the matching
+  post-scan count/Discord report) now shows a track that kept its own
+  existing cover with no online match, instead of hiding it just because
+  it happened to already have some cover art.
+- A high no-cover-match rate (>15%, up from 10%) now automatically sends
+  the whole batch of no-cover tracks to Discord (filename + current/
+  detected tags), instead of a popup nudging toward reporting them one by
+  one.
+- A cover source (iTunes/Spotify/SoundCloud/AcoustID) getting rate-limited
+  now pings Discord immediately, on top of the existing end-of-scan count.
+- The "Scan complete" Discord embed now shows the no-cover-match rate as
+  a percentage, not just a raw count.
+- A "New install" Discord ping now includes a running count of unique
+  users ever seen in the channel's history.
+
+### Changed
+- The right-click "Info" dialog is more compact (current/suggested tags
+  each collapsed to one "Artist - Title" line, flags grouped together)
+  and no longer shows a raw `True`/`(none)` for "Mention detected".
+- "rework" is now recognized as a remix-type keyword everywhere "remix"/
+  "edit"/"mix" already were, and a store's inline "/ Artist" credit
+  inserted into a title (instead of the artist field) is now stripped
+  before comparing - both were silently causing real, correct matches to
+  be rejected.
+- SoundCloud now accepts a candidate whose own remix credit already
+  matches the expected artist, even if it disagrees with the (possibly
+  simply wrong) remix name in the file's own filename.
+- The developer's own account is no longer excluded from automatic
+  Discord notifications.
+
+### Fixed
+- `exact_match()` now folds typographic/curly quotes to plain ASCII ones.
+- A bare trailing version marker like `v2` (no dash) is now stripped from
+  a title the same way `-v2` already was - it was otherwise polluting the
+  search query itself.
+- The GitHub release tag is now sanitized before being used to build the
+  downloaded installer's temp file path.
+
 ## [0.22]
 
 ### Added
