@@ -4004,8 +4004,10 @@ class TaggerInterface:
 
     def _show_track_info(self, info):
         """Shows a read-only summary of everything known about this row -
-        current vs. suggested tags, cover status, and which platform (if
-        any) the cover match came from."""
+        current vs. suggested tags (as one "Artist - Title" line each,
+        matching how they're actually displayed everywhere else), cover
+        status, format/conversion target, and any flags detected on the
+        file (mention, unreleased, already applied)."""
         dialog = tk.Toplevel(self.window)
         self._style_toplevel(dialog)
         dialog.title("Track info")
@@ -4023,20 +4025,42 @@ class TaggerInterface:
         else:
             cover_summary = "No cover found"
 
+        current_display = (
+            tagger.build_display_name(info.get("current_artist"), info["current_title"])
+            if info.get("current_title") else "(empty)"
+        )
+
         suggested_artist = info["artist_override"] if info.get("artist_override") is not None else info.get("detected_artist")
         suggested_title = info["title_override"] if info.get("title_override") is not None else info.get("detected_title")
+        if suggested_title:
+            acoustid_marker = " 🎧" if info.get("acoustid_identified") and info["title_override"] is None else ""
+            suggested_display = tagger.build_display_name(suggested_artist, suggested_title) + acoustid_marker
+        else:
+            suggested_display = "(none)"
+
+        needs_conversion = info.get("format") not in ("MP3", "AIFF")
+        if needs_conversion and info.get("convert"):
+            target_format = (tagger._resolve_conversion_target(info["file"]) or "mp3").upper()
+            format_display = f"{info.get('format') or '?'} → {target_format}"
+        else:
+            format_display = info.get("format") or "?"
+
+        flags = []
+        if info.get("mention_detected"):
+            flags.append("Mention detected")
+        if tagger.contains_unreleased_marker(info.get("file") or ""):
+            flags.append("Unreleased")
+        if info.get("already_applied"):
+            flags.append("Already applied")
 
         rows = [
             ("File", info.get("file") or "?"),
-            ("Format", info.get("format") or "?"),
-            ("Current artist", info.get("current_artist") or "(none)"),
-            ("Current title", info.get("current_title") or "(none)"),
-            ("Suggested artist", suggested_artist or "(none)"),
-            ("Suggested title", suggested_title or "(none)"),
+            ("Format", format_display),
+            ("Current tags", current_display),
+            ("Suggested tags", suggested_display),
             ("Cover match", cover_summary),
-            ("Mention detected", info.get("mention_detected") or "(none)"),
             ("Apply changes", "Yes" if info.get("apply_changes") else "No"),
-            ("Convert to MP3", "Yes" if info.get("convert") else "No"),
+            ("Flags", ", ".join(flags) if flags else "(none)"),
         ]
 
         grid = ttk.Frame(dialog)
