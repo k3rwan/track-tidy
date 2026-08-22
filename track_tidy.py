@@ -513,9 +513,18 @@ DISCORD_REPORT_WEBHOOK_URL = _default_credentials.get("discord_webhook_url", "")
 # a numeric identifier, useless without the token), so it's a plain
 # constant rather than another default_credentials.json entry.
 DISCORD_BOT_TOKEN = _default_credentials.get("discord_bot_token", "")
-DISCORD_LOG_CHANNEL_ID = "1540462073635668038"
+DISCORD_LOG_CHANNEL_ID = "1536761049410306201"
 
 MAX_DISCORD_HISTORY_PAGES = 50
+
+# "User" values in the channel history that are test/CI artifacts, not a
+# real person who ever ran the app - excluded from the unique-user count
+# specifically (unlike DISCORD_NOTIFICATION_EXCLUDED_USERS, which gates
+# whether a notification gets SENT at all, this only affects what already-
+# sent history counts as "a real user"). "runner" is GitHub Actions' own
+# username on every CI test run; "test-install-verification" was an
+# explicit manual test string, not an install by anyone.
+DISCORD_UNIQUE_USER_COUNT_EXCLUDED = {"runner", "test-install-verification"}
 
 
 def count_unique_discord_users(log=safe_print):
@@ -567,7 +576,7 @@ def count_unique_discord_users(log=safe_print):
                     for field in embed.get("fields", []):
                         if field.get("name") == "User":
                             value = (field.get("value") or "").strip().lower()
-                            if value and value != "(unknown)":
+                            if value and value != "(unknown)" and value not in DISCORD_UNIQUE_USER_COUNT_EXCLUDED:
                                 usernames.add(value)
 
             before = messages[-1].get("id")

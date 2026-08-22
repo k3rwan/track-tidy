@@ -1710,6 +1710,22 @@ class CountUniqueDiscordUsersTests(unittest.TestCase):
 
         self.assertEqual(result, {"real_user"})
 
+    def test_excludes_known_test_ci_artifacts(self):
+        # "runner" (GitHub Actions' own username on every CI test run) and
+        # "test-install-verification" (an explicit manual test string) are
+        # not real users - see DISCORD_UNIQUE_USER_COUNT_EXCLUDED.
+        messages = [self._message("runner"), self._message("test-install-verification"), self._message("real_user")]
+
+        class FakeResponse:
+            status_code = 200
+            def json(self):
+                return messages
+
+        tagger.requests.get = lambda url, headers=None, params=None, timeout=None: FakeResponse()
+        result = tagger.count_unique_discord_users()
+
+        self.assertEqual(result, {"real_user"})
+
     def test_http_error_returns_none(self):
         class FakeResponse:
             status_code = 401
