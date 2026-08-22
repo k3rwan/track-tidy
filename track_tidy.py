@@ -698,7 +698,11 @@ def send_scan_complete_notification(
             {"name": "New files", "value": str(number_new), "inline": True},
             {"name": "Removed files", "value": str(number_removed), "inline": True},
             {"name": "Total files", "value": str(total), "inline": True},
-            {"name": "No cover match", "value": str(number_no_cover), "inline": True},
+            {
+                "name": "No cover match",
+                "value": f"{number_no_cover} ({number_no_cover / total:.0%})" if total else str(number_no_cover),
+                "inline": True,
+            },
             {"name": "Rate-limited sources", "value": str(number_rate_limited_sources), "inline": True},
             {"name": "Auth errors", "value": ", ".join(auth_error_sources) if auth_error_sources else "None", "inline": True},
             {"name": "App version", "value": APP_VERSION, "inline": True},

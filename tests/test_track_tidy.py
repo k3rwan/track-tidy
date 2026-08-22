@@ -1626,7 +1626,7 @@ class ScanCompleteNotificationTests(unittest.TestCase):
         self.assertEqual(fields[1], {"name": "New files", "value": "3", "inline": True})
         self.assertEqual(fields[2], {"name": "Removed files", "value": "1", "inline": True})
         self.assertEqual(fields[3], {"name": "Total files", "value": "10", "inline": True})
-        self.assertEqual(fields[4], {"name": "No cover match", "value": "2", "inline": True})
+        self.assertEqual(fields[4], {"name": "No cover match", "value": "2 (20%)", "inline": True})
         self.assertEqual(fields[5], {"name": "Rate-limited sources", "value": "1", "inline": True})
         self.assertEqual(fields[6], {"name": "Auth errors", "value": "SoundCloud", "inline": True})
 
