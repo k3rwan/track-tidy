@@ -1161,6 +1161,19 @@ def contains_mention_to_remove(file_name):
     return False
 
 
+# An "unreleased" track (private edit/bootleg/promo not out anywhere yet)
+# has no official listing to match against - a filename-derived guess for
+# one is more likely to be noise than a real fix, so it shouldn't default
+# to being auto-applied like a normal match would (see "apply_changes"
+# below). \b keeps this from firing on an unrelated word that merely
+# contains "unreleased" as a substring.
+UNRELEASED_MARKER_RE = re.compile(r"\bunreleased\b", re.IGNORECASE)
+
+
+def contains_unreleased_marker(file_name):
+    return bool(UNRELEASED_MARKER_RE.search(os.path.basename(file_name)))
+
+
 # Pattern for names like: "Title Artist, Remix (Remixer) Extended"
 # -> becomes artist="Artist", title="Title (Remixer Remix)"
 REMIX_WITH_COMMA_PATTERN = re.compile(
@@ -2352,8 +2365,14 @@ def _finish_scan(prepared, match_result, cover_source, log=safe_print):
         # An already_applied row starts unchecked on top of that - it has
         # nothing to gain from Apply rewriting the exact same tags/cover it
         # already has, unlike a plain "tags already present" row that just
-        # never got a filename-derived guess to second-guess.
-        "apply_changes": bool(detected_title) and not prepared.get("already_applied", False),
+        # never got a filename-derived guess to second-guess. A filename
+        # flagged "unreleased" starts unchecked too - see
+        # contains_unreleased_marker.
+        "apply_changes": (
+            bool(detected_title)
+            and not prepared.get("already_applied", False)
+            and not contains_unreleased_marker(file_name)
+        ),
         "found_cover_image": found_cover_image,
         "cover_source": cover_source,
         "current_cover_bytes": prepared["current_cover_bytes"],

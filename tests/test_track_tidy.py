@@ -708,6 +708,45 @@ class TryAcoustidCorrectionTests(unittest.TestCase):
         self.assertEqual(prepared["remix_qualified_title"], "Title (Some Remix)")
 
 
+class ContainsUnreleasedMarkerTests(unittest.TestCase):
+    def test_detects_unreleased_case_insensitively(self):
+        self.assertTrue(tagger.contains_unreleased_marker("Artist - Title (Unreleased).mp3"))
+        self.assertTrue(tagger.contains_unreleased_marker("Artist - Title [UNRELEASED].wav"))
+
+    def test_does_not_match_substring_inside_another_word(self):
+        self.assertFalse(tagger.contains_unreleased_marker("Artist - Unreleasedish Title.mp3"))
+
+    def test_no_marker_returns_false(self):
+        self.assertFalse(tagger.contains_unreleased_marker("Artist - Title.mp3"))
+
+
+class FinishScanApplyChangesTests(unittest.TestCase):
+    """apply_changes (the Apply column's default checked state) should not
+    default to checked for a track flagged as unreleased - there's nothing
+    for the filename-derived guess to have been verified against."""
+
+    def _prepared(self, file_name, already_applied=False):
+        return {
+            "file_name": file_name,
+            "detected_artist": "Some Artist",
+            "detected_title": "Some Title",
+            "current_artist": None,
+            "current_title": None,
+            "has_cover": False,
+            "current_cover_bytes": None,
+            "tags_already_present": False,
+            "already_applied": already_applied,
+        }
+
+    def test_unreleased_filename_starts_unchecked(self):
+        info = tagger._finish_scan(self._prepared("Artist - Title (Unreleased).mp3"), None, None)
+        self.assertFalse(info["apply_changes"])
+
+    def test_normal_filename_still_starts_checked(self):
+        info = tagger._finish_scan(self._prepared("Artist - Title.mp3"), None, None)
+        self.assertTrue(info["apply_changes"])
+
+
 class SearchOneSourceTests(unittest.TestCase):
     """_search_one_source() applies one provider's own query strategy - no
     network involved, so the providers are swapped out with fakes."""
