@@ -17,7 +17,7 @@ on [Keep a Changelog](https://keepachangelog.com/).
   Discord defaults.
 - Discord notifications (report track, scan complete, new install) now
   explicitly suppress mention parsing, so a filename/tag containing
-  "@everyone" or a role mention can never trigger a real ping.
+  `@everyone` or a role mention can never trigger a real ping.
 - Removed the "Processing complete" popup after Apply - the progress
   bar already shows "Done", so this just meant one more click through.
   The success chime still plays.
