@@ -962,6 +962,36 @@ def save_setting(key, value):
         print(f"  Could not save setting '{key}': {error}")
 
 
+# Single source of truth for what "defaults" means - shared by the Settings
+# tab's manual "Reset all settings to default" button and the automatic
+# reset every update triggers (see check_and_apply_version_reset()).
+DEFAULT_SETTINGS = {
+    "theme": "auto",
+    "auto_convert_mp3": False,
+    "auto_convert_wav_to_aiff": True,
+    "fix_track_file_name": True,
+    "use_spotify": False,
+    "show_log_section": False,
+}
+
+
+def check_and_apply_version_reset():
+    """Wipes all saved settings back to defaults the first time the app runs
+    after an update (i.e. APP_VERSION differs from the version it last ran
+    as) - a fresh version starts with a clean slate rather than carrying
+    forward whatever the previous version happened to save. A first-ever
+    launch (no recorded version yet) is not a "change" and doesn't reset
+    anything - there's nothing to reset."""
+    last_run_version = load_settings().get("last_run_version")
+    if last_run_version is not None and last_run_version != APP_VERSION:
+        try:
+            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+                json.dump(dict(DEFAULT_SETTINGS), f, indent=2)
+        except Exception as error:
+            print(f"  Could not reset settings for the new version: {error}")
+    save_setting("last_run_version", APP_VERSION)
+
+
 # --- Processing history log ---
 
 HISTORY_FILE = os.path.join(user_config_dir(), "history.jsonl")
@@ -1280,8 +1310,25 @@ DUPLICATE_FILE_MARKER_RE = re.compile(r"\s*\(\d+\)\s*$")
 # all, confirming it's the filer's own addition, not part of the release.
 MIX_NUMBER_SUFFIX_RE = re.compile(r"\s+M\d{1,2}\s*$")
 
+# "KLICKAUD" watermark, tacked on (with a leading underscore or space) at
+# the very end of the filename by that download source - unlike
+# MENTIONS_TO_REMOVE (a user-populated list for one-off/per-user cases),
+# this recurs often enough across different users' files to be worth its
+# own always-on rule, same idea as FUVICLAN_PATTERN further down.
+KLICKAUD_WATERMARK_RE = re.compile(r"[_\s]*klickaud\s*$", re.IGNORECASE)
+
 
 def clean_title(text):
+    if KLICKAUD_WATERMARK_RE.search(text):
+        text = KLICKAUD_WATERMARK_RE.sub("", text)
+        # KLICKAUD's own filenames consistently use underscores in place of
+        # spaces throughout, not just right before the watermark - unlike
+        # the general lowercase-only heuristic in parse_filename() (kept
+        # deliberately narrow there, to avoid mangling a stylized artist
+        # name that uses an underscore on purpose), this source is
+        # identifiable enough to trust unconditionally, regardless of case.
+        text = re.sub(r"\s{2,}", " ", text.replace("_", " ")).strip()
+
     for mention in MENTIONS_TO_REMOVE:
         text = re.sub(re.escape(mention), "", text, flags=re.IGNORECASE)
         text = re.sub(r"\(\s+", "(", text)   # trim leftover space right after "("
@@ -1653,6 +1700,20 @@ def parse_filename(file_name):
     # in half and mangling everything after it.
     if artist is None:
         match = re.match(r"^(.+?)\s+-\s+(.+)$", name_no_ext)
+        if match:
+            artist = match.group(1).strip()
+            title = reformat_trailing_dash_mix(match.group(2).strip())
+
+    # Fallback: a hyphen with whitespace right AFTER it but none before
+    # (e.g. "AdrianRoman- Oblique Strategies" - the shape a KLICKAUD-style
+    # "Artist-_Title" filename is left in once clean_title() above turns
+    # its underscores into spaces). Still narrow enough to not reopen the
+    # "Jean-Marc" bug the standard case above was narrowed to avoid: an
+    # actual hyphenated name is never itself followed by whitespace
+    # ("Jean- Marc" isn't a real name), so this only fires on filenames
+    # the standard space-both-sides case already ruled out.
+    if artist is None:
+        match = re.match(r"^(.+?)-\s+(.+)$", name_no_ext)
         if match:
             artist = match.group(1).strip()
             title = reformat_trailing_dash_mix(match.group(2).strip())
@@ -2735,12 +2796,17 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
 
         match_result = None
         cover_source = None
-        has_query = prepared["detected_artist"] and prepared["search_title"]
-        # SoundCloud alone can still be searched with no artist at all
-        # (see _prepare_scan) - its own match validation never trivially
-        # accepts a blank artist, unlike iTunes/Spotify's has_query gate
-        # above.
-        has_search_title = bool(prepared["search_title"])
+        # A blank artist (e.g. a filename with no "Artist - Title"
+        # separator to detect one from) no longer blocks iTunes/Spotify -
+        # they're tried with just the title, same as SoundCloud already
+        # did. artist_sets_match() treats an empty expected-artist set as
+        # a match against anything, so validation for these effectively
+        # falls back to requiring an EXACT title match alone - a real risk
+        # of a false positive on a generic title, accepted as a tradeoff
+        # for not missing an otherwise-findable track that just has no
+        # artist to search with.
+        has_query = bool(prepared["search_title"])
+        has_search_title = has_query
 
         if USE_ITUNES and has_query:
             match_result, cover_source = _search_one_source(
