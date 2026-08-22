@@ -506,6 +506,81 @@ def download_installer(url, dest_path, on_progress=None, timeout=30, expected_sh
 # early-return on a falsy URL) when that file isn't present.
 DISCORD_REPORT_WEBHOOK_URL = _default_credentials.get("discord_webhook_url", "")
 
+# Same "not embedded in public source" reasoning as the webhook URL above,
+# but a bot token is more sensitive still (read access to the whole
+# channel's history, not just permission to post) - see
+# count_unique_discord_users(). The channel ID itself isn't sensitive (just
+# a numeric identifier, useless without the token), so it's a plain
+# constant rather than another default_credentials.json entry.
+DISCORD_BOT_TOKEN = _default_credentials.get("discord_bot_token", "")
+DISCORD_LOG_CHANNEL_ID = "1540462073635668038"
+
+MAX_DISCORD_HISTORY_PAGES = 50
+
+
+def count_unique_discord_users(log=safe_print):
+    """
+    Walks the full message history of the Discord report channel (paginated
+    100 at a time, oldest reachable message last) and returns the set of
+    every distinct "User" embed-field value ever seen there (lowercased) -
+    every notification function in this module (send_track_report,
+    send_new_install_notification, send_scan_complete_notification,
+    send_no_cover_report, send_rate_limit_report) includes that field, so
+    this naturally counts a unique person the first time ANY of them fired
+    for that person, not just "New install" specifically.
+
+    Returns None on any failure (no bot token configured, network error,
+    Discord API error/rate limit) rather than an empty set, so a caller can
+    tell "couldn't determine this" apart from "genuinely nobody yet" and
+    skip showing a count instead of showing a wrong one. Bounded to
+    MAX_DISCORD_HISTORY_PAGES pages (a channel with a plausible, bounded
+    amount of history) so a runaway pagination loop can't hang a "New
+    install" notification or hammer Discord's API.
+    """
+    if not DISCORD_BOT_TOKEN or not DISCORD_LOG_CHANNEL_ID:
+        return None
+
+    headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
+    usernames = set()
+    before = None
+
+    try:
+        for _page in range(MAX_DISCORD_HISTORY_PAGES):
+            params = {"limit": 100}
+            if before:
+                params["before"] = before
+
+            response = requests.get(
+                f"https://discord.com/api/v10/channels/{DISCORD_LOG_CHANNEL_ID}/messages",
+                headers=headers, params=params, timeout=10,
+            )
+            if response.status_code != 200:
+                log(f"  [Discord] Could not read channel history: HTTP {response.status_code}")
+                return None
+
+            messages = response.json()
+            if not messages:
+                break
+
+            for message in messages:
+                for embed in message.get("embeds", []):
+                    for field in embed.get("fields", []):
+                        if field.get("name") == "User":
+                            value = (field.get("value") or "").strip().lower()
+                            if value and value != "(unknown)":
+                                usernames.add(value)
+
+            before = messages[-1].get("id")
+            if len(messages) < 100 or not before:
+                break
+
+        return usernames
+
+    except Exception as error:
+        log(f"  [Discord] Error while reading channel history: {error}")
+        return None
+
+
 def send_track_report(info, reporter_name=None, timeout=10):
     """
     Posts this track's info to a Discord webhook, so the developer gets a
@@ -645,6 +720,9 @@ def send_new_install_notification(reporter_name=None, previous_version=None, tim
     in interface.py, gated by a saved "last notified version" setting -
     only updated after a successful send, so a failed attempt is retried
     on the next launch instead of being silently given up on forever).
+    A genuinely new install also gets a running "Unique users" count (see
+    count_unique_discord_users) - not shown on an "app updated" ping, since
+    that's the same person, not a new one.
     Returns True on success, False on any failure (never raises) - also
     False without posting anything for an excluded account (see
     DISCORD_NOTIFICATION_EXCLUDED_USERS).
@@ -654,6 +732,16 @@ def send_new_install_notification(reporter_name=None, previous_version=None, tim
     fields = [{"name": "User", "value": reporter_name or "(unknown)", "inline": True}]
     if previous_version:
         fields.append({"name": "Previous version", "value": previous_version, "inline": True})
+    else:
+        # Unique-user count is only meaningful for a genuinely NEW install,
+        # not an existing user updating - and only shown when it could
+        # actually be determined (see count_unique_discord_users), so a
+        # missing/misconfigured bot token just quietly omits the field
+        # instead of showing a wrong number.
+        unique_users = count_unique_discord_users()
+        if unique_users is not None:
+            total = len(unique_users | ({reporter_name.strip().lower()} if reporter_name else set()))
+            fields.append({"name": "Unique users", "value": str(total), "inline": True})
     fields.append({"name": "App version", "value": APP_VERSION, "inline": True})
     embed = {
         "title": "App updated" if previous_version else "New install",

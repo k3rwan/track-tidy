@@ -1631,6 +1631,101 @@ class CredentialEncryptionTests(unittest.TestCase):
         self.assertEqual(tagger.read_credential(self._key), "old-plaintext-secret")
 
 
+class CountUniqueDiscordUsersTests(unittest.TestCase):
+    def setUp(self):
+        self.original_get = tagger.requests.get
+        self.original_token = tagger.DISCORD_BOT_TOKEN
+        tagger.DISCORD_BOT_TOKEN = "fake-bot-token"
+
+    def tearDown(self):
+        tagger.requests.get = self.original_get
+        tagger.DISCORD_BOT_TOKEN = self.original_token
+
+    def _message(self, username):
+        return {"id": "123", "embeds": [{"fields": [{"name": "User", "value": username}]}]}
+
+    def test_no_bot_token_returns_none_without_a_request(self):
+        tagger.DISCORD_BOT_TOKEN = ""
+        calls = []
+        tagger.requests.get = lambda *a, **k: calls.append(1)
+        self.assertIsNone(tagger.count_unique_discord_users())
+        self.assertEqual(calls, [])
+
+    def test_dedupes_case_insensitively_across_a_single_page(self):
+        messages = [self._message("Kevin"), self._message("tarho"), self._message("kevin")]
+
+        class FakeResponse:
+            status_code = 200
+            def json(self):
+                return messages
+
+        tagger.requests.get = lambda url, headers=None, params=None, timeout=None: FakeResponse()
+        result = tagger.count_unique_discord_users()
+
+        self.assertEqual(result, {"kevin", "tarho"})
+
+    def test_paginates_with_before_until_a_short_page(self):
+        page1 = [self._message(f"user{i}") for i in range(100)]
+        for i, msg in enumerate(page1):
+            msg["id"] = str(1000 - i)
+        page2 = [self._message("last_user")]
+        page2[0]["id"] = "1"
+        calls = []
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self.status_code = 200
+                self._payload = payload
+            def json(self):
+                return self._payload
+
+        def fake_get(url, headers=None, params=None, timeout=None):
+            calls.append(params.get("before"))
+            if params.get("before") is None:
+                return FakeResponse(page1)
+            return FakeResponse(page2)
+
+        tagger.requests.get = fake_get
+        result = tagger.count_unique_discord_users()
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1], "901")  # id of the last message in page1
+        self.assertIn("last_user", result)
+        self.assertEqual(len(result), 101)
+
+    def test_ignores_unknown_placeholder_and_missing_user_fields(self):
+        messages = [
+            self._message("(unknown)"),
+            {"id": "1", "embeds": [{"fields": [{"name": "File", "value": "x.mp3"}]}]},
+            self._message("real_user"),
+        ]
+
+        class FakeResponse:
+            status_code = 200
+            def json(self):
+                return messages
+
+        tagger.requests.get = lambda url, headers=None, params=None, timeout=None: FakeResponse()
+        result = tagger.count_unique_discord_users()
+
+        self.assertEqual(result, {"real_user"})
+
+    def test_http_error_returns_none(self):
+        class FakeResponse:
+            status_code = 401
+            text = "Unauthorized"
+
+        tagger.requests.get = lambda url, headers=None, params=None, timeout=None: FakeResponse()
+        self.assertIsNone(tagger.count_unique_discord_users())
+
+    def test_network_error_returns_none(self):
+        def fake_get(url, headers=None, params=None, timeout=None):
+            raise ConnectionError("no network")
+
+        tagger.requests.get = fake_get
+        self.assertIsNone(tagger.count_unique_discord_users())
+
+
 class NewInstallNotificationTests(unittest.TestCase):
     def setUp(self):
         self.original_post = tagger.requests.post
@@ -1669,6 +1764,70 @@ class NewInstallNotificationTests(unittest.TestCase):
         finally:
             tagger.DISCORD_NOTIFICATION_EXCLUDED_USERS = original
         self.assertEqual(calls, [])
+
+    def test_new_install_includes_unique_user_count_when_determinable(self):
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["json"] = json
+
+            class FakeResponse:
+                status_code = 204
+            return FakeResponse()
+
+        tagger.requests.post = fake_post
+        original_count = tagger.count_unique_discord_users
+        tagger.count_unique_discord_users = lambda log=None: {"existinguser1", "existinguser2"}
+        try:
+            result = tagger.send_new_install_notification(reporter_name="newuser")
+        finally:
+            tagger.count_unique_discord_users = original_count
+
+        self.assertTrue(result)
+        fields = captured["json"]["embeds"][0]["fields"]
+        self.assertIn({"name": "Unique users", "value": "3", "inline": True}, fields)
+
+    def test_new_install_omits_unique_user_count_when_undeterminable(self):
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["json"] = json
+
+            class FakeResponse:
+                status_code = 204
+            return FakeResponse()
+
+        tagger.requests.post = fake_post
+        original_count = tagger.count_unique_discord_users
+        tagger.count_unique_discord_users = lambda log=None: None
+        try:
+            tagger.send_new_install_notification(reporter_name="newuser")
+        finally:
+            tagger.count_unique_discord_users = original_count
+
+        fields = captured["json"]["embeds"][0]["fields"]
+        self.assertFalse(any(f["name"] == "Unique users" for f in fields))
+
+    def test_app_updated_never_shows_unique_user_count(self):
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["json"] = json
+
+            class FakeResponse:
+                status_code = 204
+            return FakeResponse()
+
+        tagger.requests.post = fake_post
+        original_count = tagger.count_unique_discord_users
+        tagger.count_unique_discord_users = lambda log=None: {"a", "b"}
+        try:
+            tagger.send_new_install_notification(reporter_name="someuser", previous_version="0.20")
+        finally:
+            tagger.count_unique_discord_users = original_count
+
+        fields = captured["json"]["embeds"][0]["fields"]
+        self.assertFalse(any(f["name"] == "Unique users" for f in fields))
 
     def test_previous_version_relabels_as_app_updated(self):
         captured = {}
