@@ -583,6 +583,59 @@ def _is_discord_notification_excluded(reporter_name):
     return (reporter_name or "").strip().lower() in DISCORD_NOTIFICATION_EXCLUDED_USERS
 
 
+def send_no_cover_report(no_cover_infos, total, reporter_name=None, timeout=10):
+    """
+    Posts an automatic report to Discord when a scan finishes with an
+    unusually high no-cover-match rate (see NO_COVER_REPORT_THRESHOLD in
+    interface.py) - attaches a .txt file listing every no-cover track's
+    filename and current/detected tags, the same info send_track_report()
+    sends for a single manually-reported track, so the developer can look
+    into a whole batch of matching failures at once instead of waiting on
+    the user to report each one individually via "Report track...".
+
+    Returns True on success, False on any failure (never raises) - also
+    False without posting anything for an excluded account (see
+    DISCORD_NOTIFICATION_EXCLUDED_USERS) or an empty list.
+    """
+    if _is_discord_notification_excluded(reporter_name) or not DISCORD_REPORT_WEBHOOK_URL:
+        return False
+    if not no_cover_infos:
+        return False
+
+    lines = []
+    for info in no_cover_infos:
+        lines.append(f"File: {info.get('file') or '(unknown)'}")
+        lines.append(
+            f"  Current: {info.get('current_artist') or '(none)'} - {info.get('current_title') or '(none)'}"
+        )
+        lines.append(
+            f"  Detected: {info.get('detected_artist') or '(none)'} - {info.get('detected_title') or '(none)'}"
+        )
+        lines.append(f"  Format: {info.get('format') or '?'}")
+        lines.append("")
+    content = "\n".join(lines).encode("utf-8")
+
+    embed = {
+        "title": "Several tracks with no cover match",
+        "color": 0xE74C3C,
+        "fields": [
+            {"name": "User", "value": reporter_name or "(unknown)", "inline": True},
+            {"name": "No cover match", "value": f"{len(no_cover_infos)} of {total}", "inline": True},
+            {"name": "App version", "value": APP_VERSION, "inline": True},
+        ],
+    }
+    payload = {"embeds": [embed], "allowed_mentions": {"parse": []}}
+    files = {"files[0]": ("no_cover_tracks.txt", content, "text/plain")}
+
+    try:
+        response = requests.post(
+            DISCORD_REPORT_WEBHOOK_URL, data={"payload_json": json.dumps(payload)}, files=files, timeout=timeout
+        )
+        return response.status_code in (200, 204)
+    except Exception:
+        return False
+
+
 def send_new_install_notification(reporter_name=None, previous_version=None, timeout=10):
     """
     Posts a "new install" (or, when previous_version is given, "app

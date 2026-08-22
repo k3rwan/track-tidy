@@ -117,7 +117,8 @@ SCAN_REVEAL_INTERVAL_MS = 1000
 MAX_TRACKS_PER_SCAN = 100
 
 # Above this fraction of no-cover-match tracks in a scanned folder,
-# nudge the user toward "Report track..." - see _finalize_scan.
+# automatically send the whole batch to Discord - see _finalize_scan /
+# _notify_no_cover_report.
 NO_COVER_REPORT_THRESHOLD = 0.15
 
 THUMBNAIL_SIZE = (44, 44)
@@ -1023,6 +1024,22 @@ class TaggerInterface:
                 number_rate_limited_sources=number_rate_limited_sources,
                 auth_error_sources=auth_error_sources, cancelled=cancelled,
             )
+
+        self._run_in_background(_send)
+
+    def _notify_no_cover_report(self, no_cover_infos, total):
+        """Automatically sends the full list of no-cover tracks for this
+        scan to Discord (as a .txt attachment) when the miss rate crosses
+        NO_COVER_REPORT_THRESHOLD - see _finalize_scan. Excluded for the
+        developer's own Windows account, same as the other automatic
+        notifications."""
+        try:
+            reporter_name = getpass.getuser()
+        except Exception:
+            reporter_name = ""
+
+        def _send():
+            tagger.send_no_cover_report(no_cover_infos, total, reporter_name=reporter_name)
 
         self._run_in_background(_send)
 
@@ -2590,19 +2607,13 @@ class TaggerInterface:
             if no_cover_infos:
                 self._append_to_journal(f"{len(no_cover_infos)} track(s) currently have no cover match.")
 
-                # Unusually high miss rate for this folder - nudge toward
-                # "Report track..." (right-click a row) instead of just
-                # leaving it buried in the log, since reported tracks are
-                # what actually improve future matching.
+                # Unusually high miss rate for this folder - automatically
+                # send the whole batch to Discord (same info as a manual
+                # "Report track...") instead of just leaving it buried in
+                # the log, since that's what actually improves future
+                # matching, without relying on the user reporting each one.
                 if len(no_cover_infos) / len(self.scanned_plan) > NO_COVER_REPORT_THRESHOLD:
-                    messagebox.showinfo(
-                        "Several tracks with no cover match",
-                        f"{len(no_cover_infos)} of {len(self.scanned_plan)} tracks in this "
-                        "folder have no cover match yet.\n\n"
-                        "If you spot one that should have matched, right-click it and choose "
-                        "\"Report track...\" - it helps improve future matches.",
-                        parent=self.window,
-                    )
+                    self._notify_no_cover_report(no_cover_infos, len(self.scanned_plan))
 
             # Skip the Discord ping for a no-op rescan (nothing new,
             # nothing removed) - otherwise repeatedly clicking Scan on an

@@ -59,7 +59,10 @@ understand the hesitation. A few things that should help:
   isn't currently toggleable.
   Separately, the in-app "Report track" button (only when you press it) sends
   that one track's info (title/artist/filename + its cover) to help fix
-  mismatches.
+  mismatches. If a scan comes back with an unusually high share of
+  tracks with no cover match, the same info (filename + current/detected
+  tags) is sent automatically for that whole batch, to help fix matching
+  for cases like that faster.
 - The source code below is the real thing that gets built into the installer
   - nothing hidden.
 - The Windows installer is scanned with
