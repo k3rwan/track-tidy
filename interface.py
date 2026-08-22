@@ -2438,19 +2438,17 @@ class TaggerInterface:
 
             if query and query not in searchable:
                 continue
-            # effective_cover_bytes(), not just cover_source/has_cover: a
-            # track that kept its existing cover (no online search matched/
-            # ran, including an already_applied track - see
-            # track_tidy.py) never gets its own cover_source, but IS a real
-            # cover - while a track whose existing cover is a banned
-            # generic image (is_banned_cover_image) has_cover=True too, yet
-            # is really cover-less. has_usable_cover() (not
-            # effective_cover_bytes()) so this stays correct even for an
-            # UNCHECKED row - effective_cover_bytes() skips the banned-cover
-            # check entirely once apply_changes is False (nothing being
-            # written, so the raw existing bytes are returned as-is),
-            # which wrongly hid an unchecked banned-cover row from here.
-            if no_cover_only and tagger.has_usable_cover(info):
+            # Deliberately NOT has_usable_cover() here (unlike the post-scan
+            # no-cover count/Discord report, which still use it) - this
+            # filter means "did an online search actually find something",
+            # not "will the final file end up with some cover or other". A
+            # track that kept its existing (perfectly fine, non-banned)
+            # cover only because the online search found nothing still
+            # belongs in this list - that's a real matching failure worth
+            # reviewing, just one that happens to have a fallback cover to
+            # hide behind. Real report: exactly this case (kept its own
+            # cover, no online match) was invisible in the filter.
+            if no_cover_only and info.get("found_cover_image"):
                 hidden_with_cover += 1
                 continue
 
