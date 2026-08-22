@@ -3,6 +3,15 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.23.2]
+
+### Fixed
+- Windows: the app icon (taskbar and window title bar) fell back to Tk's
+  default feather icon instead of the Track Tidy logo. The 0.23 Windows
+  installer had been built with a manual PyInstaller invocation that
+  omitted the `--icon`/`--add-data` flags `build_exe.bat` normally passes,
+  so the icon files never got bundled.
+
 ## [0.23]
 
 ### Added
