@@ -22,6 +22,8 @@
   <a href="https://www.virustotal.com/gui/file/8d58317d6e3a81c37dfa6e1e5d465a641885d65ddcc57534d033f1128f1a752a/detection"><img src="https://img.shields.io/badge/Scanned%20on-VirusTotal-brightgreen?style=for-the-badge&logo=virustotal&logoColor=white" alt="Scanned on VirusTotal - view full report"></a>
 </p>
 
+> ⭐ If Track Tidy is useful to you, consider starring the repo - it's free and helps other DJs find it.
+
 <p align="center">
   <img src="screenshots/scan-in-progress.png" alt="Track Tidy scanning a folder" width="600">
 </p>
