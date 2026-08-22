@@ -3,6 +3,25 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.22]
+
+### Added
+- A Discord notification now also fires when an existing install updates
+  to a newer version (previously only a brand-new install pinged).
+
+### Changed
+- The "new install"/"app updated" Discord ping is now only marked as
+  sent AFTER it actually succeeds - a failed attempt (no internet yet
+  at launch, a transient block...) is retried on the next launch
+  instead of being silently and permanently skipped.
+
+### Fixed
+- A file whose existing artist tag is wrong (e.g. a record label used
+  as the artist instead of the real one) but whose title tag secretly
+  contains "Artist - Title" now gets split correctly when the filename
+  independently agrees - previously the search ran with the wrong,
+  unsplit artist/title and never found a match.
+
 ## [0.21]
 
 ### Added
