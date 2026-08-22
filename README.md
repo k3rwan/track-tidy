@@ -10,12 +10,12 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/k3rwan/track-tidy/releases/download/v0.21/Track-Tidy-Setup-v0.21.exe"><img src="https://img.shields.io/badge/Download-0078D6?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iI2ZmZmZmZiIgZD0iTTMgM2g4LjV2OC41SDN6bTkuNSAwSDIxdjguNWgtOC41ek0zIDEyLjVoOC41VjIxSDN6bTkuNSAwSDIxVjIxaC04LjV6Ii8+PC9zdmc+" alt="Download for Windows"></a>
+  <a href="https://github.com/k3rwan/track-tidy/releases/download/v0.22/Track-Tidy-Setup-v0.22.exe"><img src="https://img.shields.io/badge/Download-0078D6?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iI2ZmZmZmZiIgZD0iTTMgM2g4LjV2OC41SDN6bTkuNSAwSDIxdjguNWgtOC41ek0zIDEyLjVoOC41VjIxSDN6bTkuNSAwSDIxVjIxaC04LjV6Ii8+PC9zdmc+" alt="Download for Windows"></a>
   &nbsp;
   <a href="https://github.com/k3rwan/track-tidy/releases/download/v0.20/Track-Tidy-Setup-v0.20.dmg"><img src="https://img.shields.io/badge/Download-000000?style=for-the-badge&logo=apple" alt="Download for macOS"></a>
 </p>
 <p align="center">
-  <sub>Windows v0.21, macOS v0.20 - see <a href="../../releases/latest">Releases</a> for older versions.</sub>
+  <sub>Windows v0.22, macOS v0.20 - see <a href="../../releases/latest">Releases</a> for older versions.</sub>
 </p>
 
 <p align="center">
