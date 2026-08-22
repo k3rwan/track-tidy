@@ -3,6 +3,33 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.21]
+
+### Added
+- Scans are now capped at 100 tracks while in beta - a folder with more
+  gets an explanatory popup instead of being processed.
+- A popup nudges toward the right-click "Report track..." action when
+  more than 10% of a scanned folder's tracks have no cover match.
+
+### Changed
+- The AcoustID API key is no longer embedded in the source - moved to
+  the same local, gitignored credentials file as the SoundCloud/Spotify/
+  Discord defaults.
+- Discord notifications (report track, scan complete, new install) now
+  explicitly suppress mention parsing, so a filename/tag containing
+  "@everyone" or a role mention can never trigger a real ping.
+- Removed the "Processing complete" popup after Apply - the progress
+  bar already shows "Done", so this just meant one more click through.
+  The success chime still plays.
+
+### Fixed
+- Restoring a History entry for a track that originally had no
+  artist/title tags now actually clears them, instead of leaving
+  whatever a later Apply had written.
+- The "Reset all settings to default" confirmation no longer references
+  saved SoundCloud/AcoustID credentials - that personal-override UI was
+  removed a while ago, so the mention was stale.
+
 ## [0.20]
 
 ### Added
