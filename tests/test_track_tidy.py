@@ -1159,6 +1159,62 @@ class ListAudioFilesTests(unittest.TestCase):
         self.assertEqual(set(tagger.list_audio_files()), {"Song.mp3", "Track.wav"})
 
 
+class ExtractAudioFilesTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self.root = self._tmp_dir.name
+
+    def tearDown(self):
+        self._tmp_dir.cleanup()
+
+    def _touch(self, *relative_parts):
+        path = os.path.join(self.root, *relative_parts)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write("x")
+        return path
+
+    def test_moves_files_from_subfolders_into_root(self):
+        self._touch("Album", "Track1.mp3")
+        self._touch("Album", "Sub", "Track2.wav")
+        self._touch("AlreadyHere.mp3")
+
+        moved = tagger.extract_audio_files(self.root)
+
+        self.assertEqual(moved, 2)
+        self.assertEqual(
+            set(os.listdir(self.root)) - {"Album"},
+            {"Track1.mp3", "Track2.wav", "AlreadyHere.mp3"},
+        )
+
+    def test_should_cancel_stops_early(self):
+        self._touch("A", "Track1.mp3")
+        self._touch("B", "Track2.mp3")
+        self._touch("C", "Track3.mp3")
+
+        moved = tagger.extract_audio_files(self.root, should_cancel=lambda: True)
+
+        self.assertEqual(moved, 0)
+
+    def test_remove_empty_subfolders_removes_only_empty_ones(self):
+        os.makedirs(os.path.join(self.root, "Empty1"))
+        self._touch("NotEmpty", "Track.mp3")
+
+        removed = tagger.remove_empty_subfolders(self.root)
+
+        self.assertEqual(removed, 1)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "Empty1")))
+        self.assertTrue(os.path.exists(os.path.join(self.root, "NotEmpty")))
+
+    def test_remove_empty_subfolders_should_cancel_stops_early(self):
+        os.makedirs(os.path.join(self.root, "Empty1"))
+        os.makedirs(os.path.join(self.root, "Empty2"))
+
+        removed = tagger.remove_empty_subfolders(self.root, should_cancel=lambda: True)
+
+        self.assertEqual(removed, 0)
+
+
 class ScanFilesParallelITunesTests(unittest.TestCase):
     """scan_files() searches every source (iTunes included) strictly
     sequentially, one file at a time - no concurrency anywhere."""
@@ -1998,6 +2054,53 @@ class ScanCompleteNotificationTests(unittest.TestCase):
 
         tagger.requests.post = fake_post
         self.assertFalse(tagger.send_new_install_notification(reporter_name="kevin"))
+
+
+class ExtractionReportTests(unittest.TestCase):
+    def setUp(self):
+        self.original_post = tagger.requests.post
+
+    def tearDown(self):
+        tagger.requests.post = self.original_post
+
+    def _capture(self):
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["json"] = json
+
+            class FakeResponse:
+                status_code = 204
+            return FakeResponse()
+
+        tagger.requests.post = fake_post
+        return captured
+
+    def test_completed_extraction(self):
+        captured = self._capture()
+        result = tagger.send_extraction_report(reporter_name="someuser", moved_count=5, removed_count=2)
+
+        self.assertTrue(result)
+        embed = captured["json"]["embeds"][0]
+        self.assertEqual(embed["title"], "Extraction complete")
+        fields = embed["fields"]
+        self.assertIn({"name": "Files moved", "value": "5", "inline": True}, fields)
+        self.assertIn({"name": "Empty folders removed", "value": "2", "inline": True}, fields)
+        self.assertFalse(any(f["name"] == "Error" for f in fields))
+
+    def test_cancelled_extraction(self):
+        captured = self._capture()
+        tagger.send_extraction_report(reporter_name="someuser", moved_count=3, removed_count=0, cancelled=True)
+
+        self.assertEqual(captured["json"]["embeds"][0]["title"], "Extraction cancelled")
+
+    def test_failed_extraction_includes_error_field(self):
+        captured = self._capture()
+        tagger.send_extraction_report(reporter_name="someuser", error="Permission denied")
+
+        embed = captured["json"]["embeds"][0]
+        self.assertEqual(embed["title"], "Extraction failed")
+        self.assertIn({"name": "Error", "value": "Permission denied", "inline": False}, embed["fields"])
 
 
 class UpdateChecksumTests(unittest.TestCase):

@@ -884,6 +884,51 @@ def send_rate_limit_report(source, reporter_name=None, timeout=10):
         return False
 
 
+def send_extraction_report(
+    reporter_name=None, moved_count=0, removed_count=0, cancelled=False, error=None, timeout=10,
+):
+    """
+    Posts a ping to Discord once the Extractor tab's "flatten a folder"
+    action finishes - whether it ran to completion, was cancelled partway
+    through (see interface.py's _run_extraction/extract_cancel_requested),
+    or failed outright - so the developer knows the feature is actually
+    being used, the same visibility send_scan_complete_notification gives
+    for a normal scan. cancelled and error are mutually exclusive in
+    practice (a cancellation stops cleanly, doesn't raise), but both are
+    accepted independently rather than assuming that.
+
+    Returns True on success, False on any failure (never raises) - also
+    False without posting anything for an excluded account (see
+    DISCORD_NOTIFICATION_EXCLUDED_USERS).
+    """
+    if _is_discord_notification_excluded(reporter_name) or not DISCORD_REPORT_WEBHOOK_URL:
+        return False
+    if error:
+        title, color = "Extraction failed", 0xE74C3C
+    elif cancelled:
+        title, color = "Extraction cancelled", 0xE67E22
+    else:
+        title, color = "Extraction complete", 0x2ECC71
+    fields = [
+        {"name": "User", "value": reporter_name or "(unknown)", "inline": True},
+        {"name": "Files moved", "value": str(moved_count), "inline": True},
+        {"name": "Empty folders removed", "value": str(removed_count), "inline": True},
+    ]
+    if error:
+        fields.append({"name": "Error", "value": str(error)[:1000], "inline": False})
+    fields.append({"name": "App version", "value": APP_VERSION, "inline": True})
+    embed = {"title": title, "color": color, "fields": fields}
+    try:
+        response = requests.post(
+            DISCORD_REPORT_WEBHOOK_URL,
+            json={"embeds": [embed], "allowed_mentions": {"parse": []}},
+            timeout=timeout,
+        )
+        return response.status_code in (200, 204)
+    except Exception:
+        return False
+
+
 # --- Saved UI settings (theme choice...) ---
 
 SETTINGS_FILE = os.path.join(user_config_dir(), "settings.json")
@@ -1863,18 +1908,28 @@ EXTRACTABLE_AUDIO_EXTENSIONS = SUPPORTED_EXTENSIONS + (".alac",)
 # 4. FOLDER EXTRACTION (FLATTEN)
 # ============================================================================
 
-def extract_audio_files(root_folder, log=safe_print):
+def extract_audio_files(root_folder, log=safe_print, should_cancel=None):
     """
     Recursively finds audio files (mp3, wav, flac, aac, m4a, ogg, wma, aiff,
     alac, opus...) sitting inside subfolders of root_folder and moves them
     directly into root_folder (flattening the structure). Files already
     directly in root_folder are left untouched. Returns the number of files
     actually moved.
+
+    should_cancel() is checked once per subfolder (not per file - os.walk's
+    own per-folder granularity is responsive enough without adding overhead
+    to every single move) - if it returns True, stops early and returns
+    whatever was moved so far, same "cancel between units of work, not
+    mid-write" approach as scan_files()'s should_cancel.
     """
     moved_count = 0
     root_abspath = os.path.abspath(root_folder)
 
     for current_folder, _dirs, files in os.walk(root_folder):
+        if should_cancel and should_cancel():
+            log("  Extraction cancelled.")
+            break
+
         if os.path.abspath(current_folder) == root_abspath:
             continue  # already directly in the target folder, nothing to do
 
@@ -1903,12 +1958,18 @@ def extract_audio_files(root_folder, log=safe_print):
     return moved_count
 
 
-def remove_empty_subfolders(root_folder, log=safe_print):
-    """Removes now-empty subfolders left behind after extraction. Returns how many were removed."""
+def remove_empty_subfolders(root_folder, log=safe_print, should_cancel=None):
+    """Removes now-empty subfolders left behind after extraction. Returns
+    how many were removed. should_cancel() is checked once per subfolder,
+    same as extract_audio_files()."""
     removed_count = 0
     root_abspath = os.path.abspath(root_folder)
 
     for current_folder, _dirs, _files in os.walk(root_folder, topdown=False):
+        if should_cancel and should_cancel():
+            log("  Empty-folder cleanup cancelled.")
+            break
+
         if os.path.abspath(current_folder) == root_abspath:
             continue
         try:

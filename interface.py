@@ -288,6 +288,11 @@ class TaggerInterface:
         self.processing_in_progress = False
         self._processing_failures = []  # (identifier, reason) pairs - see _show_processing_failures_dialog
         self.cancel_requested = threading.Event()
+        # Separate from cancel_requested above - Scan/Apply and Extract are
+        # independent background actions that could in principle overlap
+        # (different tabs, nothing stops both running at once), so sharing
+        # one Event would let cancelling one spuriously cancel the other.
+        self.extract_cancel_requested = threading.Event()
         self.scanned_plan = []
         self.tk_images = {}  # keeps a reference to PhotoImages (otherwise Tkinter clears them)
         self.tk_images_hover = {}  # same thumbnails, with a magnifier badge - built lazily on first hover
@@ -1893,17 +1898,38 @@ class TaggerInterface:
             return
 
         self.extract_browse_button.configure(state="disabled")
-        self.extract_button.configure(state="disabled")
+        self.extract_cancel_requested.clear()
+        self.extract_button.configure(text="Cancel", command=self._request_extract_cancel, state="normal")
 
         self._run_in_background(self._run_extraction, folder)
 
+    def _request_extract_cancel(self):
+        self.extract_cancel_requested.set()
+        self._append_to_journal("Extraction cancellation requested — stopping after the current folder...")
+        self.extract_button.configure(state="disabled")
+
     def _run_extraction(self, folder):
         try:
-            moved_count = tagger.extract_audio_files(folder, log=self._append_to_journal)
-            removed_count = tagger.remove_empty_subfolders(folder, log=self._append_to_journal)
-            self.message_queue.put(("extract_done", (folder, moved_count, removed_count, None)))
+            reporter_name = getpass.getuser()
+        except Exception:
+            reporter_name = ""
+
+        try:
+            moved_count = tagger.extract_audio_files(
+                folder, log=self._append_to_journal, should_cancel=self.extract_cancel_requested.is_set,
+            )
+            removed_count = tagger.remove_empty_subfolders(
+                folder, log=self._append_to_journal, should_cancel=self.extract_cancel_requested.is_set,
+            )
+            cancelled = self.extract_cancel_requested.is_set()
+            tagger.send_extraction_report(
+                reporter_name=reporter_name, moved_count=moved_count, removed_count=removed_count,
+                cancelled=cancelled,
+            )
+            self.message_queue.put(("extract_done", (folder, moved_count, removed_count, cancelled, None)))
         except Exception as error:
-            self.message_queue.put(("extract_done", (folder, 0, 0, str(error))))
+            tagger.send_extraction_report(reporter_name=reporter_name, error=str(error))
+            self.message_queue.put(("extract_done", (folder, 0, 0, False, str(error))))
 
     # --- Folder / mention actions ---
 
@@ -4396,12 +4422,19 @@ class TaggerInterface:
                     self._pending_scan_done = content
 
                 elif message_type == "extract_done":
-                    folder, moved_count, removed_count, error = content
+                    folder, moved_count, removed_count, cancelled, error = content
                     self.extract_browse_button.configure(state="normal")
-                    self.extract_button.configure(state="normal")
+                    self.extract_button.configure(text="Extract", command=self._start_extraction, state="normal")
 
                     if error:
                         messagebox.showerror("Extraction error", error, parent=self.window)
+                    elif cancelled:
+                        messagebox.showinfo(
+                            "Extraction cancelled",
+                            f"Stopped early - {moved_count} file(s) extracted, "
+                            f"{removed_count} empty folder(s) removed so far.",
+                            parent=self.window,
+                        )
                     else:
                         messagebox.showinfo(
                             "Extraction complete",
