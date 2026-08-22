@@ -247,6 +247,13 @@ class ExactMatchTests(unittest.TestCase):
     def test_accent_insensitive(self):
         self.assertTrue(tagger.exact_match("Ete", "Été"))
 
+    def test_typographic_quotes_match_plain_ascii(self):
+        # Real report: a store's own listing ("Love’s A Game") rejected
+        # against our plain-apostrophe filename ("Love's A Game") despite
+        # being visually identical.
+        self.assertTrue(tagger.exact_match("Love's A Game", "Love’s A Game"))
+        self.assertTrue(tagger.exact_match('"Title"', "“Title”"))
+
 
 class ArtistMatchingTests(unittest.TestCase):
     def test_split_artist_names_common_separators(self):

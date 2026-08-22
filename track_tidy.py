@@ -2575,13 +2575,22 @@ def exact_match(text_a, text_b):
     comma. Trailing "!"/"?" are dropped too - real report: our title "What"
     vs. Spotify's own "WHAT!" - a store stylizing a title with emphasis
     punctuation our own filename/tags never bothered to include is a
-    stylistic difference, not a different song.
+    stylistic difference, not a different song. Also folds typographic
+    ("smart") quotes to their plain ASCII equivalents - a store's listing
+    commonly uses the curly apostrophe/quote (U+2019/U+2018/U+201C/U+201D)
+    while a filename or ID3 tag almost always has the plain "'"/'"' -
+    real report: "Love's A Game" (ours) vs. "Love’s A Game" (iTunes' own)
+    rejected purely over that one character despite being visually
+    identical, on a title with no other qualifier to blame.
     """
+    QUOTE_TRANSLATION = str.maketrans("’‘“”", "''\"\"")
+
     def normalize(text):
         text = re.sub(r"\s+", " ", text.strip().lower())
         text = re.sub(r"\.\s+", ".", text)
         text = re.sub(r",\s+", ",", text)
         text = re.sub(r"[!?]+$", "", text).strip()
+        text = text.translate(QUOTE_TRANSLATION)
         return strip_accents(text)
     return normalize(text_a) == normalize(text_b)
 
