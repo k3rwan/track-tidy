@@ -2216,6 +2216,56 @@ class TaggerInterface:
             values=self._build_row_values(info),
         )
         self._restripe_rows()
+        self._flash_new_row(info["file"])
+
+    # Row-appear flash: a real slide/fade-in isn't possible on a native
+    # Treeview row (Tkinter has no per-row opacity/position animation), so
+    # this fakes "smooth" by animating the row's background color from an
+    # accent tint down to its normal stripe color over a few quick steps.
+    ROW_FLASH_STEPS = 8
+    ROW_FLASH_STEP_MS = 25
+
+    def _flash_new_row(self, file_iid):
+        is_dark = self.theme_colors is not None
+        start_color = self.theme_colors["select_bg"] if is_dark else "#cfe0f5"
+        is_even = self.table.index(file_iid) % 2 == 0
+        if is_dark:
+            end_color = self.theme_colors["tree_bg"] if is_even else self.theme_colors["tree_odd_row"]
+            fg_color = self.theme_colors["tree_fg"]
+        else:
+            end_color = "#ffffff" if is_even else "#e9e9e9"
+            fg_color = "black"
+
+        flash_tag = f"flash_{file_iid}"
+
+        def _step(n):
+            # The row may have been removed (filtered out, deleted) or
+            # restriped since scheduling - bail out rather than resurrect
+            # a stale tag/color on a row that's no longer this one.
+            if not self.table.exists(file_iid) or flash_tag not in self.table.item(file_iid, "tags"):
+                return
+            if n > self.ROW_FLASH_STEPS:
+                current_tag = "even_row" if is_even else "odd_row"
+                self.table.item(file_iid, tags=(current_tag,))
+                return
+            t = n / self.ROW_FLASH_STEPS
+            self.table.tag_configure(
+                flash_tag,
+                background=self._interpolate_color(start_color, end_color, t),
+                foreground=fg_color,
+            )
+            self.window.after(self.ROW_FLASH_STEP_MS, _step, n + 1)
+
+        self.table.item(file_iid, tags=(flash_tag,))
+        _step(0)
+
+    @staticmethod
+    def _interpolate_color(start_hex, end_hex, t):
+        """Linear-interpolates between two "#rrggbb" colors at fraction t (0-1)."""
+        start_rgb = [int(start_hex[i : i + 2], 16) for i in (1, 3, 5)]
+        end_rgb = [int(end_hex[i : i + 2], 16) for i in (1, 3, 5)]
+        mixed = [round(s + (e - s) * t) for s, e in zip(start_rgb, end_rgb)]
+        return "#{:02x}{:02x}{:02x}".format(*mixed)
 
     def _restripe_rows(self):
         """Re-applies alternating row colors based on each row's current position."""
