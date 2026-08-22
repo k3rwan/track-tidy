@@ -113,7 +113,7 @@ SCAN_REVEAL_INTERVAL_MS = 1000
 
 # Track Tidy is still in beta - large libraries haven't had enough
 # real-world mileage yet, so a single scan is capped at this many tracks
-# for now (see _enforce_track_count_limit).
+# for now (see _apply_track_count_limit).
 MAX_TRACKS_PER_SCAN = 100
 
 # Above this fraction of no-cover-match tracks in a scanned folder,
@@ -310,6 +310,12 @@ class TaggerInterface:
         self._reset_scan_run_state()
         self.mention_counts = {}  # raw mention text -> number of times seen
 
+        # Must run before any saved setting below is actually read into a
+        # UI var - resets settings.json to defaults on the first launch
+        # after an update, so the values loaded just below are already the
+        # fresh defaults rather than whatever the previous version saved.
+        tagger.check_and_apply_version_reset()
+
         self._native_theme = ttk.Style().theme_use()  # so "light" can restore it later
         self.theme_colors = None  # None while light/native; DARK_COLORS once dark is applied
         saved_theme = tagger.load_settings().get("theme", "auto")
@@ -371,6 +377,12 @@ class TaggerInterface:
         else:
             self._adjust_window_height()
             self.window.deiconify()
+            # DWMWA_BORDER_COLOR (unlike DWMWA_USE_IMMERSIVE_DARK_MODE) doesn't
+            # reliably stick when set while the window is still withdrawn -
+            # DWM seems to reset the frame's border to the OS default the
+            # first time the window actually becomes visible. Re-applying it
+            # now, right after deiconify(), on the now-visible window fixes it.
+            self._set_titlebar_dark(self.window, bool(self.theme_colors))
             if self.theme_var.get() == "auto":
                 self._schedule_auto_theme_recheck()
 
@@ -463,14 +475,7 @@ class TaggerInterface:
         ):
             return
 
-        for key, value in (
-            ("theme", "auto"),
-            ("auto_convert_mp3", False),
-            ("auto_convert_wav_to_aiff", True),
-            ("fix_track_file_name", True),
-            ("use_spotify", False),
-            ("show_log_section", False),
-        ):
+        for key, value in tagger.DEFAULT_SETTINGS.items():
             tagger.save_setting(key, value)
 
         tagger.AUTO_CONVERT_MP3 = False
@@ -489,8 +494,6 @@ class TaggerInterface:
         self.theme_var.set("auto")
         self._apply_theme(self._resolve_theme_choice("auto"))
         self._schedule_auto_theme_recheck()
-
-        messagebox.showinfo("Settings reset", "All settings have been restored to their defaults.", parent=self.window)
 
     def _on_show_log_changed(self):
         enabled = self.show_log_var.get()
@@ -872,12 +875,29 @@ class TaggerInterface:
                 "TRadiobutton",
                 background=[("active", colors["entry_bg"])], foreground=[("active", colors["fg"])],
             )
-            style.configure("TNotebook", background=colors["bg"], borderwidth=0)
+            # borderwidth=0 alone doesn't fully suppress the client pane's
+            # border - like Treeview.field, Notebook.client still exposes
+            # (and clam still draws with) its own bordercolor/lightcolor/
+            # darkcolor defaults (light, made for light-mode) unless those
+            # are pinned too. That's the actual source of the outline
+            # tracing the whole tab content area, not any single control
+            # inside it.
+            style.configure(
+                "TNotebook", background=colors["bg"], borderwidth=0,
+                bordercolor=colors["bg"], lightcolor=colors["bg"], darkcolor=colors["bg"],
+            )
             style.configure(
                 "TNotebook.Tab", background=colors["entry_bg"], foreground=colors["fg"],
                 bordercolor=colors["border"],
             )
-            style.map("TNotebook.Tab", background=[("selected", colors["bg"])])
+            # clam's default dotted focus ring on the active tab (e.g.
+            # "Tagger") renders as a bright white rectangle - blend it into
+            # whichever background is actually showing behind that tab.
+            style.map(
+                "TNotebook.Tab",
+                background=[("selected", colors["bg"])],
+                focuscolor=[("selected", colors["bg"]), ("!selected", colors["entry_bg"])],
+            )
             # clam draws every control with a 2px raised/sunken bevel
             # (lightcolor/darkcolor highlight+shadow on two opposite edges) -
             # that's the "old Windows" look. Pinning lightcolor/darkcolor to
@@ -904,17 +924,40 @@ class TaggerInterface:
             style.configure(
                 "Table.Treeview", background=colors["tree_bg"], fieldbackground=colors["tree_bg"],
                 foreground=colors["tree_fg"],
-                bordercolor=colors["border"], lightcolor=colors["border"], darkcolor=colors["border"],
-                borderwidth=1,
+                # clam's "Treeview.field" element has a 1px border baked
+                # directly into its layout ('border': '1') - unlike every
+                # other bordered control here, that inset isn't gated by a
+                # -borderwidth style option at all, so it can't be removed,
+                # only recolored (element_options() confirms only
+                # bordercolor/lightcolor exist for it, no darkcolor either).
+                # Coloring it colors["border"] (a lighter shade, meant to
+                # read as a visible line elsewhere) made it stand out as a
+                # bright outline against this much darker panel - matching
+                # it to the surrounding frame background instead blends the
+                # unavoidable 1px away entirely.
+                bordercolor=colors["bg"], lightcolor=colors["bg"],
             )
             style.map(
                 "Table.Treeview",
                 background=[("selected", colors["select_bg"])], foreground=[("selected", colors["select_fg"])],
+                # clam's built-in Treeview map brightens bordercolor/lightcolor
+                # for the "focus" state (i.e. as soon as the table is clicked)
+                # regardless of the plain configure() default above - pin
+                # that state too or the blended-away border above reappears
+                # the moment the table actually gets used.
+                bordercolor=[("focus", colors["bg"])], lightcolor=[("focus", colors["bg"])],
             )
             style.configure(
                 "Treeview.Heading", background=colors["tree_heading_bg"], foreground=colors["fg"],
                 bordercolor=colors["border"], lightcolor=colors["tree_heading_bg"], darkcolor=colors["tree_heading_bg"],
                 relief="flat",
+            )
+            # clam shows a light "active" (hover) background on column
+            # headers by default, same as the checkbutton/radiobutton issue
+            # above - pin it back to the normal heading color.
+            style.map(
+                "Treeview.Heading",
+                background=[("active", colors["tree_heading_bg"])], foreground=[("active", colors["fg"])],
             )
             style.map(
                 "ReadonlyWhite.TEntry",
@@ -1011,6 +1054,35 @@ class TaggerInterface:
             RDW_INVALIDATE, RDW_UPDATENOW, RDW_FRAME = 0x1, 0x100, 0x400
             ctypes.windll.user32.RedrawWindow(
                 hwnd, None, None, RDW_INVALIDATE | RDW_UPDATENOW | RDW_FRAME
+            )
+
+            # DWMWA_USE_IMMERSIVE_DARK_MODE only darkens the title bar - the
+            # thin 1px frame DWM draws around the whole window (Windows 11
+            # 22H2+) stays its default light color unless set separately via
+            # DWMWA_BORDER_COLOR. Match it to the dark panel border color, or
+            # restore the OS default (DWMWA_COLOR_DEFAULT) in light mode.
+            DWMWA_BORDER_COLOR = 34
+            if dark:
+                r, g, b = (int(DARK_COLORS["border"][i:i + 2], 16) for i in (1, 3, 5))
+                border_color = ctypes.c_int((b << 16) | (g << 8) | r)
+            else:
+                border_color = ctypes.c_int(-1)  # 0xFFFFFFFF as signed 32-bit = DWMWA_COLOR_DEFAULT
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, DWMWA_BORDER_COLOR, ctypes.byref(border_color), ctypes.sizeof(border_color)
+            )
+            # Unlike the title bar (a GDI-painted element RedrawWindow above
+            # already refreshes), the 1px frame stroke is drawn entirely by
+            # the DWM compositor and doesn't repaint on its own just because
+            # the attribute call succeeded - it needs an actual non-client
+            # recalculation to pick up the new color. SWP_FRAMECHANGED with
+            # every "don't actually move/resize/refocus" flag set triggers
+            # that recalculation without any visible movement.
+            SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_NOACTIVATE, SWP_FRAMECHANGED = (
+                0x2, 0x1, 0x4, 0x10, 0x20,
+            )
+            ctypes.windll.user32.SetWindowPos(
+                hwnd, None, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
             )
         except Exception:
             pass
@@ -1324,8 +1396,9 @@ class TaggerInterface:
             return
 
         tagger.MUSIC_FOLDER = folder
-        if not self._enforce_track_count_limit(len(tagger.list_audio_files())):
-            return
+        all_files = tagger.list_audio_files()
+        capped_files = self._apply_track_count_limit(all_files)
+        truncated = len(capped_files) < len(all_files)
 
         self._sync_mentions_to_remove()
         self._reset_scan_run_state()
@@ -1341,7 +1414,7 @@ class TaggerInterface:
 
         self.notebook.select(0)
         self._set_buttons_enabled(False)
-        self._launch_scan_after_already_applied_check()
+        self._launch_scan_after_already_applied_check(explicit_files=capped_files if truncated else None)
 
     def _start_multi_file_scan(self, file_paths):
         """Drop of one or more individual audio files: tags just those
@@ -1385,8 +1458,7 @@ class TaggerInterface:
         if not relative_names:
             return
 
-        if not self._enforce_track_count_limit(len(relative_names)):
-            return
+        relative_names = self._apply_track_count_limit(relative_names)
 
         tagger.MUSIC_FOLDER = folder
         self.last_scanned_folder = folder
@@ -1667,7 +1739,7 @@ class TaggerInterface:
         appearance_frame = ttk.LabelFrame(soundcloud_tab, text="Appearance")
         appearance_frame.pack(fill="x", padx=10, pady=(15, 10))
         self._theme_radio_buttons = {}
-        for value, label in (("light", "Light"), ("dark", "Dark"), ("auto", "Automatic (time of day)")):
+        for value, label in (("auto", "Automatic (time of day)"), ("light", "Light"), ("dark", "Dark")):
             theme_radio = ttk.Radiobutton(
                 appearance_frame, text=label, value=value, variable=self.theme_var,
                 command=self._on_theme_changed,
@@ -2147,21 +2219,23 @@ class TaggerInterface:
             else:
                 self.notebook.tab(index, state="normal")
 
-    def _enforce_track_count_limit(self, count):
-        """Blocks a scan outright (rather than silently truncating it) when
-        it would cover more than MAX_TRACKS_PER_SCAN tracks - returns True
-        to proceed, False if the caller should stop here."""
-        if count <= MAX_TRACKS_PER_SCAN:
-            return True
+    def _apply_track_count_limit(self, files):
+        """Caps a scan at MAX_TRACKS_PER_SCAN tracks - rather than blocking
+        the whole scan outright, only the first MAX_TRACKS_PER_SCAN files
+        (alphabetically, same order list_audio_files() already returns them
+        in) are loaded, with a one-time heads-up. Returns the files to
+        actually scan (unchanged if under the limit)."""
+        if len(files) <= MAX_TRACKS_PER_SCAN:
+            return files
 
         messagebox.showinfo(
             "Beta limit reached",
             f"Track Tidy is still in beta, so a single scan is capped at "
-            f"{MAX_TRACKS_PER_SCAN} tracks for now - this folder has {count}.\n\n"
-            "Try a smaller folder, or a subfolder, for the moment.",
+            f"{MAX_TRACKS_PER_SCAN} tracks for now - this folder has {len(files)}.\n\n"
+            f"Only the first {MAX_TRACKS_PER_SCAN} will be loaded.",
             parent=self.window,
         )
-        return False
+        return files[:MAX_TRACKS_PER_SCAN]
 
     def _start_scan(self):
         folder = self.folder_variable.get().strip()
@@ -2170,8 +2244,9 @@ class TaggerInterface:
             return
 
         tagger.MUSIC_FOLDER = folder
-        if not self._enforce_track_count_limit(len(tagger.list_audio_files())):
-            return
+        all_files = tagger.list_audio_files()
+        capped_files = self._apply_track_count_limit(all_files)
+        truncated = len(capped_files) < len(all_files)
 
         self._sync_mentions_to_remove()
         self._reset_scan_run_state()
@@ -2187,7 +2262,7 @@ class TaggerInterface:
 
         self._set_buttons_enabled(False)
 
-        self._launch_scan_after_already_applied_check()
+        self._launch_scan_after_already_applied_check(explicit_files=capped_files if truncated else None)
 
     def _launch_scan_after_already_applied_check(self, explicit_files=None):
         """Runs right before every folder-level scan actually starts
