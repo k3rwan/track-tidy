@@ -583,26 +583,30 @@ def _is_discord_notification_excluded(reporter_name):
     return (reporter_name or "").strip().lower() in DISCORD_NOTIFICATION_EXCLUDED_USERS
 
 
-def send_new_install_notification(reporter_name=None, timeout=10):
+def send_new_install_notification(reporter_name=None, previous_version=None, timeout=10):
     """
-    Posts a one-time "new install" ping to the same Discord webhook as
-    send_track_report, so the developer knows a new person/machine started
-    using the app. Called once per Windows user account (see
-    _check_new_install_notification_on_startup in interface.py, gated by a
-    saved setting so it never fires twice on the same machine+account).
+    Posts a "new install" (or, when previous_version is given, "app
+    updated") ping to the same Discord webhook as send_track_report, so
+    the developer knows a new person/machine started using the app, or an
+    existing one updated to a newer version. Called at most once per
+    version per Windows user account (see _notify_new_install_on_startup
+    in interface.py, gated by a saved "last notified version" setting -
+    only updated after a successful send, so a failed attempt is retried
+    on the next launch instead of being silently given up on forever).
     Returns True on success, False on any failure (never raises) - also
     False without posting anything for an excluded account (see
     DISCORD_NOTIFICATION_EXCLUDED_USERS).
     """
     if _is_discord_notification_excluded(reporter_name) or not DISCORD_REPORT_WEBHOOK_URL:
         return False
+    fields = [{"name": "User", "value": reporter_name or "(unknown)", "inline": True}]
+    if previous_version:
+        fields.append({"name": "Previous version", "value": previous_version, "inline": True})
+    fields.append({"name": "App version", "value": APP_VERSION, "inline": True})
     embed = {
-        "title": "New install",
+        "title": "App updated" if previous_version else "New install",
         "color": 0x2ECC71,
-        "fields": [
-            {"name": "User", "value": reporter_name or "(unknown)", "inline": True},
-            {"name": "App version", "value": APP_VERSION, "inline": True},
-        ],
+        "fields": fields,
     }
     try:
         response = requests.post(

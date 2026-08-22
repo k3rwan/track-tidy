@@ -1529,6 +1529,25 @@ class NewInstallNotificationTests(unittest.TestCase):
         self.assertFalse(tagger.send_new_install_notification(reporter_name="Kevin"))
         self.assertEqual(calls, [])
 
+    def test_previous_version_relabels_as_app_updated(self):
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["json"] = json
+
+            class FakeResponse:
+                status_code = 204
+            return FakeResponse()
+
+        tagger.requests.post = fake_post
+        result = tagger.send_new_install_notification(reporter_name="someuser", previous_version="0.20")
+
+        self.assertTrue(result)
+        embed = captured["json"]["embeds"][0]
+        self.assertEqual(embed["title"], "App updated")
+        fields = embed["fields"]
+        self.assertEqual(fields[1], {"name": "Previous version", "value": "0.20", "inline": True})
+
 
 class ScanCompleteNotificationTests(unittest.TestCase):
     def setUp(self):

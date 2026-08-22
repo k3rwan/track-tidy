@@ -966,23 +966,36 @@ class TaggerInterface:
         self._run_in_background(_run_check)
 
     def _notify_new_install_on_startup(self):
-        """Pings Discord once (ever, per Windows account) to let the
-        developer know a new person/machine started using the app -
-        disclosed in Settings' legal notice text (see the "View license &
+        """Pings Discord when this Windows account first uses the app, and
+        again whenever it's since updated to a newer version - disclosed
+        in Settings' legal notice text (see the "View license &
         third-party notices" area), not sent silently with no mention
-        anywhere. Gated by a saved setting so it only ever fires once per
-        %APPDATA%\\Track-Tidy (i.e. once per machine + Windows account,
-        until that folder is cleared)."""
-        if tagger.load_settings().get("install_notified"):
+        anywhere.
+
+        Gated by a saved "last notified version" setting rather than a
+        plain done/not-done flag, so an update is noticed too, not just
+        the very first install. That setting is only saved AFTER a
+        successful send (not optimistically beforehand) - a failed
+        attempt (no internet yet at launch, a transient block...) is
+        silently retried on the next launch instead of being permanently
+        given up on, which is what let a real install slip through
+        unnoticed before this fix."""
+        last_notified_version = tagger.load_settings().get("last_notified_version")
+        if last_notified_version == tagger.APP_VERSION:
             return
-        tagger.save_setting("install_notified", True)
+
         try:
             reporter_name = getpass.getuser()
         except Exception:
             reporter_name = ""
 
         def _send():
-            tagger.send_new_install_notification(reporter_name=reporter_name)
+            sent = tagger.send_new_install_notification(
+                reporter_name=reporter_name,
+                previous_version=last_notified_version,
+            )
+            if sent:
+                tagger.save_setting("last_notified_version", tagger.APP_VERSION)
 
         self._run_in_background(_send)
 
