@@ -936,6 +936,36 @@ class FixSwappedArtistTitleTests(unittest.TestCase):
         self.assertEqual(result, ("Vald", "Dragon"))
 
 
+class ResolveArtistTitleTests(unittest.TestCase):
+    def test_splits_combined_title_when_filename_agrees_despite_wrong_artist_tag(self):
+        # Real user report: file tagged with artist "keinemusik" (the
+        # record label, not the actual artist) and title "&ME - L.I.F.E"
+        # (the real artist stuffed into the title) - the existing artist
+        # tag being wrong meant it could never match the split-out
+        # candidate artist, but the filename independently agrees with it.
+        artist, title, tags_already_present = tagger.resolve_artist_title(
+            "&ME - L.I.F.E.mp3", "keinemusik", "&ME - L.I.F.E",
+        )
+        self.assertEqual(artist, "&ME")
+        self.assertEqual(title, "L.I.F.E")
+
+    def test_splits_combined_title_when_current_artist_tag_agrees(self):
+        artist, title, tags_already_present = tagger.resolve_artist_title(
+            "irrelevant.mp3", "Vald", "Vald - Dragon",
+        )
+        self.assertEqual(artist, "Vald")
+        self.assertEqual(title, "Dragon")
+
+    def test_does_not_split_when_neither_tag_nor_filename_agrees(self):
+        # Neither the existing artist tag nor the filename corroborates
+        # the dash as an artist/title split - a coincidental dash inside
+        # a real title (e.g. a remix credit) must not be mangled.
+        artist, title, tags_already_present = tagger.resolve_artist_title(
+            "Some Song (YASMINA, Chango Remix)-v6.mp3", "Some Artist", "Title (YASMINA, Chango Remix)-v6",
+        )
+        self.assertNotEqual(artist, "Title (YASMINA, Chango Remix)")
+
+
 class FilenameHelperTests(unittest.TestCase):
     def test_sanitize_filename_replaces_forbidden_characters(self):
         self.assertEqual(tagger.sanitize_filename('A:B*C?D"E<F>G|H'), "A_B_C_D_E_F_G_H")

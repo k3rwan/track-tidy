@@ -1396,7 +1396,17 @@ def resolve_artist_title(file_name, current_artist, current_title):
             candidate_artist = combined_match.group(1).strip()
             candidate_artist = re.sub(r"^\d{1,3}\s*[.\-]\s*", "", candidate_artist).strip()
             candidate_title = clean_title(remove_redundant_generic_mix(combined_match.group(2).strip()))
-            if current_artist.strip().lower() in candidate_artist.lower():
+            # Also accepts the split when the FILENAME's own parsed artist
+            # matches candidate_artist exactly, not just when it's a
+            # substring of the existing artist tag - covers a file whose
+            # existing artist tag is itself wrong (e.g. a record label
+            # used as the artist, like "keinemusik" instead of "&ME"), so
+            # the substring check against that wrong tag would otherwise
+            # never pass even though the filename independently agrees
+            # with the split (real report: "&ME - L.I.F.E.mp3" tagged
+            # with artist "keinemusik", title "&ME - L.I.F.E").
+            filename_agrees = bool(filename_artist) and filename_artist.strip().lower() == candidate_artist.lower()
+            if current_artist.strip().lower() in candidate_artist.lower() or filename_agrees:
                 detected_artist = candidate_artist
                 detected_title = candidate_title
                 title_looks_combined = True
