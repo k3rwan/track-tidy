@@ -1694,14 +1694,50 @@ class TaggerInterface:
         self.window.geometry(f"{WINDOW_WIDTH}x{height}")
 
     def _update_progress_bar(self, fraction, text):
-        """Redraws the progress bar (rectangle + text) on the canvas."""
+        """Redraws the progress bar text immediately, and glides the fill
+        rectangle toward the new fraction instead of jumping straight to
+        it - a per-file scan/apply update every ~1s otherwise looked like
+        the bar was snapping in discrete jumps rather than filling
+        smoothly. A reset to 0 (start of a new run) snaps instantly
+        instead of animating backwards, which would look like the bar
+        emptying itself out before the next run even starts."""
         self.progress_canvas.update_idletasks()
         width = self.progress_canvas.winfo_width() or (WINDOW_WIDTH - 40)
         height = 24
-
-        self.progress_canvas.coords(self.progress_rect, 0, 0, width * fraction, height)
         self.progress_canvas.coords(self.progress_text, width / 2, height / 2)
         self.progress_canvas.itemconfigure(self.progress_text, text=text)
+
+        self._progress_target_fraction = fraction
+        if fraction == 0:
+            self._progress_current_fraction = 0
+            self.progress_canvas.coords(self.progress_rect, 0, 0, 0, height)
+            self._progress_bar_animating = False
+            return
+
+        if not getattr(self, "_progress_bar_animating", False):
+            self._progress_bar_animating = True
+            self._progress_current_fraction = getattr(self, "_progress_current_fraction", 0)
+            self._glide_progress_bar()
+
+    PROGRESS_GLIDE_STEP_MS = 16
+    PROGRESS_GLIDE_EASE = 0.35  # fraction of the remaining gap closed per step
+
+    def _glide_progress_bar(self):
+        width = self.progress_canvas.winfo_width() or (WINDOW_WIDTH - 40)
+        height = 24
+        current = self._progress_current_fraction
+        target = self._progress_target_fraction
+        if abs(target - current) < 0.002:
+            current = target
+            self._progress_bar_animating = False
+        else:
+            current += (target - current) * self.PROGRESS_GLIDE_EASE
+
+        self._progress_current_fraction = current
+        self.progress_canvas.coords(self.progress_rect, 0, 0, width * current, height)
+
+        if self._progress_bar_animating:
+            self.window.after(self.PROGRESS_GLIDE_STEP_MS, self._glide_progress_bar)
 
     def _toggle_advanced_section(self):
         if self._is_run_active():
@@ -2273,6 +2309,73 @@ class TaggerInterface:
             tag = "even_row" if index % 2 == 0 else "odd_row"
             self.table.item(item_id, tags=(tag,))
 
+    def _fade_out_and_delete_rows(self, item_ids, on_complete=None):
+        """Mirror of _flash_new_row for removal: fades each row toward the
+        window background before actually deleting it, instead of having
+        it vanish instantly. on_complete runs once every row involved has
+        either finished fading or turned out to not exist - restripe/label
+        updates that assume the rows are already gone must go there, not
+        run immediately, or _restripe_rows() would prematurely overwrite
+        the fade tag mid-animation (rows still exist in the tree while
+        fading).
+
+        Tracks in-flight fades in self._fading_row_tags so a caller that's
+        about to re-insert one of these same row iids (e.g. Ctrl+Z undo)
+        can force it to finish immediately first - Treeview raises on
+        inserting an iid that's still technically present mid-fade."""
+        if not hasattr(self, "_fading_row_tags"):
+            self._fading_row_tags = {}
+
+        is_dark = self.theme_colors is not None
+        end_color = self.theme_colors["bg"] if is_dark else "#f0f0f0"
+        fg_color = self.theme_colors["tree_fg"] if is_dark else "black"
+
+        pending = {}
+        for item_id in item_ids:
+            if not self.table.exists(item_id):
+                continue
+            is_even = self.table.index(item_id) % 2 == 0
+            if is_dark:
+                start_color = self.theme_colors["tree_bg"] if is_even else self.theme_colors["tree_odd_row"]
+            else:
+                start_color = "#ffffff" if is_even else "#e9e9e9"
+            tag = f"fadeout_{item_id}"
+            pending[item_id] = (tag, start_color)
+            self._fading_row_tags[item_id] = tag
+            self.table.item(item_id, tags=(tag,))
+
+        def _step(n):
+            alive = [item_id for item_id in pending if self.table.exists(item_id)]
+            if n > self.ROW_FLASH_STEPS or not alive:
+                for item_id in alive:
+                    # Only delete if still carrying OUR fade tag - a forced
+                    # finish (see force_finish_row_fade) or a stale/replaced
+                    # row already handled it.
+                    if self.table.exists(item_id) and self.table.item(item_id, "tags") == (pending[item_id][0],):
+                        self.table.delete(item_id)
+                    self._fading_row_tags.pop(item_id, None)
+                if on_complete:
+                    on_complete()
+                return
+            t = n / self.ROW_FLASH_STEPS
+            for item_id in alive:
+                tag, start_color = pending[item_id]
+                self.table.tag_configure(
+                    tag, background=self._interpolate_color(start_color, end_color, t), foreground=fg_color,
+                )
+            self.window.after(self.ROW_FLASH_STEP_MS, _step, n + 1)
+
+        _step(0)
+
+    def _force_finish_row_fade(self, item_id):
+        """Immediately completes an in-progress fade-out for item_id (see
+        _fade_out_and_delete_rows), deleting it right now instead of
+        waiting - for a caller about to re-insert the same iid (undo)."""
+        if hasattr(self, "_fading_row_tags") and item_id in self._fading_row_tags:
+            if self.table.exists(item_id):
+                self.table.delete(item_id)
+            del self._fading_row_tags[item_id]
+
     def _schedule_table_filter(self, event=None):
         """Debounces the search filter: waits 300ms after the last keystroke before applying it."""
         if getattr(self, "_table_filter_after_id", None):
@@ -2460,11 +2563,10 @@ class TaggerInterface:
 
         # Removes files that no longer exist on disk
         for file_name in removed_files:
-            if self.table.exists(file_name):
-                self.table.delete(file_name)
             self.tk_images.pop(file_name, None)
             self.tk_images_hover.pop(file_name, None)
             self._thumbnail_pil_images.pop(file_name, None)
+        self._fade_out_and_delete_rows(removed_files, on_complete=self._restripe_rows)
         self.scanned_plan = [info for info in self.scanned_plan if info["file"] not in removed_files]
 
         number_new = len(self.scanned_plan) - number_before + len(removed_files)
@@ -3683,8 +3785,6 @@ class TaggerInterface:
             return
 
         for item_id in selected_items:
-            if self.table.exists(item_id):
-                self.table.delete(item_id)
             self.tk_images.pop(item_id, None)
             self.tk_images_hover.pop(item_id, None)
             self._thumbnail_pil_images.pop(item_id, None)
@@ -3696,8 +3796,11 @@ class TaggerInterface:
         self._undo_stack.append(("removal", removed))
         self.scanned_plan = [info for info in self.scanned_plan if info["file"] not in selected_set]
 
-        self._restripe_rows()
-        self._update_apply_button_label()
+        def _after_fade():
+            self._restripe_rows()
+            self._update_apply_button_label()
+
+        self._fade_out_and_delete_rows(selected_items, on_complete=_after_fade)
 
     def _undo_last_action(self, event=None):
         """Ctrl+Z: undoes the most recent removal (Delete/"Remove from
@@ -3714,6 +3817,10 @@ class TaggerInterface:
         """Brings back removed row(s), each at its original position in the list."""
         for index, info in sorted(removed, key=lambda pair: pair[0]):
             self.scanned_plan.insert(min(index, len(self.scanned_plan)), info)
+            # A fade-out from the just-undone delete may still be running
+            # for this same row iid - finish it now so the insert below
+            # never collides with an item that's technically still there.
+            self._force_finish_row_fade(info["file"])
             image_tk = self._create_thumbnail(info)
             self.tk_images[info["file"]] = image_tk
             self.table.insert(
