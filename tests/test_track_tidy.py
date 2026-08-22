@@ -1567,12 +1567,16 @@ class NewInstallNotificationTests(unittest.TestCase):
         self.assertEqual(fields[0], {"name": "User", "value": "someuser", "inline": True})
 
     def test_excluded_user_is_not_notified(self):
-        # The developer's own Windows account - see
         # DISCORD_NOTIFICATION_EXCLUDED_USERS, checked case-insensitively.
         calls = []
         tagger.requests.post = lambda *a, **k: calls.append(1)
 
-        self.assertFalse(tagger.send_new_install_notification(reporter_name="Kevin"))
+        original = tagger.DISCORD_NOTIFICATION_EXCLUDED_USERS
+        tagger.DISCORD_NOTIFICATION_EXCLUDED_USERS = {"testuser"}
+        try:
+            self.assertFalse(tagger.send_new_install_notification(reporter_name="TestUser"))
+        finally:
+            tagger.DISCORD_NOTIFICATION_EXCLUDED_USERS = original
         self.assertEqual(calls, [])
 
     def test_previous_version_relabels_as_app_updated(self):
@@ -1668,7 +1672,12 @@ class ScanCompleteNotificationTests(unittest.TestCase):
         calls = []
         tagger.requests.post = lambda *a, **k: calls.append(1)
 
-        self.assertFalse(tagger.send_scan_complete_notification(reporter_name="kevin", number_new=1))
+        original = tagger.DISCORD_NOTIFICATION_EXCLUDED_USERS
+        tagger.DISCORD_NOTIFICATION_EXCLUDED_USERS = {"testuser"}
+        try:
+            self.assertFalse(tagger.send_scan_complete_notification(reporter_name="testuser", number_new=1))
+        finally:
+            tagger.DISCORD_NOTIFICATION_EXCLUDED_USERS = original
         self.assertEqual(calls, [])
 
     def test_returns_false_on_network_failure(self):

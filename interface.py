@@ -1008,10 +1008,9 @@ class TaggerInterface:
         cancelled partway through - cancelled=True just relabels the
         embed), so the developer knows when the app is actually being
         used day to day (not just installed) - disclosed alongside the
-        "new install" ping in Settings' legal notice text. Excluded for
-        the developer's own Windows account (see
-        tagger.DISCORD_NOTIFICATION_EXCLUDED_USERS), so day-to-day
-        testing doesn't spam the channel."""
+        "new install" ping in Settings' legal notice text. See
+        tagger.DISCORD_NOTIFICATION_EXCLUDED_USERS for any accounts
+        excluded from this."""
         try:
             reporter_name = getpass.getuser()
         except Exception:
@@ -1030,9 +1029,7 @@ class TaggerInterface:
     def _notify_no_cover_report(self, no_cover_infos, total):
         """Automatically sends the full list of no-cover tracks for this
         scan to Discord (as a .txt attachment) when the miss rate crosses
-        NO_COVER_REPORT_THRESHOLD - see _finalize_scan. Excluded for the
-        developer's own Windows account, same as the other automatic
-        notifications."""
+        NO_COVER_REPORT_THRESHOLD - see _finalize_scan."""
         try:
             reporter_name = getpass.getuser()
         except Exception:

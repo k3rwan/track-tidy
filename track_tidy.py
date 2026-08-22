@@ -572,11 +572,10 @@ def send_track_report(info, reporter_name=None, timeout=10):
 
 
 # Windows usernames that never trigger the automatic "new install"/"scan
-# complete" Discord pings below - the developer's own machine, so their own
-# day-to-day testing doesn't spam the channel with self-notifications.
-# Case-insensitive. Doesn't apply to send_track_report() - that one's an
-# explicit user action ("Report this track"), not automatic telemetry.
-DISCORD_NOTIFICATION_EXCLUDED_USERS = {"kevin"}
+# complete" Discord pings below. Case-insensitive. Doesn't apply to
+# send_track_report() - that one's an explicit user action ("Report this
+# track"), not automatic telemetry.
+DISCORD_NOTIFICATION_EXCLUDED_USERS = set()
 
 
 def _is_discord_notification_excluded(reporter_name):
