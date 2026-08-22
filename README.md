@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-  <a href="https://www.virustotal.com/gui/file/eff644203f1fef3f5cf115e5466a2e6e461322fd7ebd2ab49523c95022fecaee/detection"><img src="https://img.shields.io/badge/VirusTotal-0%2F69-brightgreen?style=for-the-badge&logo=virustotal&logoColor=white" alt="VirusTotal: 0/69 detections"></a>
+  <a href="https://www.virustotal.com/gui/file/8d58317d6e3a81c37dfa6e1e5d465a641885d65ddcc57534d033f1128f1a752a/detection"><img src="https://img.shields.io/badge/Scanned%20on-VirusTotal-brightgreen?style=for-the-badge&logo=virustotal&logoColor=white" alt="Scanned on VirusTotal - view full report"></a>
 </p>
 
 <p align="center">
@@ -66,8 +66,8 @@ understand the hesitation. A few things that should help:
 - The source code below is the real thing that gets built into the installer
   - nothing hidden.
 - The Windows installer is scanned with
-  [VirusTotal](https://www.virustotal.com/gui/file/eff644203f1fef3f5cf115e5466a2e6e461322fd7ebd2ab49523c95022fecaee/detection)
-  on every release: **0/69** security vendors flag it.
+  [VirusTotal](https://www.virustotal.com/gui/file/8d58317d6e3a81c37dfa6e1e5d465a641885d65ddcc57534d033f1128f1a752a/detection)
+  on every release - click through for the full vendor-by-vendor report.
 
 ## Install
 
