@@ -1179,7 +1179,14 @@ class TaggerInterface:
             # macOS - see check_for_update) rather than being assumed, so
             # this doesn't silently mislabel the downloaded file.
             extension = os.path.splitext(installer_url)[1] or (".dmg" if sys.platform == "darwin" else ".exe")
-            dest_path = os.path.join(tempfile.gettempdir(), f"Track-Tidy-Setup-{latest_version}{extension}")
+            # latest_version comes straight from the GitHub release's own
+            # tag_name (see tagger.check_for_update) - sanitized the same
+            # way a track's own filename is (tagger.sanitize_filename())
+            # before it becomes part of a path, so a malformed/hostile tag
+            # (e.g. containing "/" or "..") can't land the download outside
+            # the intended temp directory.
+            safe_version = tagger.sanitize_filename(latest_version)
+            dest_path = os.path.join(tempfile.gettempdir(), f"Track-Tidy-Setup-{safe_version}{extension}")
             success = tagger.download_installer(
                 installer_url, dest_path, on_progress=on_progress,
                 expected_sha256=expected_sha256, log=self._append_to_journal,
