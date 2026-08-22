@@ -307,7 +307,7 @@ class TaggerInterface:
 
         self._native_theme = ttk.Style().theme_use()  # so "light" can restore it later
         self.theme_colors = None  # None while light/native; DARK_COLORS once dark is applied
-        saved_theme = tagger.load_settings().get("theme", "light")
+        saved_theme = tagger.load_settings().get("theme", "auto")
         if saved_theme not in ("light", "dark", "auto"):
             saved_theme = "light"  # e.g. an old "system" preference from before that option existed
         self.theme_var = tk.StringVar(value=saved_theme)
@@ -459,7 +459,7 @@ class TaggerInterface:
             return
 
         for key, value in (
-            ("theme", "light"),
+            ("theme", "auto"),
             ("auto_convert_mp3", False),
             ("auto_convert_wav_to_aiff", True),
             ("fix_track_file_name", True),
@@ -481,8 +481,9 @@ class TaggerInterface:
         self.show_log_var.set(False)
         self._on_show_log_changed()
 
-        self.theme_var.set("light")
-        self._apply_theme("light")
+        self.theme_var.set("auto")
+        self._apply_theme(self._resolve_theme_choice("auto"))
+        self._schedule_auto_theme_recheck()
 
         messagebox.showinfo("Settings reset", "All settings have been restored to their defaults.", parent=self.window)
 
