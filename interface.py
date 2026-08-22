@@ -2609,9 +2609,16 @@ class TaggerInterface:
                     f"{len(removed_files)} removed, {len(self.scanned_plan)} total."
                 )
 
+            # Same "did an online search actually find something" criterion
+            # as the "Only show tracks with no cover match" filter (see
+            # _apply_table_filter) - not has_usable_cover(), which also
+            # counts as "usable" a checked row that kept its own existing
+            # (non-banned) cover with no online match at all. Keeping both
+            # in sync avoids a confusing mismatch between what the filter
+            # shows and what this count (and the Discord report below) say.
             no_cover_infos = [
                 info for info in self.scanned_plan
-                if not info.get("processed") and not tagger.has_usable_cover(info)
+                if not info.get("processed") and not info.get("found_cover_image")
             ]
             if no_cover_infos:
                 self._append_to_journal(f"{len(no_cover_infos)} track(s) currently have no cover match.")
