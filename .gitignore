@@ -16,10 +16,11 @@ Launch Track Tidy.bat
 
 # Personal build/packaging tooling - useful only on Kevin's own build
 # machine, not needed to read/understand the source (GPL compliance
-# only requires the source itself, not the build scripts)
+# only requires the source itself, not the build scripts). build_mac.sh
+# is the one exception - the build-macos.yml GitHub Actions workflow
+# checks out the repo fresh and needs it to actually exist there.
 build_all.bat
 build_exe.bat
-build_mac.sh
 installer.iss
 Track-Tidy.spec
 
