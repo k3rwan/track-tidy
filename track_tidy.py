@@ -718,6 +718,41 @@ def send_scan_complete_notification(
         return False
 
 
+def send_rate_limit_report(source, reporter_name=None, timeout=10):
+    """
+    Posts a ping to Discord the moment a cover source (iTunes, Spotify,
+    SoundCloud, or AcoustID) gets rate-limited during a scan, so the
+    developer sees it as it happens instead of only as a count buried in
+    the "Scan complete" embed - see the *_rate_limited handlers in
+    interface.py's _start_message_loop, each already gated to fire at
+    most once per scan per source.
+
+    Returns True on success, False on any failure (never raises) - also
+    False without posting anything for an excluded account (see
+    DISCORD_NOTIFICATION_EXCLUDED_USERS).
+    """
+    if _is_discord_notification_excluded(reporter_name) or not DISCORD_REPORT_WEBHOOK_URL:
+        return False
+    embed = {
+        "title": "Rate limit reached",
+        "color": 0xE67E22,
+        "fields": [
+            {"name": "User", "value": reporter_name or "(unknown)", "inline": True},
+            {"name": "Source", "value": source, "inline": True},
+            {"name": "App version", "value": APP_VERSION, "inline": True},
+        ],
+    }
+    try:
+        response = requests.post(
+            DISCORD_REPORT_WEBHOOK_URL,
+            json={"embeds": [embed], "allowed_mentions": {"parse": []}},
+            timeout=timeout,
+        )
+        return response.status_code in (200, 204)
+    except Exception:
+        return False
+
+
 # --- Saved UI settings (theme choice...) ---
 
 SETTINGS_FILE = os.path.join(user_config_dir(), "settings.json")

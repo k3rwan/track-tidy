@@ -1040,6 +1040,20 @@ class TaggerInterface:
 
         self._run_in_background(_send)
 
+    def _notify_rate_limited(self, source):
+        """Pings Discord the moment a cover source gets rate-limited
+        during a scan - see the *_rate_limited handlers below, each
+        already gated to fire at most once per scan per source."""
+        try:
+            reporter_name = getpass.getuser()
+        except Exception:
+            reporter_name = ""
+
+        def _send():
+            tagger.send_rate_limit_report(source, reporter_name=reporter_name)
+
+        self._run_in_background(_send)
+
     def _check_internet_connection(self, is_startup_check=False):
         """Checks connectivity in the background, updates the status
         indicator, and (only for the initial startup check) warns once via
@@ -4203,6 +4217,7 @@ class TaggerInterface:
                             "SoundCloud's request limit has been reached - no cover will be fetched from it "
                             "for the rest of this scan."
                         )
+                        self._notify_rate_limited("SoundCloud")
 
                 elif message_type == "itunes_rate_limited":
                     if not self.itunes_rate_limit_warned:
@@ -4211,6 +4226,7 @@ class TaggerInterface:
                             "iTunes' request limit has been reached - it'll be paused for "
                             f"{tagger.ITUNES_RATE_LIMIT_COOLDOWN_SECONDS}s."
                         )
+                        self._notify_rate_limited("iTunes")
 
                 elif message_type == "spotify_rate_limited":
                     # Logged only, no popup (unlike the other 3 sources
@@ -4225,6 +4241,7 @@ class TaggerInterface:
                             "Spotify's request limit has been reached - no cover will be fetched from it "
                             "for the rest of this scan."
                         )
+                        self._notify_rate_limited("Spotify")
 
                 elif message_type == "acoustid_rate_limited":
                     if not self.acoustid_rate_limit_warned:
@@ -4233,6 +4250,7 @@ class TaggerInterface:
                             "AcoustID's request limit has been reached - it'll be paused for "
                             f"{tagger.ACOUSTID_RATE_LIMIT_COOLDOWN_SECONDS}s."
                         )
+                        self._notify_rate_limited("AcoustID")
 
                 elif message_type == "auth_error":
                     source, error_message = content
