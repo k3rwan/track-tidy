@@ -121,6 +121,18 @@ MAX_TRACKS_PER_SCAN = 100
 # _notify_no_cover_report.
 NO_COVER_REPORT_THRESHOLD = 0.15
 
+# "Automatic" appearance (see _resolve_theme_choice): light between these
+# two local hours, dark the rest of the time (evening/night). Plain hour-
+# of-day, not sunrise/sunset - simple and predictable rather than needing
+# the user's location.
+AUTO_THEME_LIGHT_START_HOUR = 7
+AUTO_THEME_DARK_START_HOUR = 20
+
+# How often a running app re-checks the current hour while "Automatic" is
+# selected, so the theme actually flips if the app is left open across one
+# of the two boundaries above instead of only updating on next launch.
+AUTO_THEME_RECHECK_INTERVAL_MS = 30 * 60 * 1000
+
 THUMBNAIL_SIZE = (44, 44)
 TABLE_ROW_HEIGHT = 48
 # Widened from the original 500px so the bigger thumbnails and wider
@@ -296,7 +308,7 @@ class TaggerInterface:
         self._native_theme = ttk.Style().theme_use()  # so "light" can restore it later
         self.theme_colors = None  # None while light/native; DARK_COLORS once dark is applied
         saved_theme = tagger.load_settings().get("theme", "light")
-        if saved_theme not in ("light", "dark"):
+        if saved_theme not in ("light", "dark", "auto"):
             saved_theme = "light"  # e.g. an old "system" preference from before that option existed
         self.theme_var = tk.StringVar(value=saved_theme)
 
@@ -315,7 +327,7 @@ class TaggerInterface:
         self._build_interface()
         self._setup_drag_and_drop()
         self._adjust_window_height()
-        self._apply_theme(self.theme_var.get())
+        self._apply_theme(self._resolve_theme_choice(self.theme_var.get()))
         # Warm-up pass: the very first paint (before the window is ever
         # actually mapped) computes native-theme widget metrics a few
         # pixels too small - re-applying the theme once the window is
@@ -331,24 +343,54 @@ class TaggerInterface:
 
     # --- Theme & dialog helpers ---
 
+    def _resolve_theme_choice(self, choice):
+        """Resolves the user's saved preference ("light"/"dark"/"auto") to
+        an actual "light"/"dark" for _apply_theme() - which only knows
+        those two. "auto" picks light or dark from the current local hour
+        (see AUTO_THEME_LIGHT_START_HOUR/AUTO_THEME_DARK_START_HOUR)."""
+        if choice != "auto":
+            return choice
+        hour = datetime.now().hour
+        return "light" if AUTO_THEME_LIGHT_START_HOUR <= hour < AUTO_THEME_DARK_START_HOUR else "dark"
+
     def _rewarm_theme(self, step=0):
         """See the comment at the __init__ call site: fixes the native
         theme's widget metrics being subtly wrong on the very first paint.
         Each step is a separate event-loop turn (via after()) rather than
         back-to-back calls - ttk/Windows only recomputes native-theme
         metrics correctly with a real idle turn between theme switches."""
-        steps = ("light", "dark", self.theme_var.get())
+        steps = ("light", "dark", self._resolve_theme_choice(self.theme_var.get()))
         self._apply_theme(steps[step])
         if step + 1 < len(steps):
             self.window.after(50, lambda: self._rewarm_theme(step + 1))
         else:
             self._adjust_window_height()
             self.window.deiconify()
+            if self.theme_var.get() == "auto":
+                self._schedule_auto_theme_recheck()
 
     def _on_theme_changed(self):
         choice = self.theme_var.get()
-        self._apply_theme(choice)
+        self._apply_theme(self._resolve_theme_choice(choice))
         tagger.save_setting("theme", choice)
+        if choice == "auto":
+            self._schedule_auto_theme_recheck()
+
+    def _schedule_auto_theme_recheck(self):
+        """While "Automatic" is selected, periodically re-resolves and
+        re-applies the theme so it actually flips if the app is left open
+        across a AUTO_THEME_LIGHT_START_HOUR/AUTO_THEME_DARK_START_HOUR
+        boundary, instead of only updating on the next launch. Stops
+        rescheduling itself as soon as the user picks a fixed theme
+        instead - checked fresh on every tick rather than cancelled via
+        after_cancel, since nothing else ever needs to interrupt this."""
+        def _recheck():
+            if self.theme_var.get() != "auto":
+                return
+            self._apply_theme(self._resolve_theme_choice("auto"))
+            self._schedule_auto_theme_recheck()
+
+        self.window.after(AUTO_THEME_RECHECK_INTERVAL_MS, _recheck)
 
     def _on_auto_convert_changed(self):
         enabled = self.auto_convert_var.get()
@@ -1605,7 +1647,7 @@ class TaggerInterface:
 
         appearance_frame = ttk.LabelFrame(soundcloud_tab, text="Appearance")
         appearance_frame.pack(fill="x", padx=10, pady=(15, 10))
-        for value, label in (("light", "Light"), ("dark", "Dark")):
+        for value, label in (("light", "Light"), ("dark", "Dark"), ("auto", "Automatic (time of day)")):
             ttk.Radiobutton(
                 appearance_frame, text=label, value=value, variable=self.theme_var,
                 command=self._on_theme_changed,
