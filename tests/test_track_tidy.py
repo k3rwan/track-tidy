@@ -376,6 +376,38 @@ class ITunesQueryTests(unittest.TestCase):
             "World Hold On (Children Of The Sky) [THEMBA Extended Remix]",
         ))
 
+    def test_rework_is_treated_as_a_generic_qualifier_like_extended_mix(self):
+        self.assertTrue(tagger.is_generic_mix_qualifier("Extended Rework"))
+        self.assertTrue(tagger.is_generic_mix_qualifier("Rework"))
+        self.assertFalse(tagger.is_named_remix_qualifier("Extended Rework"))
+
+    def test_named_rework_is_treated_as_named_like_named_remix(self):
+        self.assertTrue(tagger.is_named_remix_qualifier("FISHER Rework"))
+
+    def test_loose_remix_match_treats_extended_rework_same_as_rework(self):
+        # Real report: "Hugel, Humbe - Patadas de Ahogado (Extended
+        # Rework).mp3" found no cover because "rework" wasn't recognized
+        # as a mix-type keyword at all (unlike remix/edit/mix/bootleg/
+        # reboot), so "Extended" never got stripped down to match the
+        # store's bare "Rework".
+        self.assertTrue(tagger.loose_remix_match(
+            "Patadas de Ahogado (Extended Rework)",
+            "Patadas de Ahogado (Rework)",
+        ))
+
+    def test_strip_slash_credit_removes_inline_original_artist_credit(self):
+        # Real report: iTunes listed Hugel's official rework as "Patadas
+        # de Ahogado / LATIN MAFIA (Rework)" - the inserted "/ LATIN
+        # MAFIA" made even this exact right result fail to match our own
+        # "Patadas de Ahogado (Extended Rework)" filename convention.
+        self.assertEqual(
+            tagger.strip_slash_credit("Patadas de Ahogado / LATIN MAFIA (Rework)"),
+            "Patadas de Ahogado (Rework)",
+        )
+
+    def test_strip_slash_credit_no_slash_returns_unchanged(self):
+        self.assertEqual(tagger.strip_slash_credit("Patadas de Ahogado (Rework)"), "Patadas de Ahogado (Rework)")
+
     def test_extract_feature_names_from_groups(self):
         self.assertEqual(
             tagger.extract_feature_names_from_groups(["THEMBA Extended Remix", "feat. Steve Edwards & THEMBA"]),

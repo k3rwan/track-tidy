@@ -1186,6 +1186,7 @@ GENERIC_MIX_LABELS = {
     "extended mix", "extended edit", "extended",
     "radio edit", "radio mix", "club mix", "original mix", "instrumental mix",
     "mixed", "mix", "remix",
+    "extended rework", "rework",
 }
 
 
@@ -1208,7 +1209,7 @@ def is_named_remix_qualifier(content):
     all beyond the bare title.
     """
     lowered = content.lower().strip()
-    has_named_keyword = any(keyword in lowered for keyword in ("remix", "edit", "mix", "reboot", "bootleg"))
+    has_named_keyword = any(keyword in lowered for keyword in ("remix", "edit", "mix", "reboot", "bootleg", "rework"))
     return has_named_keyword and lowered not in GENERIC_MIX_LABELS
 
 
@@ -1231,7 +1232,7 @@ def find_named_qualifier_groups(title):
         if lowered in GENERIC_MIX_LABELS:
             continue
         words = lowered.split()
-        has_keyword = any(keyword in words for keyword in ("remix", "edit", "mix", "reboot", "bootleg"))
+        has_keyword = any(keyword in words for keyword in ("remix", "edit", "mix", "reboot", "bootleg", "rework"))
         if has_keyword and len(words) > 1:
             named_groups.append(group.strip())
     return named_groups
@@ -1251,7 +1252,7 @@ def named_qualifier_name_words(title):
     Used to verify a candidate cover-search result actually credits the
     SPECIFIC named remix/bootleg being looked for, not just the base song.
     """
-    keyword_words = {"remix", "edit", "reboot", "bootleg"}
+    keyword_words = {"remix", "edit", "reboot", "bootleg", "rework"}
     words = set()
     for group in find_named_qualifier_groups(title):
         for word in re.findall(r"\w+", group.lower()):
@@ -1282,7 +1283,25 @@ def balance_parentheses(text):
     return text + (")" * missing) if missing > 0 else text
 
 
-DASH_MIX_KEYWORDS = ("remix", "edit", "mix", "bootleg", "reboot")
+def strip_slash_credit(text):
+    """
+    Some stores credit the original artist inline in the title via a
+    "/ Name" segment instead of the artist field or a bracketed remix
+    qualifier - e.g. iTunes' own "Patadas de Ahogado / LATIN MAFIA
+    (Rework)" for Hugel's official rework of a Latin Mafia & Humbe
+    original (our filename never uses this convention - the same track
+    was named "Patadas de Ahogado (Extended Rework)"). Left alone, the
+    inserted "/ LATIN MAFIA" stays part of the core title and makes even
+    the exact right result fail exact_match()/loose_remix_match() against
+    every one of our own filename conventions. Only the FIRST "/ ..."
+    segment is stripped (up to the next bracket or the end of the
+    string) - a title genuinely built around more than one slash is rare
+    enough not to guess about.
+    """
+    return re.sub(r"\s*/\s*[^/()\[\]]+?(?=\s*[\(\[]|$)", "", text, count=1).strip()
+
+
+DASH_MIX_KEYWORDS = ("remix", "edit", "mix", "bootleg", "reboot", "rework")
 
 
 def try_split_title_mix_artist(text):
@@ -2596,7 +2615,7 @@ def strip_generic_mix_suffix(text):
 
 
 GENERIC_QUALIFIER_MODIFIER_RE = re.compile(
-    r"\b(?:extended|radio)\s+(?=(?:remix|edit|mix|bootleg|reboot)\b)", re.IGNORECASE
+    r"\b(?:extended|radio)\s+(?=(?:remix|edit|mix|bootleg|reboot|rework)\b)", re.IGNORECASE
 )
 
 # A short (<=6 char) parenthetical directly before the mix keyword - a
@@ -2606,7 +2625,7 @@ GENERIC_QUALIFIER_MODIFIER_RE = re.compile(
 # than a real part of the remix's name. Bounded short so an actual
 # multi-word subtitle in parens isn't mistaken for one.
 GROUP_DISAMBIGUATOR_RE = re.compile(
-    r"\s*\([^()]{1,6}\)\s+(?=(?:remix|edit|mix|bootleg|reboot)\b)", re.IGNORECASE
+    r"\s*\([^()]{1,6}\)\s+(?=(?:remix|edit|mix|bootleg|reboot|rework)\b)", re.IGNORECASE
 )
 
 
@@ -2744,7 +2763,7 @@ def _qualifier_name_set(qualifier_text):
     left the same way any other multi-artist field is split (ignoring
     separator style - "X, Y Remix" and "X & Y Remix" credit the same people).
     """
-    stripped = re.sub(r"\b(?:remix|edit|mix|bootleg|reboot)\b", "", qualifier_text, flags=re.IGNORECASE)
+    stripped = re.sub(r"\b(?:remix|edit|mix|bootleg|reboot|rework)\b", "", qualifier_text, flags=re.IGNORECASE)
     return split_artist_names(stripped)
 
 
@@ -3270,9 +3289,18 @@ def search_cover_itunes(artist, title, log=safe_print, max_retries=2, allow_loos
             # resolve_artist_title() already applies to OUR OWN file's
             # title for this exact reason. strip_generic_qualifier_modifiers()
             # further drops a droppable "Extended"/"Radio" modifier on both
-            # sides (see its docstring).
+            # sides (see its docstring). strip_slash_credit() drops an
+            # inline "/ Name" original-artist credit some stores insert
+            # right into the title (see its own docstring) - applied only
+            # to the TITLE comparison, not to returned_title itself, since
+            # the raw text is still useful as an artist-match signal (a
+            # credited name showing up anywhere in the title) and for
+            # logging.
+            returned_title_for_title_match = strip_slash_credit(returned_title)
             returned_title_normalized = strip_feature_suffix(
-                strip_generic_qualifier_modifiers(strip_generic_mix_suffix(reformat_trailing_dash_mix(returned_title)))
+                strip_generic_qualifier_modifiers(
+                    strip_generic_mix_suffix(reformat_trailing_dash_mix(returned_title_for_title_match))
+                )
             )
 
             artist_ok = artist_sets_match(artist, returned_artist, returned_title) and exact_match(title_normalized, returned_title_normalized)
@@ -3281,9 +3309,9 @@ def search_cover_itunes(artist, title, log=safe_print, max_retries=2, allow_loos
             loose_ok = False
             if (
                 not (artist_ok or swapped_ok) and allow_loose_remix_match
-                and loose_remix_match(title, returned_title, expected_artist=artist)
+                and loose_remix_match(title, returned_title_for_title_match, expected_artist=artist)
             ):
-                _, returned_groups = strip_all_trailing_groups(returned_title)
+                _, returned_groups = strip_all_trailing_groups(returned_title_for_title_match)
                 returned_artist_set = split_artist_names(returned_artist) | extract_feature_names_from_groups(returned_groups)
                 loose_ok = split_artist_names(artist) <= returned_artist_set
 
@@ -3844,7 +3872,12 @@ def _search_cover_spotify_query(query, artist, title, token, log, allow_loose_re
         # rather than our own "Title (X Remix)" convention, and/or drops a
         # droppable "Extended"/"Radio" modifier one side has and the other
         # doesn't (see strip_generic_qualifier_modifiers).
-        returned_title_reformatted = reformat_trailing_dash_mix(returned_title)
+        # strip_slash_credit() drops an inline "/ Name" original-artist
+        # credit some stores insert right into the title (see its own
+        # docstring) - applied only for this title comparison, not to
+        # returned_title itself (still used above as an artist-match
+        # signal and for logging).
+        returned_title_reformatted = reformat_trailing_dash_mix(strip_slash_credit(returned_title))
         returned_title_normalized = strip_feature_suffix(
             strip_generic_qualifier_modifiers(strip_generic_mix_suffix(returned_title_reformatted))
         )
