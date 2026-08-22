@@ -5,6 +5,11 @@ clientID.txt
 clientSecret.txt
 default_credentials.json
 
+# Release-tooling-only secrets (e.g. VirusTotal API key) - used by Kevin's
+# own release scripts, never bundled into the app or shipped to users
+# (unlike default_credentials.json above)
+release_secrets.json
+
 # Personal Claude Code settings (permissions etc.) - not shared with the team
 .claude/settings.local.json
 
