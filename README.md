@@ -104,7 +104,6 @@ specific track that got tagged wrong.
 |---|---|
 | `track_tidy.py` | Core logic: filename parsing, tag reading/writing, format conversion, cover search (see the module docstring for the full breakdown) |
 | `interface.py` | Tkinter GUI on top of `track_tidy.py` |
-| `Launch Track Tidy.bat` | Launches the app from the local `venv` |
 | `build_all.bat` / `build_mac.sh` | Build a standalone app with PyInstaller (Windows/macOS) |
 | `installer.iss` | Inno Setup script to package the Windows build into an installer |
 

@@ -11,6 +11,9 @@ default_credentials.json
 # Dev-only project notes for Claude Code - not meant to be public
 CLAUDE.md
 
+# Kevin's personal local-dev launcher (assumes a "venv" folder next to it)
+Launch Track Tidy.bat
+
 # Python
 __pycache__/
 *.pyc
