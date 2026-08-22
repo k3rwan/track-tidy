@@ -118,7 +118,7 @@ MAX_TRACKS_PER_SCAN = 100
 
 # Above this fraction of no-cover-match tracks in a scanned folder,
 # nudge the user toward "Report track..." - see _finalize_scan.
-NO_COVER_REPORT_THRESHOLD = 0.10
+NO_COVER_REPORT_THRESHOLD = 0.15
 
 THUMBNAIL_SIZE = (44, 44)
 TABLE_ROW_HEIGHT = 48
