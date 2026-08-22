@@ -79,10 +79,10 @@ fi
 pyinstaller --windowed --noconfirm \
   --name "Track-Tidy" \
   "${ICON_ARGS[@]}" \
-  --add-data "assets/track-tidy_icon.ico:." \
-  --add-data "assets/track-tidy_icon.png:." \
-  --add-data "assets/fart.wav:." \
-  --add-data "assets/success.wav:." \
+  --add-data "assets/track-tidy_icon.ico:assets" \
+  --add-data "assets/track-tidy_icon.png:assets" \
+  --add-data "assets/fart.wav:assets" \
+  --add-data "assets/success.wav:assets" \
   --collect-all tkinterdnd2 \
   --collect-all keyring \
   interface.py
