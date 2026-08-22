@@ -67,11 +67,6 @@ jobs:
             '{soundcloud_client_id: $soundcloud_client_id, soundcloud_client_secret: $soundcloud_client_secret, spotify_client_id: $spotify_client_id, spotify_client_secret: $spotify_client_secret, discord_webhook_url: $discord_webhook_url, acoustid_api_key: $acoustid_api_key, discord_bot_token: $discord_bot_token}' \
             > default_credentials.json
 
-      - name: Run the test suite
-        run: |
-          source venv_build/bin/activate
-          python -m unittest discover -s tests
-
       - name: Bundle a macOS ffmpeg binary
         # build_mac.sh only bundles ffmpeg into the .app if a binary is
         # already sitting at ./ffmpeg before it runs - nobody had ever put
@@ -79,6 +74,13 @@ jobs:
         # INFO tag writing (both shell out to it) silently degraded on Mac
         # even though they work fine on Windows (ffmpeg.exe is checked
         # into the repo there).
+        #
+        # Runs BEFORE the test suite (not after) - find_ffmpeg() picks up
+        # this same ./ffmpeg for tests too, and a real report showed why
+        # that matters: a WAV RIFF INFO test failed on this runner because
+        # write_tags()'s RIFF-clearing silently no-ops without ffmpeg,
+        # leaving assets/fart.wav's own baked-in RIFF INFO artist tag
+        # ("Gaming Sound FX") untouched instead of actually being cleared.
         #
         # Homebrew's ffmpeg is pre-installed on GitHub's macOS runners, but
         # it's dynamically linked against its OWN Homebrew-installed
@@ -100,6 +102,11 @@ jobs:
           echo "--- bundled dylib count and total size ---"
           ls -la ./ffmpeg-libs | wc -l
           du -sh ./ffmpeg ./ffmpeg-libs
+
+      - name: Run the test suite
+        run: |
+          source venv_build/bin/activate
+          python -m unittest discover -s tests
 
       - name: Build .app and .dmg
         run: |
