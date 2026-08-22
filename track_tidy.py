@@ -550,7 +550,12 @@ def send_track_report(info, reporter_name=None, timeout=10):
         files["files[1]"] = ("suggested_cover.jpg", found_cover_image, "image/jpeg")
         embed["image"] = {"url": "attachment://suggested_cover.jpg"}
 
-    payload = {"embeds": [embed]}
+    # allowed_mentions: [] - field values above come straight from the
+    # user's own filenames/tags, which could contain "@everyone" or a role
+    # mention (e.g. a bootleg downloaded elsewhere, not named by the user
+    # themselves) - this stops Discord from ever treating that as a real
+    # ping, regardless of whether embeds actually parse mentions.
+    payload = {"embeds": [embed], "allowed_mentions": {"parse": []}}
 
     try:
         if files:
@@ -600,7 +605,11 @@ def send_new_install_notification(reporter_name=None, timeout=10):
         ],
     }
     try:
-        response = requests.post(DISCORD_REPORT_WEBHOOK_URL, json={"embeds": [embed]}, timeout=timeout)
+        response = requests.post(
+            DISCORD_REPORT_WEBHOOK_URL,
+            json={"embeds": [embed], "allowed_mentions": {"parse": []}},
+            timeout=timeout,
+        )
         return response.status_code in (200, 204)
     except Exception:
         return False
@@ -639,7 +648,11 @@ def send_scan_complete_notification(
         ],
     }
     try:
-        response = requests.post(DISCORD_REPORT_WEBHOOK_URL, json={"embeds": [embed]}, timeout=timeout)
+        response = requests.post(
+            DISCORD_REPORT_WEBHOOK_URL,
+            json={"embeds": [embed], "allowed_mentions": {"parse": []}},
+            timeout=timeout,
+        )
         return response.status_code in (200, 204)
     except Exception:
         return False
