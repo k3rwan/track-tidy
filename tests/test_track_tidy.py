@@ -601,6 +601,26 @@ class SearchCoverSoundcloudTests(unittest.TestCase):
     def test_no_token_returns_none_without_a_request(self):
         self.assertIsNone(tagger.search_cover_soundcloud("Artist", "Title", None))
 
+    def test_accepts_wrong_qualifier_name_when_candidate_credits_the_expected_artist(self):
+        # Real report: "KASSIN - Crazy (MRET Remix).wav" - the filename's
+        # own remix name ("MRET") was simply wrong; the real SoundCloud
+        # upload is "Crazy (KASSIN Remix)" by uploader KASSIN, i.e. the
+        # artist's own remix. The artist match alone (KASSIN, already
+        # expected) should be enough to accept it despite the qualifier
+        # name mismatch, instead of rejecting it as "some other remix".
+        tracks = [self._track("Crazy (KASSIN Remix)", "KASSIN")]
+
+        def fake_get(url, headers=None, params=None, timeout=None):
+            if "api.soundcloud.com" in url:
+                return self.FakeResponse(200, tracks)
+            return self.FakeResponse(200, content=b"fake-image-bytes")
+
+        tagger.requests.get = fake_get
+        result = tagger.search_cover_soundcloud("KASSIN", "Crazy (MRET Remix)", "token")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result[2], "Crazy (KASSIN Remix)")
+
 
 class IdentifyViaAcoustidTests(unittest.TestCase):
     """identify_via_acoustid() - last-resort audio-content identification

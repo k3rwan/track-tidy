@@ -3674,7 +3674,18 @@ def search_cover_soundcloud(artist, title, token, log=safe_print):
             # actually show up somewhere (track title or uploader), not just
             # the base song.
             if qualifier_words and not (qualifier_words & significant_words(f"{track_title} {uploader_name}")):
-                continue
+                # Our own qualifier name might simply be wrong (a typo, or a
+                # mislabeled filename) rather than a different remix - if the
+                # CANDIDATE's own named qualifier already credits someone in
+                # our own artist field, that's independent confirmation this
+                # is the right upload despite the name mismatch. Real report:
+                # "KASSIN - Crazy (MRET Remix)" for a track that's actually
+                # SoundCloud's own "Crazy (KASSIN Remix)" by uploader KASSIN -
+                # "MRET" was simply a wrong remix name in the filename, but
+                # the artist credit alone already confirms the upload.
+                candidate_named_groups = find_named_qualifier_groups(track_title)
+                if not any(_qualifier_names_already_expected(group, artist) for group in candidate_named_groups):
+                    continue
 
             cover_url = result.get("artwork_url")
             if not cover_url:
