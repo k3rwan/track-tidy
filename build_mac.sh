@@ -129,7 +129,7 @@ echo
 echo "Building the .dmg..."
 mkdir -p installer_output
 APP_VERSION="$(python3 -c "import track_tidy; print(track_tidy.APP_VERSION)")"
-DMG_NAME="installer_output/Track-Tidy-Setup-v${APP_VERSION}.dmg"
+DMG_NAME="installer_output/Track-Tidy-Setup-${APP_VERSION}.dmg"
 rm -f "$DMG_NAME"
 hdiutil create -volname "Track Tidy" -srcfolder "dist/Track-Tidy.app" -ov -format UDZO "$DMG_NAME"
 

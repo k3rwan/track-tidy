@@ -1192,7 +1192,7 @@ class TaggerInterface:
             open_page = messagebox.askyesno(
                 "Update available",
                 f"A new version ({latest_version}) of Track-Tidy is available "
-                f"(you have v{tagger.APP_VERSION}).\n\nOpen the download page?",
+                f"(you have {tagger.APP_VERSION}).\n\nOpen the download page?",
                 parent=self.window,
             )
             if open_page:
@@ -1202,7 +1202,7 @@ class TaggerInterface:
         update_now = messagebox.askyesno(
             "Update available",
             f"A new version ({latest_version}) of Track-Tidy is available "
-            f"(you have v{tagger.APP_VERSION}).\n\n"
+            f"(you have {tagger.APP_VERSION}).\n\n"
             "Download and install it now? Track Tidy will close to finish the update.",
             parent=self.window,
         )
@@ -1403,7 +1403,7 @@ class TaggerInterface:
         self.notebook = ttk.Notebook(self.window)
         self.notebook.pack(fill="both", expand=True)
 
-        version_label = ttk.Label(self.window, text=f"v{tagger.APP_VERSION}", foreground="#999999")
+        version_label = ttk.Label(self.window, text=tagger.APP_VERSION, foreground="#999999")
         version_label.place(relx=1.0, rely=1.0, x=-6, y=-4, anchor="se")
 
         tagger_tab = ttk.Frame(self.notebook)
@@ -4478,7 +4478,7 @@ class TaggerInterface:
                         self._offer_update(latest_version, release_url, installer_url, expected_sha256)
                     elif latest_version:
                         messagebox.showinfo(
-                            "Up to date", f"You already have the latest version (v{tagger.APP_VERSION}).",
+                            "Up to date", f"You already have the latest version ({tagger.APP_VERSION}).",
                             parent=self.window,
                         )
                     else:

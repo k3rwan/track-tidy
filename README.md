@@ -73,12 +73,12 @@ understand the hesitation. A few things that should help:
 
 **Windows**
 1. Go to [Releases](../../releases/latest)
-2. Download `Track-Tidy-Setup-v*.exe`
+2. Download `Track-Tidy-Setup-*.exe`
 3. Run it and follow the prompts
 
 **macOS** (Apple Silicon)
 1. Go to [Releases](../../releases/latest)
-2. Download `Track-Tidy-Setup-v*.dmg`
+2. Download `Track-Tidy-Setup-*.dmg`
 3. Open it and drag Track Tidy into Applications
 4. First launch: right-click the app → Open (it's not notarized yet, so
    Gatekeeper will warn about an "unidentified developer" the first time)
