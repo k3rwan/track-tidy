@@ -693,7 +693,13 @@ def send_track_report(info, reporter_name=None, timeout=10):
 # complete" Discord pings below. Case-insensitive. Doesn't apply to
 # send_track_report() - that one's an explicit user action ("Report this
 # track"), not automatic telemetry.
-DISCORD_NOTIFICATION_EXCLUDED_USERS = set()
+#
+# Empty for a real (frozen/installed) build - Kevin's own account gets
+# notified like any other user there, by his own request. Running from
+# source (not frozen - i.e. `python interface.py` during development)
+# still excludes "kevin" though, so day-to-day dev testing doesn't spam
+# the channel the way it used to before that request.
+DISCORD_NOTIFICATION_EXCLUDED_USERS = set() if getattr(sys, "frozen", False) else {"kevin"}
 
 
 def _is_discord_notification_excluded(reporter_name):
