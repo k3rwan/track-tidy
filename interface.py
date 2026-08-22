@@ -116,6 +116,10 @@ SCAN_REVEAL_INTERVAL_MS = 1000
 # for now (see _enforce_track_count_limit).
 MAX_TRACKS_PER_SCAN = 100
 
+# Above this fraction of no-cover-match tracks in a scanned folder,
+# nudge the user toward "Report track..." - see _finalize_scan.
+NO_COVER_REPORT_THRESHOLD = 0.10
+
 THUMBNAIL_SIZE = (44, 44)
 TABLE_ROW_HEIGHT = 48
 # Widened from the original 500px so the bigger thumbnails and wider
@@ -2420,6 +2424,20 @@ class TaggerInterface:
             ]
             if no_cover_infos:
                 self._append_to_journal(f"{len(no_cover_infos)} track(s) currently have no cover match.")
+
+                # Unusually high miss rate for this folder - nudge toward
+                # "Report track..." (right-click a row) instead of just
+                # leaving it buried in the log, since reported tracks are
+                # what actually improve future matching.
+                if len(no_cover_infos) / len(self.scanned_plan) > NO_COVER_REPORT_THRESHOLD:
+                    messagebox.showinfo(
+                        "Several tracks with no cover match",
+                        f"{len(no_cover_infos)} of {len(self.scanned_plan)} tracks in this "
+                        "folder have no cover match yet.\n\n"
+                        "If you spot one that should have matched, right-click it and choose "
+                        "\"Report track...\" - it helps improve future matches.",
+                        parent=self.window,
+                    )
 
             # Skip the Discord ping for a no-op rescan (nothing new,
             # nothing removed) - otherwise repeatedly clicking Scan on an
