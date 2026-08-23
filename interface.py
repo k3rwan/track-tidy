@@ -2709,17 +2709,20 @@ class TaggerInterface:
 
             if query and query not in searchable:
                 continue
-            # Deliberately NOT has_usable_cover() here (unlike the post-scan
-            # no-cover count/Discord report, which still use it) - this
-            # filter means "did an online search actually find something",
-            # not "will the final file end up with some cover or other". A
-            # track that kept its existing (perfectly fine, non-banned)
-            # cover only because the online search found nothing still
-            # belongs in this list - that's a real matching failure worth
-            # reviewing, just one that happens to have a fallback cover to
-            # hide behind. Real report: exactly this case (kept its own
-            # cover, no online match) was invisible in the filter.
-            if no_cover_only and info.get("found_cover_image"):
+            # Deliberately NOT has_usable_cover() here - this filter means
+            # "did an online search actually find something", not "will the
+            # final file end up with some cover or other". A track that
+            # kept its existing (perfectly fine, non-banned) cover only
+            # because the online search found nothing still belongs in this
+            # list - that's a real matching failure worth reviewing, just
+            # one that happens to have a fallback cover to hide behind.
+            # Real report: exactly this case (kept its own cover, no online
+            # match) was invisible in the filter. already_applied rows are
+            # still excluded below though (see _run_scan's no_cover_infos,
+            # kept in sync with this filter on purpose) - no search was
+            # even ATTEMPTED for those, so they're not "a search that found
+            # nothing" at all.
+            if no_cover_only and (info.get("found_cover_image") or info.get("already_applied")):
                 hidden_with_cover += 1
                 continue
 
@@ -2887,9 +2890,18 @@ class TaggerInterface:
             # (non-banned) cover with no online match at all. Keeping both
             # in sync avoids a confusing mismatch between what the filter
             # shows and what this count (and the Discord report below) say.
+            # already_applied rows are excluded too - unlike a genuine
+            # search-came-up-empty row, no search was even ATTEMPTED for
+            # these (skipped entirely, see scan_files), so they don't
+            # belong in a "no cover match" count at all. Real report:
+            # rescanning a folder of already-fully-tagged tracks (search
+            # skipped for all of them) still logged "N track(s) currently
+            # have no cover match" for every one of them, which read as
+            # "none of these have a cover" even though they all did.
             no_cover_infos = [
                 info for info in self.scanned_plan
                 if not info.get("processed") and not info.get("found_cover_image")
+                and not info.get("already_applied")
             ]
             if no_cover_infos:
                 self._append_to_journal(f"{len(no_cover_infos)} track(s) currently have no cover match.")
