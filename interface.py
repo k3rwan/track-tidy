@@ -3237,10 +3237,21 @@ class TaggerInterface:
         # it (title_override no longer None, whether they kept it or
         # corrected it).
         acoustid_marker = " 🎧" if info.get("acoustid_identified") and info["title_override"] is None else ""
+        # Same "no cover match" criterion as the post-scan count/filter (see
+        # _run_scan's no_cover_infos / _apply_table_filter) - a genuine
+        # search miss, not a file whose search was skipped because it's
+        # already fully tagged. Cleared once reviewed (title_override set),
+        # same as the AcoustID marker just above.
+        no_cover_marker = (
+            " ⚠️"
+            if not info.get("found_cover_image") and not info.get("already_applied")
+            and info["title_override"] is None
+            else ""
+        )
 
         if info.get("processed"):
             displayed_title = info["title_override"] or info["detected_title"] or "?"
-            displayed_title += acoustid_marker
+            displayed_title += acoustid_marker + no_cover_marker
             displayed_artist = info["artist_override"]
             if displayed_artist is None:
                 displayed_artist = info["detected_artist"] if info["detected_artist"] else "(empty)"
@@ -3276,7 +3287,7 @@ class TaggerInterface:
         if info["title_override"] is not None:
             displayed_title = info["title_override"]
         elif apply:
-            displayed_title = (info["detected_title"] or "?") + acoustid_marker
+            displayed_title = (info["detected_title"] or "?") + acoustid_marker + no_cover_marker
         else:
             displayed_title = info["current_title"] or "(empty)"
 
