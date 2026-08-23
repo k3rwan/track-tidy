@@ -3810,8 +3810,29 @@ class TaggerInterface:
                     f"Locate {'it' if count == 1 else 'them, one at a time,'} manually?",
                     parent=dialog,
                 )
+                # Once the user locates ONE moved file, its folder is a
+                # strong hint for the rest - a library reorganized into a
+                # new folder usually moved everything together, not just
+                # this one track. Auto-checks that folder (recursively,
+                # same bounded search restore_history_entry itself already
+                # does for the originally-logged folder) for each remaining
+                # not-found entry's expected filename before bothering the
+                # user with another picker for it.
+                located_folder = None
                 for entry, display_name in not_found:
-                    chosen = filedialog.askopenfilename(title=f"Locate '{display_name}'", parent=dialog) if locate else None
+                    chosen = None
+                    if locate and located_folder:
+                        expected_name = os.path.basename(entry.get("new_file") or entry.get("old_file") or "")
+                        auto_found = tagger._find_file_by_name(located_folder, expected_name) if expected_name else None
+                        if auto_found:
+                            chosen = auto_found
+                            self._append_to_journal(
+                                f"  Found '{display_name}' automatically in the same folder."
+                            )
+                    if chosen is None and locate:
+                        chosen = filedialog.askopenfilename(title=f"Locate '{display_name}'", parent=dialog)
+                        if chosen:
+                            located_folder = os.path.dirname(chosen)
                     if chosen:
                         try:
                             tagger.restore_history_entry(entry, log=self._append_to_journal, override_path=chosen)
