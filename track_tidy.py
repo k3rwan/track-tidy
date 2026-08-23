@@ -3318,17 +3318,22 @@ def split_artist_names(text):
     real AcoustID-identified artist string ("Alonzo Feat. Tiakola") being
     rejected as "not the same artist" as a store's own "Alonzo, Tiakola".
 
-    Deliberately does NOT split on "_" - tried that (some sources join
-    collaborating artists with a bare underscore instead of "&"/","/space,
-    e.g. "Amine Edge_Aguilar (Italy) - From The Storm"), but it directly
-    breaks the already-tested, deliberate tolerance for an underscore that's
-    really a SANITIZED COLON inside a single artist's own name (e.g.
+    Does NOT split on a bare "_" in general - some sources join collaborating
+    artists with a bare underscore instead of "&"/","/space (e.g. "Amine
+    Edge_Aguilar (Italy) - From The Storm"), but blindly splitting on every
+    "_" breaks the already-tested, deliberate tolerance for an underscore
+    that's really a SANITIZED COLON inside a single artist's own name (e.g.
     "BLOND:ISH" -> "BLOND_ISH" via sanitize_filename() - see
     strip_sanitized_chars() and test_artist_sets_match_tolerates_sanitized_
-    colon). The two cases are indistinguishable from the string alone, and
-    breaking a real, working artist's name is worse than missing one
-    oddly-formatted collab filename.
+    colon). The two cases are indistinguishable from the string alone in
+    general - EXCEPT one specific, safe shape: an underscore immediately
+    followed by "<name> (<disambiguator>)" running to the end of the string
+    (a second artist, itself further disambiguated the same way SOMMERS
+    (UK) is two lines below) - a sanitized-colon name never has a trailing
+    parenthetical right after the underscore, so this narrow case is
+    treated as a separator while every other "_" is left untouched.
     """
+    text = re.sub(r"_(?=[^_()]+\([^()]*\)\s*$)", " & ", text)
     parts = re.split(r"\s*(?:,|&|/|\bx\b|\bvs\b|\bfeat\b\.?|\bft\b\.?|\band\b)\s*", text, flags=re.IGNORECASE)
     names = set()
     for part in parts:
