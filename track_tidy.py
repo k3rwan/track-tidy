@@ -1065,9 +1065,10 @@ def restore_history_entry(entry, log=safe_print, override_path=None):
     A WAV->AIFF conversion (see convert_wav_to_aiff) is reverted back to WAV
     too, since that's a lossless byte-order swap with nothing actually lost -
     unlike a conversion to MP3 (a real re-encode), which isn't reversible,
-    so the file just keeps its current format/extension in that case. Either
-    way, the file is renamed to match the restored artist/title if both are
-    known.
+    so the file just keeps its current format/extension in that case. The
+    file is then renamed back to its logged "old_file" name (falling back to
+    reconstructing "Artist - Title" from old_artist/old_title only for an
+    entry logged before "old_file" existed).
 
     Returns the file's new absolute path (unchanged if it wasn't renamed) -
     absolute rather than relative-to-folder, since override_path/the
@@ -1131,16 +1132,38 @@ def restore_history_entry(entry, log=safe_print, override_path=None):
     )
     log(f"  Restored tags on: '{full_path}'")
 
-    if old_artist and old_title:
-        # Derived from full_path's actual current directory, not the
-        # originally-logged one - matters when the file was found via
-        # override_path or the auto-locate search above, since either can
-        # put it somewhere other than "folder".
-        actual_folder = os.path.dirname(full_path)
-        extension = os.path.splitext(full_path)[1]
-        new_base_name = sanitize_filename(build_display_name(old_artist, old_title)) + extension
-        new_full_path = os.path.join(actual_folder, new_base_name)
+    # Derived from full_path's actual current directory, not the
+    # originally-logged one - matters when the file was found via
+    # override_path or the auto-locate search above, since either can put
+    # it somewhere other than "folder".
+    actual_folder = os.path.dirname(full_path)
+    # full_path's OWN current extension, not old_file's - they only differ
+    # if the WAV->AIFF revert above was attempted but failed, in which case
+    # the file is still actually AIFF and naming it "....wav" would lie
+    # about its real format.
+    current_extension = os.path.splitext(full_path)[1]
 
+    old_file = entry.get("old_file")
+    if old_file:
+        # The exact original filename this entry logged, rather than
+        # reconstructed as "Artist - Title" from old_artist/old_title -
+        # covers a file that had no tags at all before Apply (old_artist/
+        # old_title then both empty, so there was nothing to reconstruct
+        # from and this rename used to be skipped entirely - a real
+        # user-reported bug: "restore" left renamed files renamed) as well
+        # as a file whose original name never followed that convention in
+        # the first place.
+        old_base_name = os.path.splitext(os.path.basename(old_file))[0]
+        new_base_name = sanitize_filename(old_base_name) + current_extension
+    elif old_artist or old_title:
+        # Older history entries logged before "old_file" existed - fall
+        # back to the previous reconstruction.
+        new_base_name = sanitize_filename(build_display_name(old_artist, old_title)) + current_extension
+    else:
+        new_base_name = None
+
+    if new_base_name:
+        new_full_path = os.path.join(actual_folder, new_base_name)
         if new_full_path != full_path:
             os.rename(full_path, new_full_path)
             log(f"  Restored and renamed to: '{new_full_path}'")
