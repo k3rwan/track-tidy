@@ -1,12 +1,5 @@
 <p align="center">
-  <img src="screenshots/icon.png" width="80" alt="Track Tidy icon">
-</p>
-
-<h1 align="center">Track Tidy</h1>
-
-<p align="center">
-  Free desktop app that auto-tags your DJ library: artist, title, and cover art -
-  looked up automatically, no manual retagging.
+  <img src="assets/banner.png" alt="Track Tidy - auto-tags your DJ library: artist, title, and cover art, found automatically." width="700">
 </p>
 
 <p align="center">
