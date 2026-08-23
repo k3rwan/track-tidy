@@ -16,6 +16,7 @@ import getpass
 import io
 import os
 import re
+import socket
 import sys
 import subprocess
 import tempfile
@@ -77,6 +78,32 @@ def play_short_sound(path):
         winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
     else:
         subprocess.run(["afplay", path])
+
+
+# Arbitrary fixed high port, unlikely to collide with anything else -
+# bound for the app's entire lifetime purely as a mutex (nothing ever
+# connects to it). Kept alive by _SINGLE_INSTANCE_LOCK holding a reference
+# to the socket so it isn't garbage-collected (which would close it).
+SINGLE_INSTANCE_PORT = 51793
+_SINGLE_INSTANCE_LOCK = None
+
+
+def acquire_single_instance_lock():
+    """Returns True if this is the only running instance of the app, False
+    if another one already holds the lock (e.g. the user double-clicked the
+    shortcut/exe more than once) - binding a local TCP socket is a simple,
+    dependency-free mutex that works the same way on Windows/macOS/Linux and
+    is automatically released by the OS if the process ever dies without
+    cleaning up."""
+    global _SINGLE_INSTANCE_LOCK
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", SINGLE_INSTANCE_PORT))
+    except OSError:
+        sock.close()
+        return False
+    _SINGLE_INSTANCE_LOCK = sock  # keep it alive/bound for the app's lifetime
+    return True
 
 
 def resource_path(filename):
@@ -293,6 +320,13 @@ class TaggerInterface:
         # (different tabs, nothing stops both running at once), so sharing
         # one Event would let cancelling one spuriously cancel the other.
         self.extract_cancel_requested = threading.Event()
+        # Remembers the folder the user last manually located a moved
+        # history file in (see restore_selected in the History window) -
+        # kept at the app level, not just for one Restore call, since a
+        # user restoring several moved tracks one at a time (not all
+        # selected together) should still benefit from it on the 2nd, 3rd...
+        # track, not just within a single multi-select batch.
+        self._history_restore_located_folder = None
         self.scanned_plan = []
         self.tk_images = {}  # keeps a reference to PhotoImages (otherwise Tkinter clears them)
         self.tk_images_hover = {}  # same thumbnails, with a magnifier badge - built lazily on first hover
@@ -324,6 +358,17 @@ class TaggerInterface:
         self.theme_var = tk.StringVar(value=saved_theme)
 
         saved_settings = tagger.load_settings()
+
+        # Restores the last folder explicitly chosen via Browse... (see
+        # _choose_folder, which is also the only place that saves it) - not
+        # a folder only ever reached by drag-and-drop, which by design never
+        # touches this field. Silently ignored if the folder's gone (moved,
+        # deleted, a different drive not connected right now) - the field
+        # just starts empty like it always used to, no error shown for it.
+        saved_music_folder = saved_settings.get("music_folder", "")
+        if saved_music_folder and os.path.isdir(saved_music_folder):
+            tagger.MUSIC_FOLDER = saved_music_folder
+
         self.auto_convert_var = tk.BooleanVar(value=saved_settings.get("auto_convert_mp3", False))
         self.auto_convert_wav_aiff_var = tk.BooleanVar(value=saved_settings.get("auto_convert_wav_to_aiff", True))
         self.fix_track_file_name_var = tk.BooleanVar(value=saved_settings.get("fix_track_file_name", True))
@@ -390,6 +435,7 @@ class TaggerInterface:
         choice = self.theme_var.get()
         self._apply_theme(self._resolve_theme_choice(choice))
         tagger.save_setting("theme", choice)
+        tagger.log_action(f"Theme changed to '{choice}'")
         if choice == "auto":
             self._schedule_auto_theme_recheck()
 
@@ -435,6 +481,7 @@ class TaggerInterface:
             )
         tagger.AUTO_CONVERT_MP3 = enabled
         tagger.save_setting("auto_convert_mp3", enabled)
+        tagger.log_action(f"Convert everything to MP3: {enabled}")
 
     def _on_auto_convert_wav_aiff_changed(self):
         enabled = self.auto_convert_wav_aiff_var.get()
@@ -451,16 +498,19 @@ class TaggerInterface:
             )
         tagger.AUTO_CONVERT_WAV_TO_AIFF = enabled
         tagger.save_setting("auto_convert_wav_to_aiff", enabled)
+        tagger.log_action(f"Convert WAV to AIFF: {enabled}")
 
     def _on_fix_track_file_name_changed(self):
         enabled = self.fix_track_file_name_var.get()
         tagger.FIX_TRACK_FILE_NAME = enabled
         tagger.save_setting("fix_track_file_name", enabled)
+        tagger.log_action(f"Fix track file name: {enabled}")
 
     def _on_use_spotify_changed(self):
         enabled = self.use_spotify_var.get()
         tagger.USE_SPOTIFY = enabled
         tagger.save_setting("use_spotify", enabled)
+        tagger.log_action(f"Use Spotify: {enabled}")
 
     def _reset_settings_to_default(self):
         """Restores every Settings-tab option to its out-of-the-box value.
@@ -477,6 +527,7 @@ class TaggerInterface:
 
         for key, value in tagger.DEFAULT_SETTINGS.items():
             tagger.save_setting(key, value)
+        tagger.log_action("All settings reset to default")
 
         tagger.AUTO_CONVERT_MP3 = False
         tagger.AUTO_CONVERT_WAV_TO_AIFF = True
@@ -498,6 +549,7 @@ class TaggerInterface:
     def _on_show_log_changed(self):
         enabled = self.show_log_var.get()
         tagger.save_setting("show_log_section", enabled)
+        tagger.log_action(f"Show log section: {enabled}")
 
         if enabled:
             if not self.journal_toggle.winfo_ismapped():
@@ -1352,6 +1404,7 @@ class TaggerInterface:
             messagebox.showerror("Update failed", f"Could not launch the installer: {error}", parent=self.window)
             return
 
+        tagger.log_action(f"Update installer launched: '{os.path.basename(dest_path)}'")
         self.window.destroy()
 
     # --- Startup checks ---
@@ -1414,7 +1467,7 @@ class TaggerInterface:
 
         self.notebook.select(0)
         self._set_buttons_enabled(False)
-        self._launch_scan_after_already_applied_check(explicit_files=capped_files if truncated else None)
+        self._launch_scan_after_already_scanned_check(explicit_files=capped_files if truncated else None)
 
     def _start_multi_file_scan(self, file_paths):
         """Drop of one or more individual audio files: tags just those
@@ -1762,7 +1815,8 @@ class TaggerInterface:
         )
         self.auto_convert_wav_aiff_checkbox.pack(anchor="w", padx=10, pady=(0, 0))
         ttk.Checkbutton(
-            behavior_frame, text="Fix track file name", variable=self.fix_track_file_name_var,
+            behavior_frame, text="Fix track file name (renaming can break Rekordbox's link to the file)",
+            variable=self.fix_track_file_name_var,
             command=self._on_fix_track_file_name_changed,
         ).pack(anchor="w", padx=10, pady=(0, 0))
         ttk.Checkbutton(
@@ -2017,6 +2071,7 @@ class TaggerInterface:
             self._refresh_tagger_buttons_for_connectivity()
 
             tagger.MUSIC_FOLDER = folder
+            tagger.save_setting("music_folder", folder)
             file_count = len(tagger.list_audio_files())
             unit = "audio file" if file_count == 1 else "audio files"
             self._append_to_journal(f"Selected folder contains {file_count} {unit}.")
@@ -2262,29 +2317,31 @@ class TaggerInterface:
 
         self._set_buttons_enabled(False)
 
-        self._launch_scan_after_already_applied_check(explicit_files=capped_files if truncated else None)
+        self._launch_scan_after_already_scanned_check(explicit_files=capped_files if truncated else None)
 
-    def _launch_scan_after_already_applied_check(self, explicit_files=None):
+    def _launch_scan_after_already_scanned_check(self, explicit_files=None):
         """Runs right before every folder-level scan actually starts
         (Scan button, drag-a-folder) - NOT the single-dropped-file case,
         which has no "folder" to ask about. A cheap local-only precheck
-        (tag/cover reads only, no network - same cost class as
-        _choose_folder's own synchronous list_audio_files() call, so
-        blocking the main thread briefly here is consistent with existing
-        behavior) via tagger.find_already_applied_files() finds any file
-        this scan is about to touch that already looks fully applied (see
-        track_tidy.py's _is_already_applied). If there's at least one,
-        asks whether to rescan those too (unchanged behavior - they're
-        still skipped online, just re-added to the table) or skip them
-        entirely this time, before the real (network-calling) scan is
-        handed off to a background thread as usual."""
+        (same cost class as _choose_folder's own synchronous
+        list_audio_files() call, so blocking the main thread briefly here
+        is consistent with existing behavior) via
+        tagger.find_already_scanned_files() finds any file this scan is
+        about to touch that has already been scanned before (see
+        track_tidy.py's SCAN_HISTORY_FILE - this is broader than "already
+        applied": it also catches a file the user reviewed and left
+        unchecked last time, not just one Apply actually wrote). If
+        there's at least one, offers a choice - scan only the new ones
+        (default) or rescan everything - before the real (network-
+        calling) scan is handed off to a background thread as usual."""
         known_files = {info["file"] for info in self.scanned_plan}
         if explicit_files is not None:
             candidate_files = sorted(set(explicit_files) - known_files)
         else:
             candidate_files = sorted(set(tagger.list_audio_files()) - known_files)
 
-        already_applied_files = set(tagger.find_already_applied_files(candidate_files))
+        already_scanned_files = set(tagger.find_already_scanned_files(candidate_files))
+        new_files = [f for f in candidate_files if f not in already_scanned_files]
 
         # Stays whatever the caller passed in (None for every current
         # caller) unless the user actually chooses to filter something
@@ -2296,31 +2353,96 @@ class TaggerInterface:
         # silently lose that removed-file detection for no reason.
         files_to_scan = explicit_files
 
-        if already_applied_files:
-            count = len(already_applied_files)
-            unit = "track" if count == 1 else "tracks"
-            rescan = messagebox.askyesno(
-                "Already-tagged tracks found",
-                f"{count} {unit} in this folder already look{'s' if count == 1 else ''} fully "
-                "tagged (a cover and complete Artist/Title already there - from a previous "
-                "Apply, or tagged elsewhere already).\n\n"
-                "Rescan them too? Either way they won't be searched online again - choosing "
-                "\"No\" just skips adding them to the list at all this time.",
-                parent=self.window,
-            )
-            if not rescan:
-                files_to_scan = [f for f in candidate_files if f not in already_applied_files]
+        if already_scanned_files:
+            choice = self._ask_scan_mode(len(already_scanned_files), len(new_files))
+            if choice is None:
+                self._set_buttons_enabled(True)
+                return
+            if choice == "new_only":
+                files_to_scan = new_files
                 if not files_to_scan:
                     self._set_buttons_enabled(True)
                     messagebox.showinfo(
-                        "Nothing to scan",
-                        "Every track in this folder is already tagged - nothing left to scan.",
+                        "Nothing new to scan",
+                        "Every track in this folder has already been scanned before.",
                         parent=self.window,
                     )
                     return
 
         self._show_scan_progress_bar()
         self._run_in_background(self._run_scan, files_to_scan)
+
+    def _ask_scan_mode(self, already_scanned_count, new_count):
+        """Small choice dialog shown when some of the files about to be
+        scanned have already been scanned before - "Scan only new tracks"
+        is always the pre-selected default (even with zero new tracks;
+        clicking Scan as-is then just shows "Nothing new to scan" - see the
+        caller). Returns "new_only" or "all", or None if cancelled."""
+        result = {"choice": None}
+
+        dialog = tk.Toplevel(self.window)
+        self._style_toplevel(dialog)
+        dialog.title("Some tracks already scanned")
+        dialog.resizable(False, False)
+        dialog.transient(self.window)
+
+        unit = "track" if already_scanned_count == 1 else "tracks"
+        verb = "has" if already_scanned_count == 1 else "have"
+        ttk.Label(
+            dialog,
+            text=f"{already_scanned_count} {unit} in this folder {verb} already been "
+                 "scanned before.",
+            justify="left", wraplength=380, padding=(20, 20, 20, 10),
+        ).pack()
+
+        # Always pre-selected, even when there happen to be zero new tracks -
+        # clicking "Scan" as-is then just shows the "Nothing new to scan"
+        # info dialog (see the caller), which is a clearer outcome than
+        # silently switching the default to "Rescan everything" underneath
+        # the user without them choosing that.
+        choice_var = tk.StringVar(value="new_only")
+        options_frame = ttk.Frame(dialog)
+        options_frame.pack(fill="x", padx=20, pady=(0, 5))
+        ttk.Radiobutton(
+            options_frame, text=f"Scan only new tracks ({new_count})",
+            variable=choice_var, value="new_only",
+        ).pack(anchor="w", pady=2)
+        ttk.Radiobutton(
+            options_frame, text="Rescan everything", variable=choice_var, value="all",
+        ).pack(anchor="w", pady=2)
+
+        def confirm():
+            result["choice"] = choice_var.get()
+            dialog.destroy()
+
+        def cancel():
+            dialog.destroy()
+
+        dialog.protocol("WM_DELETE_WINDOW", cancel)
+
+        button_row = ttk.Frame(dialog)
+        button_row.pack(pady=(5, 15))
+        scan_button = ttk.Button(button_row, text="Scan", command=confirm, width=12)
+        scan_button.pack(side="left", padx=5)
+        ttk.Button(button_row, text="Cancel", command=cancel, width=12).pack(side="left", padx=5)
+
+        self._center_dialog(dialog)
+        # grab_set()/focus deliberately deferred until AFTER the dialog is
+        # actually mapped (_center_dialog's deiconify()) rather than right
+        # after creation like most of this app's other dialogs - those
+        # don't block on wait_window() for their result, so a grab that
+        # doesn't fully "stick" on a not-yet-viewable window goes unnoticed
+        # (the OK/single button still works via normal focus). This dialog's
+        # whole return value depends on a click actually registering, so it
+        # gets the extra explicit focus_force()/focus_set() below. (NOT
+        # wait_visibility() first - tried that, it can block for a long time
+        # waiting for a Visibility event that isn't always delivered
+        # promptly, which is worse than the problem it was meant to fix.)
+        dialog.grab_set()
+        dialog.focus_force()
+        scan_button.focus_set()
+        dialog.wait_window()
+        return result["choice"]
 
     def _show_scan_progress_bar(self):
         """Shows the same progress bar Apply uses (progress_canvas, right
@@ -2359,6 +2481,7 @@ class TaggerInterface:
 
             def _on_file_scanned(info):
                 scanned_count["value"] += 1
+                tagger.mark_file_scanned(info["file"])
                 # Not displayed the instant it's ready - see
                 # _reveal_next_scan_row(): queued here so the TABLE reveals
                 # tracks no faster than SCAN_REVEAL_INTERVAL_MS apart, while
@@ -2605,17 +2728,20 @@ class TaggerInterface:
 
             if query and query not in searchable:
                 continue
-            # Deliberately NOT has_usable_cover() here (unlike the post-scan
-            # no-cover count/Discord report, which still use it) - this
-            # filter means "did an online search actually find something",
-            # not "will the final file end up with some cover or other". A
-            # track that kept its existing (perfectly fine, non-banned)
-            # cover only because the online search found nothing still
-            # belongs in this list - that's a real matching failure worth
-            # reviewing, just one that happens to have a fallback cover to
-            # hide behind. Real report: exactly this case (kept its own
-            # cover, no online match) was invisible in the filter.
-            if no_cover_only and info.get("found_cover_image"):
+            # Deliberately NOT has_usable_cover() here - this filter means
+            # "did an online search actually find something", not "will the
+            # final file end up with some cover or other". A track that
+            # kept its existing (perfectly fine, non-banned) cover only
+            # because the online search found nothing still belongs in this
+            # list - that's a real matching failure worth reviewing, just
+            # one that happens to have a fallback cover to hide behind.
+            # Real report: exactly this case (kept its own cover, no online
+            # match) was invisible in the filter. already_applied rows are
+            # still excluded below though (see _run_scan's no_cover_infos,
+            # kept in sync with this filter on purpose) - no search was
+            # even ATTEMPTED for those, so they're not "a search that found
+            # nothing" at all.
+            if no_cover_only and (info.get("found_cover_image") or info.get("already_applied")):
                 hidden_with_cover += 1
                 continue
 
@@ -2783,9 +2909,18 @@ class TaggerInterface:
             # (non-banned) cover with no online match at all. Keeping both
             # in sync avoids a confusing mismatch between what the filter
             # shows and what this count (and the Discord report below) say.
+            # already_applied rows are excluded too - unlike a genuine
+            # search-came-up-empty row, no search was even ATTEMPTED for
+            # these (skipped entirely, see scan_files), so they don't
+            # belong in a "no cover match" count at all. Real report:
+            # rescanning a folder of already-fully-tagged tracks (search
+            # skipped for all of them) still logged "N track(s) currently
+            # have no cover match" for every one of them, which read as
+            # "none of these have a cover" even though they all did.
             no_cover_infos = [
                 info for info in self.scanned_plan
                 if not info.get("processed") and not info.get("found_cover_image")
+                and not info.get("already_applied")
             ]
             if no_cover_infos:
                 self._append_to_journal(f"{len(no_cover_infos)} track(s) currently have no cover match.")
@@ -3121,10 +3256,21 @@ class TaggerInterface:
         # it (title_override no longer None, whether they kept it or
         # corrected it).
         acoustid_marker = " 🎧" if info.get("acoustid_identified") and info["title_override"] is None else ""
+        # Same "no cover match" criterion as the post-scan count/filter (see
+        # _run_scan's no_cover_infos / _apply_table_filter) - a genuine
+        # search miss, not a file whose search was skipped because it's
+        # already fully tagged. Cleared once reviewed (title_override set),
+        # same as the AcoustID marker just above.
+        no_cover_marker = (
+            " ⚠️"
+            if not info.get("found_cover_image") and not info.get("already_applied")
+            and info["title_override"] is None
+            else ""
+        )
 
         if info.get("processed"):
             displayed_title = info["title_override"] or info["detected_title"] or "?"
-            displayed_title += acoustid_marker
+            displayed_title += acoustid_marker + no_cover_marker
             displayed_artist = info["artist_override"]
             if displayed_artist is None:
                 displayed_artist = info["detected_artist"] if info["detected_artist"] else "(empty)"
@@ -3160,7 +3306,7 @@ class TaggerInterface:
         if info["title_override"] is not None:
             displayed_title = info["title_override"]
         elif apply:
-            displayed_title = (info["detected_title"] or "?") + acoustid_marker
+            displayed_title = (info["detected_title"] or "?") + acoustid_marker + no_cover_marker
         else:
             displayed_title = info["current_title"] or "(empty)"
 
@@ -3529,6 +3675,7 @@ class TaggerInterface:
 
         EMPTY_ROW_ID = "__history_empty_row__"
         entries_by_parent = {}
+        group_children = {}  # group row id -> list of its track-level (old-info) row ids
 
         def matches_query(entry, query):
             haystack = " ".join(str(entry.get(key) or "") for key in (
@@ -3540,6 +3687,7 @@ class TaggerInterface:
             for row in tree.get_children():
                 tree.delete(row)
             entries_by_parent.clear()
+            group_children.clear()
 
             if getattr(history_filter_entry, "placeholder_active", False):
                 query = ""
@@ -3566,33 +3714,73 @@ class TaggerInterface:
 
             tree.column("#0", width=140)
 
-            for index, entry in enumerate(entries):
-                timestamp = entry.get("timestamp", "")
-                try:
-                    date_display = datetime.fromisoformat(timestamp).astimezone().strftime("%Y-%m-%d %H:%M")
-                except ValueError:
-                    date_display = timestamp
+            # Entries from the same Apply run share a "run_id" (see
+            # process_files/log_history_entry) and are already contiguous
+            # here (load_history_entries is reverse-chronological) - group
+            # them under one "Scan" row instead of listing each track as an
+            # unrelated one-off entry. A run of just one track (or an entry
+            # logged before run_id existed, which has none) stays at the top
+            # level exactly as before - a group wrapper around a single
+            # track would just be extra clicking for nothing.
+            groups = []
+            current_key = object()
+            for entry in entries:
+                key = entry.get("run_id") or entry.get("id")
+                if key != current_key:
+                    groups.append([])
+                    current_key = key
+                groups[-1].append(entry)
 
-                tag = "even_row" if index % 2 == 0 else "odd_row"
-                parent_id = tree.insert(
-                    "", "end", text=date_display,
-                    values=(
-                        entry.get("old_file", ""), entry.get("old_artist") or "-", entry.get("old_title") or "-",
-                        "", "",
-                    ),
-                    tags=(tag,),
-                )
-                tree.insert(
-                    parent_id, "end", text="↳ Restored" if entry.get("restored") else "↳ Applied",
-                    values=(
-                        entry.get("new_file", ""), entry.get("new_artist") or "-", entry.get("new_title") or "-",
-                        "Yes" if entry.get("cover_updated") else "No",
-                        "Yes" if entry.get("converted") else "No",
-                    ),
-                    tags=(tag,),
-                )
-                tree.item(parent_id, open=True)
-                entries_by_parent[parent_id] = entry
+            row_index = 0
+            for group_entries in groups:
+                if len(group_entries) > 1:
+                    first_timestamp = group_entries[0].get("timestamp", "")
+                    try:
+                        group_date_display = datetime.fromisoformat(first_timestamp).astimezone().strftime(
+                            "%Y-%m-%d %H:%M"
+                        )
+                    except ValueError:
+                        group_date_display = first_timestamp
+                    group_tag = "even_row" if row_index % 2 == 0 else "odd_row"
+                    container = tree.insert(
+                        "", "end", text=f"Scan - {group_date_display} ({len(group_entries)} tracks)",
+                        values=("", "", "", "", ""), tags=(group_tag,), open=False,
+                    )
+                    group_children[container] = []
+                    row_index += 1
+                else:
+                    container = ""
+
+                for entry in group_entries:
+                    timestamp = entry.get("timestamp", "")
+                    try:
+                        date_display = datetime.fromisoformat(timestamp).astimezone().strftime("%Y-%m-%d %H:%M")
+                    except ValueError:
+                        date_display = timestamp
+
+                    tag = "even_row" if row_index % 2 == 0 else "odd_row"
+                    parent_id = tree.insert(
+                        container, "end", text=date_display,
+                        values=(
+                            entry.get("old_file", ""), entry.get("old_artist") or "-", entry.get("old_title") or "-",
+                            "", "",
+                        ),
+                        tags=(tag,),
+                    )
+                    tree.insert(
+                        parent_id, "end", text="↳ Restored" if entry.get("restored") else "↳ Applied",
+                        values=(
+                            entry.get("new_file", ""), entry.get("new_artist") or "-", entry.get("new_title") or "-",
+                            "Yes" if entry.get("cover_updated") else "No",
+                            "Yes" if entry.get("converted") else "No",
+                        ),
+                        tags=(tag,),
+                    )
+                    tree.item(parent_id, open=False)
+                    entries_by_parent[parent_id] = entry
+                    if container:
+                        group_children[container].append(parent_id)
+                    row_index += 1
 
         def schedule_history_filter(event=None):
             """Debounces the search filter the same way the main table's does."""
@@ -3606,10 +3794,18 @@ class TaggerInterface:
         def enforce_parent_only_selection(event=None):
             """Clicking (or ctrl/shift-clicking) a child 'Applied' row selects
             its parent instead - Restore/Delete always act on the OLD info,
-            so only old-info rows are meant to be selectable."""
+            so only old-info rows are meant to be selectable. Clicking a
+            'Scan - ...' group row selects every track inside it, so
+            Restore/Delete can act on the whole scan at once."""
             current = tree.selection()
             corrected, seen = [], set()
             for item_id in current:
+                if item_id in group_children:
+                    for child_id in group_children[item_id]:
+                        if child_id not in seen:
+                            seen.add(child_id)
+                            corrected.append(child_id)
+                    continue
                 target = item_id if item_id in entries_by_parent else tree.parent(item_id)
                 if target and target not in seen:
                     seen.add(target)
@@ -3642,36 +3838,103 @@ class TaggerInterface:
             if not messagebox.askyesno("Restore previous version(s)", prompt, parent=dialog, default=messagebox.NO):
                 return
 
+            def _log_restore(entry):
+                tagger.log_action(
+                    f"Restored: '{entry.get('new_file')}' -> '{entry.get('old_file')}' | "
+                    f"Artist: '{entry.get('new_artist') or ''}' -> '{entry.get('old_artist') or ''}' | "
+                    f"Title: '{entry.get('new_title') or ''}' -> '{entry.get('old_title') or ''}'"
+                )
+
             successes, failures, restored_entries = 0, [], []
+            # restore_history_entry already tried a bounded search of the
+            # original folder tree - collect every entry it still couldn't
+            # find WITHOUT prompting per file (a "Locate it manually?"
+            # popup for each one, back to back, was the actual complaint -
+            # one grouped question below instead, then only the unavoidable
+            # per-file file-pickers if the user says yes).
+            not_found = []
             for entry in entries:
                 display_name = entry.get("new_file") or entry.get("old_file") or "the file"
                 try:
                     tagger.restore_history_entry(entry, log=self._append_to_journal)
                     successes += 1
                     restored_entries.append(entry)
+                    _log_restore(entry)
                 except FileNotFoundError:
-                    # restore_history_entry already tried a bounded search
-                    # of the original folder tree - ask the user to locate
-                    # it manually rather than just failing outright.
-                    if messagebox.askyesno(
-                        "File not found",
-                        f"'{display_name}' wasn't found where it was originally processed - "
-                        "it may have moved or been renamed.\n\nLocate it manually?",
-                        parent=dialog,
-                    ):
-                        chosen = filedialog.askopenfilename(title=f"Locate '{display_name}'", parent=dialog)
-                        if chosen:
-                            try:
-                                tagger.restore_history_entry(entry, log=self._append_to_journal, override_path=chosen)
-                                successes += 1
-                                restored_entries.append(entry)
-                                continue
-                            except Exception as error:
-                                failures.append((display_name, str(error)))
-                                continue
-                    failures.append((display_name, "File not found"))
+                    not_found.append((entry, display_name))
                 except Exception as error:
                     failures.append((display_name, str(error)))
+
+            if not_found:
+                count = len(not_found)
+                unit = "file" if count == 1 else "files"
+                names_preview = "\n".join(f"- {name}" for _, name in not_found[:5])
+                if count > 5:
+                    names_preview += f"\n...and {count - 5} more"
+                locate = messagebox.askyesno(
+                    "Files not found",
+                    f"{count} {unit} weren't found where {'it was' if count == 1 else 'they were'} "
+                    f"originally processed - {'it' if count == 1 else 'they'} may have moved or been "
+                    f"renamed:\n\n{names_preview}\n\n"
+                    f"Locate {'it' if count == 1 else 'them, one at a time,'} manually?",
+                    parent=dialog,
+                )
+                # Once the user locates ONE moved file, its folder is a
+                # strong hint for the rest - a library reorganized into a
+                # new folder usually moved everything together, not just
+                # this one track. Auto-checks that folder (recursively,
+                # same bounded search restore_history_entry itself already
+                # does for the originally-logged folder) for each remaining
+                # not-found entry's expected filename before bothering the
+                # user with another picker for it. Kept on self (see
+                # __init__), not a local, so this still helps even when the
+                # user restores moved tracks one at a time across SEPARATE
+                # Restore clicks, not just within one multi-select batch.
+                for entry, display_name in not_found:
+                    chosen = None
+                    expected_name = os.path.basename(entry.get("new_file") or entry.get("old_file") or "")
+
+                    if locate and self._history_restore_located_folder and expected_name:
+                        auto_found = tagger._find_file_by_name(self._history_restore_located_folder, expected_name)
+                        if auto_found:
+                            chosen = auto_found
+                            self._append_to_journal(
+                                f"  Found '{display_name}' automatically in the same folder."
+                            )
+                    if chosen is None and locate:
+                        # Asks for the FOLDER the library moved to, not the
+                        # exact file - matches how this actually gets used
+                        # (searched recursively for the expected filename,
+                        # same as the auto-locate above and
+                        # restore_history_entry's own bounded search), and
+                        # is what a user reorganizing a whole library
+                        # naturally has in mind ("it's over there now"),
+                        # not one specific file's exact path.
+                        picked_folder = filedialog.askdirectory(
+                            title=f"Locate the folder containing '{display_name}'", parent=dialog,
+                        )
+                        if picked_folder:
+                            self._history_restore_located_folder = picked_folder
+                            chosen = tagger._find_file_by_name(picked_folder, expected_name) if expected_name else None
+                            if chosen is None:
+                                failures.append((display_name, f"Not found in '{picked_folder}'"))
+                                continue
+                    if chosen:
+                        try:
+                            tagger.restore_history_entry(entry, log=self._append_to_journal, override_path=chosen)
+                            successes += 1
+                            restored_entries.append(entry)
+                            _log_restore(entry)
+                            continue
+                        except Exception as error:
+                            failures.append((display_name, str(error)))
+                            continue
+                    failures.append((display_name, "File not found"))
+
+            tagger.log_action(
+                f"Restore from history: {successes}/{len(entries)} file(s) restored"
+                + (f", {len(failures)} failed" if failures else "")
+            )
 
             if restored_entries:
                 tagger.mark_history_entries_restored(restored_entries)
@@ -3716,9 +3979,14 @@ class TaggerInterface:
             row_id = tree.identify_row(event.y)
             if not row_id:
                 return
-            target = row_id if row_id in entries_by_parent else tree.parent(row_id)
-            if target and target not in tree.selection():
-                tree.selection_set(target)
+            if row_id in group_children:
+                children = group_children[row_id]
+                if not set(children).issubset(tree.selection()):
+                    tree.selection_set(children)
+            else:
+                target = row_id if row_id in entries_by_parent else tree.parent(row_id)
+                if target and target not in tree.selection():
+                    tree.selection_set(target)
 
             menu = self._make_themed_menu(dialog)
             menu.add_command(label="Delete", command=delete_selected)
@@ -4280,6 +4548,8 @@ class TaggerInterface:
 
         def _send():
             success, reason = tagger.send_track_report(info, reporter_name=reporter_name)
+            if success:
+                tagger.log_action(f"Reported track: '{os.path.basename(info.get('file', ''))}'")
             self.message_queue.put(("report_sent", (success, reason)))
 
         self._run_in_background(_send)
@@ -4685,6 +4955,10 @@ class TaggerInterface:
             tagger.MUSIC_FOLDER = folder
         self._sync_mentions_to_remove()
 
+        tagger.log_action(
+            f"Apply started: {len(to_process)} file(s), {len(fixes)} pending fix(es) (folder: '{folder}')"
+        )
+
         if not self.progress_canvas.winfo_ismapped():
             self.progress_canvas.pack(fill="x")
             self._adjust_window_height()
@@ -4753,6 +5027,12 @@ class TaggerInterface:
 
 
 if __name__ == "__main__":
+    if not acquire_single_instance_lock():
+        # Another instance is already running (e.g. the user double-clicked
+        # the shortcut/exe more than once in quick succession) - just exit
+        # quietly instead of opening a second window.
+        sys.exit(0)
+
     try:
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("KEVZ.TrackTidy.1")

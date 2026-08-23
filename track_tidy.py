@@ -972,6 +972,7 @@ DEFAULT_SETTINGS = {
     "fix_track_file_name": True,
     "use_spotify": False,
     "show_log_section": False,
+    "music_folder": "",
 }
 
 
@@ -992,13 +993,41 @@ def check_and_apply_version_reset():
     save_setting("last_run_version", APP_VERSION)
 
 
+# --- General activity log ---
+
+# Plain-text, human-readable record of every user-facing action (settings
+# changes, Apply/Restore runs - old filename/artist/title -> new, reports
+# sent, updates installed...) - kept separate from the live per-file scan
+# log shown in the "Log" panel, which is UI-only and never written to disk.
+# Meant to be found and read by hand (e.g. when troubleshooting a support
+# request), not parsed back by the app.
+#
+# Must survive forever, including across an update: log_action() only ever
+# APPENDS to it (never opened in "w"/truncating mode), and neither
+# check_and_apply_version_reset() nor "Reset all settings to default" touch
+# it - both only ever rewrite SETTINGS_FILE. Keep it that way: nothing in
+# this codebase may delete or truncate ACTION_LOG_FILE.
+ACTION_LOG_FILE = os.path.join(user_config_dir(), "activity_log.txt")
+
+
+def log_action(message):
+    """Appends one timestamped line to ACTION_LOG_FILE. Never deletes or
+    truncates it - see the module-level comment above ACTION_LOG_FILE."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with open(ACTION_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"[{timestamp}] {message}\n")
+    except Exception as error:
+        print(f"  Could not write to the activity log: {error}")
+
+
 # --- Processing history log ---
 
 HISTORY_FILE = os.path.join(user_config_dir(), "history.jsonl")
 
 
 def log_history_entry(old_file, new_file, old_artist, old_title, new_artist, new_title,
-                       cover_updated, converted, folder=None, old_cover_bytes=None):
+                       cover_updated, converted, folder=None, old_cover_bytes=None, run_id=None):
     """
     Appends one line of JSON to HISTORY_FILE for a file that was actually
     processed (tags written and/or renamed), keeping a permanent record of
@@ -1012,9 +1041,15 @@ def log_history_entry(old_file, new_file, old_artist, old_title, new_artist, new
     restore_history_entry() possible later - MUSIC_FOLDER itself isn't
     reliable for that since the user may since have scanned a different
     folder entirely.
+
+    run_id is shared by every entry logged from the same process_files()
+    call (see there) - lets the History window group tracks from the same
+    Apply run together instead of listing them as unrelated one-off entries.
+    Entries logged before this existed just have run_id=None.
     """
     entry = {
         "id": str(uuid.uuid4()),
+        "run_id": run_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "folder": folder,
         "old_file": old_file,
@@ -1032,6 +1067,13 @@ def log_history_entry(old_file, new_file, old_artist, old_title, new_artist, new
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception as error:
         print(f"  Could not write history entry: {error}")
+
+    log_action(
+        f"Applied: '{old_file}' -> '{new_file}' | "
+        f"Artist: '{old_artist or ''}' -> '{new_artist or ''}' | "
+        f"Title: '{old_title or ''}' -> '{new_title or ''}' | "
+        f"Cover updated: {cover_updated} | Converted: {converted}"
+    )
 
 
 def _find_file_by_name(folder, basename):
@@ -1359,8 +1401,18 @@ MIX_NUMBER_SUFFIX_RE = re.compile(r"\s+M\d{1,2}\s*$")
 # own always-on rule, same idea as FUVICLAN_PATTERN further down.
 KLICKAUD_WATERMARK_RE = re.compile(r"[_\s]*klickaud\s*$", re.IGNORECASE)
 
+# "Extended Mix" normalization: fix any casing to the one proper-cased form,
+# and "[Extended Mix]" (square brackets, as some sources tag it) to
+# "(Extended Mix)" to match this app's own parenthesized qualifier
+# convention (see build_display_name / GENERIC_MIX_KEYWORDS).
+EXTENDED_MIX_BRACKETS_RE = re.compile(r"\[\s*extended mix\s*\]", re.IGNORECASE)
+EXTENDED_MIX_CASING_RE = re.compile(r"extended mix", re.IGNORECASE)
+
 
 def clean_title(text):
+    text = EXTENDED_MIX_BRACKETS_RE.sub("(Extended Mix)", text)
+    text = EXTENDED_MIX_CASING_RE.sub("Extended Mix", text)
+
     if KLICKAUD_WATERMARK_RE.search(text):
         text = KLICKAUD_WATERMARK_RE.sub("", text)
         # KLICKAUD's own filenames consistently use underscores in place of
@@ -1512,6 +1564,17 @@ def find_named_qualifier_groups(title):
 def title_has_named_qualifier(title):
     """True if `title` contains at least one named qualifier - see find_named_qualifier_groups()."""
     return bool(find_named_qualifier_groups(title))
+
+
+def title_has_generic_qualifier(title):
+    """True if `title` contains at least one PURELY generic qualifier (e.g.
+    "(Extended Mix)", "(Radio Edit)") - see is_generic_mix_qualifier(). Used
+    to tell apart a track that genuinely has no mix-variant info at all
+    from one whose generic qualifier was simply stripped for the search
+    query (see compute_search_titles) - search_cover_soundcloud() needs
+    that distinction to avoid rejecting a candidate over the same harmless
+    generic label it stripped from its own query."""
+    return any(is_generic_mix_qualifier(group) for group in re.findall(r"\(([^)]*)\)", title))
 
 
 def named_qualifier_name_words(title):
@@ -2328,7 +2391,7 @@ def detect_parenthetical_mentions(text):
 
 def _search_one_source(
     source, artist, search_title, remix_qualified_title, soundcloud_token, spotify_token, log,
-    on_itunes_rate_limited=None, on_spotify_rate_limited=None,
+    on_itunes_rate_limited=None, on_spotify_rate_limited=None, own_has_generic_qualifier=False,
 ):
     """
     Tries a single cover source, using that provider's own established
@@ -2386,7 +2449,10 @@ def _search_one_source(
         return match_result, (label if match_result else None)
 
     # source == "soundcloud"
-    match_result = search_cover_soundcloud(artist, remix_qualified_title, soundcloud_token, log=log)
+    match_result = search_cover_soundcloud(
+        artist, remix_qualified_title, soundcloud_token, log=log,
+        own_has_generic_qualifier=own_has_generic_qualifier,
+    )
     return match_result, ("SoundCloud" if match_result else None)
 
 
@@ -2417,6 +2483,7 @@ def search_cover_manual(
         return None, None, None, None
 
     search_title, remix_qualified_title = compute_search_titles(title)
+    own_has_generic_qualifier = title_has_generic_qualifier(title)
 
     for source, enabled in (
         ("itunes", USE_ITUNES),
@@ -2428,6 +2495,7 @@ def search_cover_manual(
         match_result, cover_source = _search_one_source(
             source, artist, search_title, remix_qualified_title, soundcloud_token, spotify_token, log,
             on_itunes_rate_limited=on_itunes_rate_limited, on_spotify_rate_limited=on_spotify_rate_limited,
+            own_has_generic_qualifier=own_has_generic_qualifier,
         )
         if match_result:
             found_cover_image, returned_artist, returned_title = match_result
@@ -2511,6 +2579,54 @@ def find_already_applied_files(file_list):
     return [file_name for file_name in file_list if _is_already_applied(file_name, history_lookup)]
 
 
+# --- Scan history ---
+
+# Plain-text, append-only record of every file that has ever completed a
+# scan (whether or not Apply was subsequently run on it) - distinct from
+# HISTORY_FILE above, which only knows about files that were actually
+# processed. Lets a later scan of the same folder tell "genuinely new file"
+# apart from "already scanned before, just never applied" so the user can
+# be offered to scan only the new ones. Must survive forever, same as
+# ACTION_LOG_FILE/HISTORY_FILE - never deleted or truncated by this app,
+# including across an update.
+SCAN_HISTORY_FILE = os.path.join(user_config_dir(), "scan_history.txt")
+
+
+def mark_file_scanned(file_name):
+    """Appends one 'folder<TAB>file_name' line to SCAN_HISTORY_FILE."""
+    try:
+        with open(SCAN_HISTORY_FILE, "a", encoding="utf-8") as f:
+            f.write(f"{os.path.abspath(MUSIC_FOLDER)}\t{file_name}\n")
+    except Exception as error:
+        print(f"  Could not write scan history entry: {error}")
+
+
+def _build_scan_history_lookup():
+    """Set of (absolute folder, file_name) pairs ever scanned before -
+    computed once per precheck rather than re-reading the file per file."""
+    lookup = set()
+    if not os.path.exists(SCAN_HISTORY_FILE):
+        return lookup
+    try:
+        with open(SCAN_HISTORY_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                folder, _, file_name = line.rstrip("\n").partition("\t")
+                if folder and file_name:
+                    lookup.add((folder, file_name))
+    except Exception:
+        pass
+    return lookup
+
+
+def find_already_scanned_files(file_list):
+    """Returns the subset of file_list that has already been scanned before
+    in MUSIC_FOLDER, per SCAN_HISTORY_FILE - meant to run before a scan
+    starts so the caller can offer to scan only the genuinely new files."""
+    lookup = _build_scan_history_lookup()
+    folder = os.path.abspath(MUSIC_FOLDER)
+    return [file_name for file_name in file_list if (folder, file_name) in lookup]
+
+
 def _prepare_scan(file_name, log=safe_print, on_new_mention=None, history_lookup=None):
     """
     Local-only part of analyzing a file (no network): reads tags, resolves
@@ -2586,8 +2702,20 @@ def _prepare_scan(file_name, log=safe_print, on_new_mention=None, history_lookup
         # for it instead of re-spending quota re-confirming what's already
         # there (this is what "double scan" means in this codebase -
         # rescanning a folder that still has already-applied files sitting
-        # in it).
-        "already_applied": _is_already_applied(file_name, history_lookup),
+        # in it). Also requires has_cover/current_artist/current_title to
+        # be true RIGHT NOW, not just a history record that it once was -
+        # history.jsonl only proves Apply ran successfully at some point in
+        # the past, not that the file still looks that way today (it can
+        # have lost its cover since, e.g. edited elsewhere, or by the
+        # force_remove_if_missing bug this same session fixed). Real
+        # report: the scan log confidently claimed "already has a cover
+        # and tags - skipping online search" for files that demonstrably
+        # did not have one anymore, permanently blocking them from ever
+        # being re-searched.
+        "already_applied": (
+            bool(has_cover and current_artist and current_title)
+            and _is_already_applied(file_name, history_lookup)
+        ),
     }
 
 
@@ -2688,10 +2816,21 @@ def _finish_scan(prepared, match_result, cover_source, log=safe_print):
         # never got a filename-derived guess to second-guess. A filename
         # flagged "unreleased" starts unchecked too - see
         # contains_unreleased_marker.
+        # Exception: if detected_artist/detected_title actually differ from
+        # what's currently tagged (e.g. a clean_title() normalization added
+        # later, like "extended mix" -> "Extended Mix", now improves on a
+        # tag written by an older version of the app), there IS something to
+        # gain - stays checked even though already_applied, so the fix isn't
+        # silently invisible on a file that was tagged before that rule
+        # existed.
         "apply_changes": (
             bool(detected_title)
-            and not prepared.get("already_applied", False)
             and not contains_unreleased_marker(file_name)
+            and (
+                not prepared.get("already_applied", False)
+                or detected_title != prepared["current_title"]
+                or detected_artist != prepared["current_artist"]
+            )
         ),
         "found_cover_image": found_cover_image,
         "cover_source": cover_source,
@@ -2849,6 +2988,12 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
         # artist to search with.
         has_query = bool(prepared["search_title"])
         has_search_title = has_query
+        # See search_cover_soundcloud's own_has_generic_qualifier - the
+        # original title's generic qualifier (e.g. "Extended Mix") is
+        # already gone from search_title/remix_qualified_title by this
+        # point (compute_search_titles strips it), so it has to be
+        # recovered from the untouched detected_title instead.
+        own_has_generic_qualifier = title_has_generic_qualifier(prepared["detected_title"] or "")
 
         if USE_ITUNES and has_query:
             match_result, cover_source = _search_one_source(
@@ -2874,9 +3019,13 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
             match_result, cover_source = _search_one_source(
                 "soundcloud", prepared["detected_artist"], prepared["search_title"],
                 prepared["remix_qualified_title"], soundcloud_token, None, log,
+                own_has_generic_qualifier=own_has_generic_qualifier,
             )
 
         if not match_result and _try_acoustid_correction(prepared, log, on_rate_limited=on_acoustid_rate_limited):
+            # _try_acoustid_correction rewrites detected_title in place -
+            # recompute rather than reuse the pre-correction value above.
+            own_has_generic_qualifier = title_has_generic_qualifier(prepared["detected_title"] or "")
             for source, enabled in (
                 ("itunes", USE_ITUNES),
                 ("spotify", USE_SPOTIFY and bool(spotify_token) and not SPOTIFY_SEARCH_RATE_LIMITED),
@@ -2888,6 +3037,7 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
                     source, prepared["detected_artist"], prepared["search_title"],
                     prepared["remix_qualified_title"], soundcloud_token, spotify_token, log,
                     on_itunes_rate_limited=on_itunes_rate_limited, on_spotify_rate_limited=on_spotify_rate_limited,
+                    own_has_generic_qualifier=own_has_generic_qualifier,
                 )
                 if match_result:
                     break
@@ -3201,7 +3351,23 @@ def split_artist_names(text):
     {"alonzo", ". tiakola"} instead of {"alonzo", "tiakola"}) - found via a
     real AcoustID-identified artist string ("Alonzo Feat. Tiakola") being
     rejected as "not the same artist" as a store's own "Alonzo, Tiakola".
+
+    Does NOT split on a bare "_" in general - some sources join collaborating
+    artists with a bare underscore instead of "&"/","/space (e.g. "Amine
+    Edge_Aguilar (Italy) - From The Storm"), but blindly splitting on every
+    "_" breaks the already-tested, deliberate tolerance for an underscore
+    that's really a SANITIZED COLON inside a single artist's own name (e.g.
+    "BLOND:ISH" -> "BLOND_ISH" via sanitize_filename() - see
+    strip_sanitized_chars() and test_artist_sets_match_tolerates_sanitized_
+    colon). The two cases are indistinguishable from the string alone in
+    general - EXCEPT one specific, safe shape: an underscore immediately
+    followed by "<name> (<disambiguator>)" running to the end of the string
+    (a second artist, itself further disambiguated the same way SOMMERS
+    (UK) is two lines below) - a sanitized-colon name never has a trailing
+    parenthetical right after the underscore, so this narrow case is
+    treated as a separator while every other "_" is left untouched.
     """
+    text = re.sub(r"_(?=[^_()]+\([^()]*\)\s*$)", " & ", text)
     parts = re.split(r"\s*(?:,|&|/|\bx\b|\bvs\b|\bfeat\b\.?|\bft\b\.?|\band\b)\s*", text, flags=re.IGNORECASE)
     names = set()
     for part in parts:
@@ -3852,12 +4018,19 @@ SOUNDCLOUD_MIN_REQUEST_INTERVAL_SECONDS = 1.5
 _soundcloud_throttle = _SourceThrottle(SOUNDCLOUD_MIN_REQUEST_INTERVAL_SECONDS)
 
 
-def search_cover_soundcloud(artist, title, token, log=safe_print):
+def search_cover_soundcloud(artist, title, token, log=safe_print, own_has_generic_qualifier=False):
     """
     Checks up to 10 candidates, not just the top one - SoundCloud's
     relevance ranking doesn't always put the exact upload we want first
     (e.g. a specific named bootleg can easily rank behind more generic
     uploads of the same base song), same reasoning as search_cover_itunes().
+
+    own_has_generic_qualifier: whether the ORIGINAL (pre-search-stripping)
+    title carried a purely generic qualifier of its own (e.g. "Extended
+    Mix") - `title` here has already had that stripped by compute_search_
+    titles, so without this the "reject an unsolicited variant" check below
+    can't tell "our own track never had one" apart from "it did, just not
+    in this exact query" (see its own comment).
     """
     if not token:
         return None
@@ -3970,8 +4143,23 @@ def search_cover_soundcloud(artist, title, token, log=safe_print):
             # like "(Official Audio)"/"(HQ)" is deliberately left alone
             # (see looks_like_mix_variant) so this doesn't also reject
             # otherwise-good legitimate reposts.
+            #
+            # Exception: own_has_generic_qualifier - our OWN original track
+            # had a purely generic qualifier of its own (e.g. "Extended
+            # Mix"), just stripped from THIS query by compute_search_titles
+            # (generic labels are inconsistent across stores, so search
+            # ignores them) - if the candidate's variant is ALSO purely
+            # generic (not named), it's not "a variant we never asked for",
+            # it's the same harmless label our own title has too. Real
+            # report: our own "Hatiras - Hypnotized (Extended Mix)" (query
+            # searched as bare "Hypnotized") rejected SoundCloud's own
+            # upload titled "Hypnotized (Extended Mix)" by uploader
+            # "Hatiras" - an obviously correct match. Still strict (continue)
+            # when our own track had NO qualifier at all, or the candidate's
+            # is a NAMED one - that's the actual "Mi Amigo (Remix)" case.
             if not looks_like_mix_variant(title) and looks_like_mix_variant(track_title):
-                continue
+                if not (own_has_generic_qualifier and not title_has_named_qualifier(track_title)):
+                    continue
 
             # title_words_overlap only requires ONE shared word with the base
             # title, which a DIFFERENT upload of the same song (e.g. a plain
@@ -4883,6 +5071,7 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
         return
 
     total = len(plan)
+    run_id = str(uuid.uuid4())  # shared by every history entry from this run - see log_history_entry
 
     for index, info in enumerate(plan, start=1):
         if should_cancel and should_cancel():
@@ -4937,8 +5126,17 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
 
             update_title = update_artist = update_cover = info.get("apply_changes", True)
 
-            force_remove_if_missing = bool(detect_fuviclan_mention(file_name)) or is_banned_cover_image(
-                info.get("current_cover_bytes")
+            # Only strip a bad-looking existing cover (fuviclan/banned-hash)
+            # when a fresh online search actually ran THIS scan - for an
+            # already_applied row (search skipped entirely, see scan_files),
+            # there's no found_cover_image to replace it with, so this would
+            # otherwise just delete the file's only cover with nothing to
+            # put back. Real report: a rescanned, previously-fully-tagged
+            # track lost its cover this way. Whatever the file currently
+            # has stays untouched until a real search has had a chance to
+            # find something better in the same run.
+            force_remove_if_missing = not info.get("already_applied", False) and (
+                bool(detect_fuviclan_mention(file_name)) or is_banned_cover_image(info.get("current_cover_bytes"))
             )
 
             cover_image = info.get("found_cover_image") if update_cover else None
@@ -4979,6 +5177,7 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
                     converted=converted_this_file,
                     folder=os.path.abspath(MUSIC_FOLDER) if MUSIC_FOLDER else None,
                     old_cover_bytes=info.get("current_cover_bytes") if info.get("has_cover") else None,
+                    run_id=run_id,
                 )
 
             if update_cover and cover_image:
