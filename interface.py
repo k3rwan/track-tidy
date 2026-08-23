@@ -3700,33 +3700,70 @@ class TaggerInterface:
 
             tree.column("#0", width=140)
 
-            for index, entry in enumerate(entries):
-                timestamp = entry.get("timestamp", "")
-                try:
-                    date_display = datetime.fromisoformat(timestamp).astimezone().strftime("%Y-%m-%d %H:%M")
-                except ValueError:
-                    date_display = timestamp
+            # Entries from the same Apply run share a "run_id" (see
+            # process_files/log_history_entry) and are already contiguous
+            # here (load_history_entries is reverse-chronological) - group
+            # them under one "Scan" row instead of listing each track as an
+            # unrelated one-off entry. A run of just one track (or an entry
+            # logged before run_id existed, which has none) stays at the top
+            # level exactly as before - a group wrapper around a single
+            # track would just be extra clicking for nothing.
+            groups = []
+            current_key = object()
+            for entry in entries:
+                key = entry.get("run_id") or entry.get("id")
+                if key != current_key:
+                    groups.append([])
+                    current_key = key
+                groups[-1].append(entry)
 
-                tag = "even_row" if index % 2 == 0 else "odd_row"
-                parent_id = tree.insert(
-                    "", "end", text=date_display,
-                    values=(
-                        entry.get("old_file", ""), entry.get("old_artist") or "-", entry.get("old_title") or "-",
-                        "", "",
-                    ),
-                    tags=(tag,),
-                )
-                tree.insert(
-                    parent_id, "end", text="↳ Restored" if entry.get("restored") else "↳ Applied",
-                    values=(
-                        entry.get("new_file", ""), entry.get("new_artist") or "-", entry.get("new_title") or "-",
-                        "Yes" if entry.get("cover_updated") else "No",
-                        "Yes" if entry.get("converted") else "No",
-                    ),
-                    tags=(tag,),
-                )
-                tree.item(parent_id, open=False)
-                entries_by_parent[parent_id] = entry
+            row_index = 0
+            for group_entries in groups:
+                if len(group_entries) > 1:
+                    first_timestamp = group_entries[0].get("timestamp", "")
+                    try:
+                        group_date_display = datetime.fromisoformat(first_timestamp).astimezone().strftime(
+                            "%Y-%m-%d %H:%M"
+                        )
+                    except ValueError:
+                        group_date_display = first_timestamp
+                    group_tag = "even_row" if row_index % 2 == 0 else "odd_row"
+                    container = tree.insert(
+                        "", "end", text=f"Scan - {group_date_display} ({len(group_entries)} tracks)",
+                        values=("", "", "", "", ""), tags=(group_tag,), open=False,
+                    )
+                    row_index += 1
+                else:
+                    container = ""
+
+                for entry in group_entries:
+                    timestamp = entry.get("timestamp", "")
+                    try:
+                        date_display = datetime.fromisoformat(timestamp).astimezone().strftime("%Y-%m-%d %H:%M")
+                    except ValueError:
+                        date_display = timestamp
+
+                    tag = "even_row" if row_index % 2 == 0 else "odd_row"
+                    parent_id = tree.insert(
+                        container, "end", text=date_display,
+                        values=(
+                            entry.get("old_file", ""), entry.get("old_artist") or "-", entry.get("old_title") or "-",
+                            "", "",
+                        ),
+                        tags=(tag,),
+                    )
+                    tree.insert(
+                        parent_id, "end", text="↳ Restored" if entry.get("restored") else "↳ Applied",
+                        values=(
+                            entry.get("new_file", ""), entry.get("new_artist") or "-", entry.get("new_title") or "-",
+                            "Yes" if entry.get("cover_updated") else "No",
+                            "Yes" if entry.get("converted") else "No",
+                        ),
+                        tags=(tag,),
+                    )
+                    tree.item(parent_id, open=False)
+                    entries_by_parent[parent_id] = entry
+                    row_index += 1
 
         def schedule_history_filter(event=None):
             """Debounces the search filter the same way the main table's does."""

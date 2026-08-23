@@ -1026,7 +1026,7 @@ HISTORY_FILE = os.path.join(user_config_dir(), "history.jsonl")
 
 
 def log_history_entry(old_file, new_file, old_artist, old_title, new_artist, new_title,
-                       cover_updated, converted, folder=None, old_cover_bytes=None):
+                       cover_updated, converted, folder=None, old_cover_bytes=None, run_id=None):
     """
     Appends one line of JSON to HISTORY_FILE for a file that was actually
     processed (tags written and/or renamed), keeping a permanent record of
@@ -1040,9 +1040,15 @@ def log_history_entry(old_file, new_file, old_artist, old_title, new_artist, new
     restore_history_entry() possible later - MUSIC_FOLDER itself isn't
     reliable for that since the user may since have scanned a different
     folder entirely.
+
+    run_id is shared by every entry logged from the same process_files()
+    call (see there) - lets the History window group tracks from the same
+    Apply run together instead of listing them as unrelated one-off entries.
+    Entries logged before this existed just have run_id=None.
     """
     entry = {
         "id": str(uuid.uuid4()),
+        "run_id": run_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "folder": folder,
         "old_file": old_file,
@@ -5064,6 +5070,7 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
         return
 
     total = len(plan)
+    run_id = str(uuid.uuid4())  # shared by every history entry from this run - see log_history_entry
 
     for index, info in enumerate(plan, start=1):
         if should_cancel and should_cancel():
@@ -5169,6 +5176,7 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
                     converted=converted_this_file,
                     folder=os.path.abspath(MUSIC_FOLDER) if MUSIC_FOLDER else None,
                     old_cover_bytes=info.get("current_cover_bytes") if info.get("has_cover") else None,
+                    run_id=run_id,
                 )
 
             if update_cover and cover_image:
