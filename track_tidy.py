@@ -1062,9 +1062,13 @@ def restore_history_entry(entry, log=safe_print, override_path=None):
     uses that location directly - for when the caller already asked the
     user to locate the file manually.
 
-    The file itself keeps its current format/extension (a WAV->MP3
-    conversion isn't reversible - the original file is gone), but is renamed
-    to match the restored artist/title if both are known.
+    A WAV->AIFF conversion (see convert_wav_to_aiff) is reverted back to WAV
+    too, since that's a lossless byte-order swap with nothing actually lost -
+    unlike a conversion to MP3 (a real re-encode), which isn't reversible,
+    so the file just keeps its current format/extension in that case. The
+    file is then renamed back to its logged "old_file" name (falling back to
+    reconstructing "Artist - Title" from old_artist/old_title only for an
+    entry logged before "old_file" existed).
 
     Returns the file's new absolute path (unchanged if it wasn't renamed) -
     absolute rather than relative-to-folder, since override_path/the
@@ -1094,6 +1098,22 @@ def restore_history_entry(entry, log=safe_print, override_path=None):
     if not os.path.exists(full_path):
         raise FileNotFoundError(f"File not found: {full_path}")
 
+    # Undo a WAV->AIFF conversion from the run being restored, before
+    # restoring tags - identified by comparing the file's format when this
+    # entry was logged (old_file's extension) against what it is now, not
+    # just the "converted" flag (which is also set for a same-run MP3
+    # conversion, which ISN'T reversible - see convert_aiff_to_wav's
+    # docstring).
+    old_extension = os.path.splitext(entry.get("old_file") or "")[1].lower()
+    current_extension = os.path.splitext(full_path)[1].lower()
+    if old_extension == ".wav" and current_extension == ".aiff":
+        reverted_path = convert_aiff_to_wav(full_path)
+        if reverted_path:
+            log(f"  Reverted the WAV->AIFF conversion: '{reverted_path}'")
+            full_path = reverted_path
+        else:
+            log("  Could not revert the WAV->AIFF conversion - tags/filename will still be restored on the AIFF.")
+
     old_artist = entry.get("old_artist") or ""
     old_title = entry.get("old_title") or ""
     old_cover_b64 = entry.get("old_cover_b64")
@@ -1112,16 +1132,38 @@ def restore_history_entry(entry, log=safe_print, override_path=None):
     )
     log(f"  Restored tags on: '{full_path}'")
 
-    if old_artist and old_title:
-        # Derived from full_path's actual current directory, not the
-        # originally-logged one - matters when the file was found via
-        # override_path or the auto-locate search above, since either can
-        # put it somewhere other than "folder".
-        actual_folder = os.path.dirname(full_path)
-        extension = os.path.splitext(full_path)[1]
-        new_base_name = sanitize_filename(build_display_name(old_artist, old_title)) + extension
-        new_full_path = os.path.join(actual_folder, new_base_name)
+    # Derived from full_path's actual current directory, not the
+    # originally-logged one - matters when the file was found via
+    # override_path or the auto-locate search above, since either can put
+    # it somewhere other than "folder".
+    actual_folder = os.path.dirname(full_path)
+    # full_path's OWN current extension, not old_file's - they only differ
+    # if the WAV->AIFF revert above was attempted but failed, in which case
+    # the file is still actually AIFF and naming it "....wav" would lie
+    # about its real format.
+    current_extension = os.path.splitext(full_path)[1]
 
+    old_file = entry.get("old_file")
+    if old_file:
+        # The exact original filename this entry logged, rather than
+        # reconstructed as "Artist - Title" from old_artist/old_title -
+        # covers a file that had no tags at all before Apply (old_artist/
+        # old_title then both empty, so there was nothing to reconstruct
+        # from and this rename used to be skipped entirely - a real
+        # user-reported bug: "restore" left renamed files renamed) as well
+        # as a file whose original name never followed that convention in
+        # the first place.
+        old_base_name = os.path.splitext(os.path.basename(old_file))[0]
+        new_base_name = sanitize_filename(old_base_name) + current_extension
+    elif old_artist or old_title:
+        # Older history entries logged before "old_file" existed - fall
+        # back to the previous reconstruction.
+        new_base_name = sanitize_filename(build_display_name(old_artist, old_title)) + current_extension
+    else:
+        new_base_name = None
+
+    if new_base_name:
+        new_full_path = os.path.join(actual_folder, new_base_name)
         if new_full_path != full_path:
             os.rename(full_path, new_full_path)
             log(f"  Restored and renamed to: '{new_full_path}'")
@@ -4561,6 +4603,55 @@ def convert_wav_to_aiff(source_path):
         return None
     except Exception as error:
         print(f"  Error during conversion: {error}")
+        return None
+
+
+def convert_aiff_to_wav(source_path):
+    """
+    Reverses convert_wav_to_aiff(): the same lossless PCM byte-order swap
+    (big-endian -> little-endian), not a re-encode, so there's no quality
+    loss - used by restore_history_entry() to fully undo a WAV->AIFF
+    conversion that happened as part of the very run being restored, not
+    just its tags/filename. Removes the source AIFF file on success.
+    """
+    source_tags = None
+    try:
+        source_audio = AIFF(source_path)
+        source_tags = source_audio.tags
+    except Exception as error:
+        print(f"  Could not read existing tags before reverting to WAV: {error}")
+
+    wav_path = os.path.splitext(source_path)[0] + ".wav"
+    try:
+        result = subprocess.run(
+            [find_ffmpeg(), "-i", source_path, "-y", wav_path],
+            capture_output=True,
+            text=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode != 0:
+            print(f"  FFmpeg error while reverting to WAV: {result.stderr[-300:]}")
+            return None
+
+        if source_tags:
+            try:
+                wav_audio = WAVE(wav_path)
+                if wav_audio.tags is None:
+                    wav_audio.add_tags()
+                for frame in source_tags.values():
+                    wav_audio.tags.add(frame)
+                wav_audio.save()
+            except Exception as error:
+                print(f"  Could not carry over existing tags while reverting to WAV: {error}")
+
+        os.remove(source_path)
+        return wav_path
+
+    except FileNotFoundError:
+        print("  FFmpeg was not found. Check that it's installed and in the PATH.")
+        return None
+    except Exception as error:
+        print(f"  Error while reverting to WAV: {error}")
         return None
 
 
