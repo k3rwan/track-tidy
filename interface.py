@@ -1797,7 +1797,8 @@ class TaggerInterface:
         )
         self.auto_convert_wav_aiff_checkbox.pack(anchor="w", padx=10, pady=(0, 0))
         ttk.Checkbutton(
-            behavior_frame, text="Fix track file name", variable=self.fix_track_file_name_var,
+            behavior_frame, text="Fix track file name (renaming can break Rekordbox's link to the file)",
+            variable=self.fix_track_file_name_var,
             command=self._on_fix_track_file_name_changed,
         ).pack(anchor="w", padx=10, pady=(0, 0))
         ttk.Checkbutton(
