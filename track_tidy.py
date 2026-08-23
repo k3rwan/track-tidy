@@ -2556,6 +2556,54 @@ def find_already_applied_files(file_list):
     return [file_name for file_name in file_list if _is_already_applied(file_name, history_lookup)]
 
 
+# --- Scan history ---
+
+# Plain-text, append-only record of every file that has ever completed a
+# scan (whether or not Apply was subsequently run on it) - distinct from
+# HISTORY_FILE above, which only knows about files that were actually
+# processed. Lets a later scan of the same folder tell "genuinely new file"
+# apart from "already scanned before, just never applied" so the user can
+# be offered to scan only the new ones. Must survive forever, same as
+# ACTION_LOG_FILE/HISTORY_FILE - never deleted or truncated by this app,
+# including across an update.
+SCAN_HISTORY_FILE = os.path.join(user_config_dir(), "scan_history.txt")
+
+
+def mark_file_scanned(file_name):
+    """Appends one 'folder<TAB>file_name' line to SCAN_HISTORY_FILE."""
+    try:
+        with open(SCAN_HISTORY_FILE, "a", encoding="utf-8") as f:
+            f.write(f"{os.path.abspath(MUSIC_FOLDER)}\t{file_name}\n")
+    except Exception as error:
+        print(f"  Could not write scan history entry: {error}")
+
+
+def _build_scan_history_lookup():
+    """Set of (absolute folder, file_name) pairs ever scanned before -
+    computed once per precheck rather than re-reading the file per file."""
+    lookup = set()
+    if not os.path.exists(SCAN_HISTORY_FILE):
+        return lookup
+    try:
+        with open(SCAN_HISTORY_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                folder, _, file_name = line.rstrip("\n").partition("\t")
+                if folder and file_name:
+                    lookup.add((folder, file_name))
+    except Exception:
+        pass
+    return lookup
+
+
+def find_already_scanned_files(file_list):
+    """Returns the subset of file_list that has already been scanned before
+    in MUSIC_FOLDER, per SCAN_HISTORY_FILE - meant to run before a scan
+    starts so the caller can offer to scan only the genuinely new files."""
+    lookup = _build_scan_history_lookup()
+    folder = os.path.abspath(MUSIC_FOLDER)
+    return [file_name for file_name in file_list if (folder, file_name) in lookup]
+
+
 def _prepare_scan(file_name, log=safe_print, on_new_mention=None, history_lookup=None):
     """
     Local-only part of analyzing a file (no network): reads tags, resolves

@@ -1449,7 +1449,7 @@ class TaggerInterface:
 
         self.notebook.select(0)
         self._set_buttons_enabled(False)
-        self._launch_scan_after_already_applied_check(explicit_files=capped_files if truncated else None)
+        self._launch_scan_after_already_scanned_check(explicit_files=capped_files if truncated else None)
 
     def _start_multi_file_scan(self, file_paths):
         """Drop of one or more individual audio files: tags just those
@@ -2297,29 +2297,31 @@ class TaggerInterface:
 
         self._set_buttons_enabled(False)
 
-        self._launch_scan_after_already_applied_check(explicit_files=capped_files if truncated else None)
+        self._launch_scan_after_already_scanned_check(explicit_files=capped_files if truncated else None)
 
-    def _launch_scan_after_already_applied_check(self, explicit_files=None):
+    def _launch_scan_after_already_scanned_check(self, explicit_files=None):
         """Runs right before every folder-level scan actually starts
         (Scan button, drag-a-folder) - NOT the single-dropped-file case,
         which has no "folder" to ask about. A cheap local-only precheck
-        (tag/cover reads only, no network - same cost class as
-        _choose_folder's own synchronous list_audio_files() call, so
-        blocking the main thread briefly here is consistent with existing
-        behavior) via tagger.find_already_applied_files() finds any file
-        this scan is about to touch that already looks fully applied (see
-        track_tidy.py's _is_already_applied). If there's at least one,
-        asks whether to rescan those too (unchanged behavior - they're
-        still skipped online, just re-added to the table) or skip them
-        entirely this time, before the real (network-calling) scan is
-        handed off to a background thread as usual."""
+        (same cost class as _choose_folder's own synchronous
+        list_audio_files() call, so blocking the main thread briefly here
+        is consistent with existing behavior) via
+        tagger.find_already_scanned_files() finds any file this scan is
+        about to touch that has already been scanned before (see
+        track_tidy.py's SCAN_HISTORY_FILE - this is broader than "already
+        applied": it also catches a file the user reviewed and left
+        unchecked last time, not just one Apply actually wrote). If
+        there's at least one, offers a choice - scan only the new ones
+        (default) or rescan everything - before the real (network-
+        calling) scan is handed off to a background thread as usual."""
         known_files = {info["file"] for info in self.scanned_plan}
         if explicit_files is not None:
             candidate_files = sorted(set(explicit_files) - known_files)
         else:
             candidate_files = sorted(set(tagger.list_audio_files()) - known_files)
 
-        already_applied_files = set(tagger.find_already_applied_files(candidate_files))
+        already_scanned_files = set(tagger.find_already_scanned_files(candidate_files))
+        new_files = [f for f in candidate_files if f not in already_scanned_files]
 
         # Stays whatever the caller passed in (None for every current
         # caller) unless the user actually chooses to filter something
@@ -2331,31 +2333,81 @@ class TaggerInterface:
         # silently lose that removed-file detection for no reason.
         files_to_scan = explicit_files
 
-        if already_applied_files:
-            count = len(already_applied_files)
-            unit = "track" if count == 1 else "tracks"
-            rescan = messagebox.askyesno(
-                "Already-tagged tracks found",
-                f"{count} {unit} in this folder already look{'s' if count == 1 else ''} fully "
-                "tagged (a cover and complete Artist/Title already there - from a previous "
-                "Apply, or tagged elsewhere already).\n\n"
-                "Rescan them too? Either way they won't be searched online again - choosing "
-                "\"No\" just skips adding them to the list at all this time.",
-                parent=self.window,
-            )
-            if not rescan:
-                files_to_scan = [f for f in candidate_files if f not in already_applied_files]
+        if already_scanned_files:
+            choice = self._ask_scan_mode(len(already_scanned_files), len(new_files))
+            if choice is None:
+                self._set_buttons_enabled(True)
+                return
+            if choice == "new_only":
+                files_to_scan = new_files
                 if not files_to_scan:
                     self._set_buttons_enabled(True)
                     messagebox.showinfo(
-                        "Nothing to scan",
-                        "Every track in this folder is already tagged - nothing left to scan.",
+                        "Nothing new to scan",
+                        "Every track in this folder has already been scanned before.",
                         parent=self.window,
                     )
                     return
 
         self._show_scan_progress_bar()
         self._run_in_background(self._run_scan, files_to_scan)
+
+    def _ask_scan_mode(self, already_scanned_count, new_count):
+        """Small choice dialog shown when some of the files about to be
+        scanned have already been scanned before - "Scan only new tracks"
+        is pre-selected whenever there IS at least one new track (the
+        common case: importing a folder that's grown since last time),
+        falling back to "Rescan everything" pre-selected when every
+        candidate file has already been scanned (nothing new to select
+        by default). Returns "new_only" or "all", or None if cancelled."""
+        result = {"choice": None}
+
+        dialog = tk.Toplevel(self.window)
+        self._style_toplevel(dialog)
+        dialog.title("Some tracks already scanned")
+        dialog.resizable(False, False)
+        dialog.transient(self.window)
+        dialog.grab_set()
+
+        unit = "track" if already_scanned_count == 1 else "tracks"
+        verb = "has" if already_scanned_count == 1 else "have"
+        ttk.Label(
+            dialog,
+            text=f"{already_scanned_count} {unit} in this folder {verb} already been "
+                 "scanned before.",
+            justify="left", wraplength=380, padding=(20, 20, 20, 10),
+        ).pack()
+
+        default_choice = "new_only" if new_count > 0 else "all"
+        choice_var = tk.StringVar(value=default_choice)
+        options_frame = ttk.Frame(dialog)
+        options_frame.pack(fill="x", padx=20, pady=(0, 5))
+        ttk.Radiobutton(
+            options_frame, text=f"Scan only new tracks ({new_count})",
+            variable=choice_var, value="new_only",
+            state=("normal" if new_count > 0 else "disabled"),
+        ).pack(anchor="w", pady=2)
+        ttk.Radiobutton(
+            options_frame, text="Rescan everything", variable=choice_var, value="all",
+        ).pack(anchor="w", pady=2)
+
+        def confirm():
+            result["choice"] = choice_var.get()
+            dialog.destroy()
+
+        def cancel():
+            dialog.destroy()
+
+        dialog.protocol("WM_DELETE_WINDOW", cancel)
+
+        button_row = ttk.Frame(dialog)
+        button_row.pack(pady=(5, 15))
+        ttk.Button(button_row, text="Scan", command=confirm, width=12).pack(side="left", padx=5)
+        ttk.Button(button_row, text="Cancel", command=cancel, width=12).pack(side="left", padx=5)
+
+        self._center_dialog(dialog)
+        dialog.wait_window()
+        return result["choice"]
 
     def _show_scan_progress_bar(self):
         """Shows the same progress bar Apply uses (progress_canvas, right
@@ -2394,6 +2446,7 @@ class TaggerInterface:
 
             def _on_file_scanned(info):
                 scanned_count["value"] += 1
+                tagger.mark_file_scanned(info["file"])
                 # Not displayed the instant it's ready - see
                 # _reveal_next_scan_row(): queued here so the TABLE reveals
                 # tracks no faster than SCAN_REVEAL_INTERVAL_MS apart, while
