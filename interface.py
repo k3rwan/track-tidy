@@ -3626,7 +3626,7 @@ class TaggerInterface:
                     ),
                     tags=(tag,),
                 )
-                tree.item(parent_id, open=True)
+                tree.item(parent_id, open=False)
                 entries_by_parent[parent_id] = entry
 
         def schedule_history_filter(event=None):
