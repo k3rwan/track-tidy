@@ -3753,6 +3753,13 @@ class TaggerInterface:
                 )
 
             successes, failures, restored_entries = 0, [], []
+            # restore_history_entry already tried a bounded search of the
+            # original folder tree - collect every entry it still couldn't
+            # find WITHOUT prompting per file (a "Locate it manually?"
+            # popup for each one, back to back, was the actual complaint -
+            # one grouped question below instead, then only the unavoidable
+            # per-file file-pickers if the user says yes).
+            not_found = []
             for entry in entries:
                 display_name = entry.get("new_file") or entry.get("old_file") or "the file"
                 try:
@@ -3761,29 +3768,37 @@ class TaggerInterface:
                     restored_entries.append(entry)
                     _log_restore(entry)
                 except FileNotFoundError:
-                    # restore_history_entry already tried a bounded search
-                    # of the original folder tree - ask the user to locate
-                    # it manually rather than just failing outright.
-                    if messagebox.askyesno(
-                        "File not found",
-                        f"'{display_name}' wasn't found where it was originally processed - "
-                        "it may have moved or been renamed.\n\nLocate it manually?",
-                        parent=dialog,
-                    ):
-                        chosen = filedialog.askopenfilename(title=f"Locate '{display_name}'", parent=dialog)
-                        if chosen:
-                            try:
-                                tagger.restore_history_entry(entry, log=self._append_to_journal, override_path=chosen)
-                                successes += 1
-                                restored_entries.append(entry)
-                                _log_restore(entry)
-                                continue
-                            except Exception as error:
-                                failures.append((display_name, str(error)))
-                                continue
-                    failures.append((display_name, "File not found"))
+                    not_found.append((entry, display_name))
                 except Exception as error:
                     failures.append((display_name, str(error)))
+
+            if not_found:
+                count = len(not_found)
+                unit = "file" if count == 1 else "files"
+                names_preview = "\n".join(f"- {name}" for _, name in not_found[:5])
+                if count > 5:
+                    names_preview += f"\n...and {count - 5} more"
+                locate = messagebox.askyesno(
+                    "Files not found",
+                    f"{count} {unit} weren't found where {'it was' if count == 1 else 'they were'} "
+                    f"originally processed - {'it' if count == 1 else 'they'} may have moved or been "
+                    f"renamed:\n\n{names_preview}\n\n"
+                    f"Locate {'it' if count == 1 else 'them, one at a time,'} manually?",
+                    parent=dialog,
+                )
+                for entry, display_name in not_found:
+                    chosen = filedialog.askopenfilename(title=f"Locate '{display_name}'", parent=dialog) if locate else None
+                    if chosen:
+                        try:
+                            tagger.restore_history_entry(entry, log=self._append_to_journal, override_path=chosen)
+                            successes += 1
+                            restored_entries.append(entry)
+                            _log_restore(entry)
+                            continue
+                        except Exception as error:
+                            failures.append((display_name, str(error)))
+                            continue
+                    failures.append((display_name, "File not found"))
 
             tagger.log_action(
                 f"Restore from history: {successes}/{len(entries)} file(s) restored"
