@@ -1394,8 +1394,18 @@ MIX_NUMBER_SUFFIX_RE = re.compile(r"\s+M\d{1,2}\s*$")
 # own always-on rule, same idea as FUVICLAN_PATTERN further down.
 KLICKAUD_WATERMARK_RE = re.compile(r"[_\s]*klickaud\s*$", re.IGNORECASE)
 
+# "Extended Mix" normalization: fix any casing to the one proper-cased form,
+# and "[Extended Mix]" (square brackets, as some sources tag it) to
+# "(Extended Mix)" to match this app's own parenthesized qualifier
+# convention (see build_display_name / GENERIC_MIX_KEYWORDS).
+EXTENDED_MIX_BRACKETS_RE = re.compile(r"\[\s*extended mix\s*\]", re.IGNORECASE)
+EXTENDED_MIX_CASING_RE = re.compile(r"extended mix", re.IGNORECASE)
+
 
 def clean_title(text):
+    text = EXTENDED_MIX_BRACKETS_RE.sub("(Extended Mix)", text)
+    text = EXTENDED_MIX_CASING_RE.sub("Extended Mix", text)
+
     if KLICKAUD_WATERMARK_RE.search(text):
         text = KLICKAUD_WATERMARK_RE.sub("", text)
         # KLICKAUD's own filenames consistently use underscores in place of
