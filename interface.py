@@ -320,6 +320,13 @@ class TaggerInterface:
         # (different tabs, nothing stops both running at once), so sharing
         # one Event would let cancelling one spuriously cancel the other.
         self.extract_cancel_requested = threading.Event()
+        # Remembers the folder the user last manually located a moved
+        # history file in (see restore_selected in the History window) -
+        # kept at the app level, not just for one Restore call, since a
+        # user restoring several moved tracks one at a time (not all
+        # selected together) should still benefit from it on the 2nd, 3rd...
+        # track, not just within a single multi-select batch.
+        self._history_restore_located_folder = None
         self.scanned_plan = []
         self.tk_images = {}  # keeps a reference to PhotoImages (otherwise Tkinter clears them)
         self.tk_images_hover = {}  # same thumbnails, with a magnifier badge - built lazily on first hover
@@ -3817,13 +3824,18 @@ class TaggerInterface:
                 # same bounded search restore_history_entry itself already
                 # does for the originally-logged folder) for each remaining
                 # not-found entry's expected filename before bothering the
-                # user with another picker for it.
-                located_folder = None
+                # user with another picker for it. Kept on self (see
+                # __init__), not a local, so this still helps even when the
+                # user restores moved tracks one at a time across SEPARATE
+                # Restore clicks, not just within one multi-select batch.
                 for entry, display_name in not_found:
                     chosen = None
-                    if locate and located_folder:
+                    if locate and self._history_restore_located_folder:
                         expected_name = os.path.basename(entry.get("new_file") or entry.get("old_file") or "")
-                        auto_found = tagger._find_file_by_name(located_folder, expected_name) if expected_name else None
+                        auto_found = (
+                            tagger._find_file_by_name(self._history_restore_located_folder, expected_name)
+                            if expected_name else None
+                        )
                         if auto_found:
                             chosen = auto_found
                             self._append_to_journal(
@@ -3832,7 +3844,7 @@ class TaggerInterface:
                     if chosen is None and locate:
                         chosen = filedialog.askopenfilename(title=f"Locate '{display_name}'", parent=dialog)
                         if chosen:
-                            located_folder = os.path.dirname(chosen)
+                            self._history_restore_located_folder = os.path.dirname(chosen)
                     if chosen:
                         try:
                             tagger.restore_history_entry(entry, log=self._append_to_journal, override_path=chosen)
