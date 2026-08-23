@@ -358,6 +358,17 @@ class TaggerInterface:
         self.theme_var = tk.StringVar(value=saved_theme)
 
         saved_settings = tagger.load_settings()
+
+        # Restores the last folder explicitly chosen via Browse... (see
+        # _choose_folder, which is also the only place that saves it) - not
+        # a folder only ever reached by drag-and-drop, which by design never
+        # touches this field. Silently ignored if the folder's gone (moved,
+        # deleted, a different drive not connected right now) - the field
+        # just starts empty like it always used to, no error shown for it.
+        saved_music_folder = saved_settings.get("music_folder", "")
+        if saved_music_folder and os.path.isdir(saved_music_folder):
+            tagger.MUSIC_FOLDER = saved_music_folder
+
         self.auto_convert_var = tk.BooleanVar(value=saved_settings.get("auto_convert_mp3", False))
         self.auto_convert_wav_aiff_var = tk.BooleanVar(value=saved_settings.get("auto_convert_wav_to_aiff", True))
         self.fix_track_file_name_var = tk.BooleanVar(value=saved_settings.get("fix_track_file_name", True))
@@ -2060,6 +2071,7 @@ class TaggerInterface:
             self._refresh_tagger_buttons_for_connectivity()
 
             tagger.MUSIC_FOLDER = folder
+            tagger.save_setting("music_folder", folder)
             file_count = len(tagger.list_audio_files())
             unit = "audio file" if file_count == 1 else "audio files"
             self._append_to_journal(f"Selected folder contains {file_count} {unit}.")

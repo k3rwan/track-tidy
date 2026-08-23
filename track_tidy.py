@@ -972,6 +972,7 @@ DEFAULT_SETTINGS = {
     "fix_track_file_name": True,
     "use_spotify": False,
     "show_log_section": False,
+    "music_folder": "",
 }
 
 
