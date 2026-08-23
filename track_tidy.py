@@ -1559,6 +1559,17 @@ def title_has_named_qualifier(title):
     return bool(find_named_qualifier_groups(title))
 
 
+def title_has_generic_qualifier(title):
+    """True if `title` contains at least one PURELY generic qualifier (e.g.
+    "(Extended Mix)", "(Radio Edit)") - see is_generic_mix_qualifier(). Used
+    to tell apart a track that genuinely has no mix-variant info at all
+    from one whose generic qualifier was simply stripped for the search
+    query (see compute_search_titles) - search_cover_soundcloud() needs
+    that distinction to avoid rejecting a candidate over the same harmless
+    generic label it stripped from its own query."""
+    return any(is_generic_mix_qualifier(group) for group in re.findall(r"\(([^)]*)\)", title))
+
+
 def named_qualifier_name_words(title):
     """
     Returns the significant "name" words (length >= 3, the mix-type
@@ -2373,7 +2384,7 @@ def detect_parenthetical_mentions(text):
 
 def _search_one_source(
     source, artist, search_title, remix_qualified_title, soundcloud_token, spotify_token, log,
-    on_itunes_rate_limited=None, on_spotify_rate_limited=None,
+    on_itunes_rate_limited=None, on_spotify_rate_limited=None, own_has_generic_qualifier=False,
 ):
     """
     Tries a single cover source, using that provider's own established
@@ -2431,7 +2442,10 @@ def _search_one_source(
         return match_result, (label if match_result else None)
 
     # source == "soundcloud"
-    match_result = search_cover_soundcloud(artist, remix_qualified_title, soundcloud_token, log=log)
+    match_result = search_cover_soundcloud(
+        artist, remix_qualified_title, soundcloud_token, log=log,
+        own_has_generic_qualifier=own_has_generic_qualifier,
+    )
     return match_result, ("SoundCloud" if match_result else None)
 
 
@@ -2462,6 +2476,7 @@ def search_cover_manual(
         return None, None, None, None
 
     search_title, remix_qualified_title = compute_search_titles(title)
+    own_has_generic_qualifier = title_has_generic_qualifier(title)
 
     for source, enabled in (
         ("itunes", USE_ITUNES),
@@ -2473,6 +2488,7 @@ def search_cover_manual(
         match_result, cover_source = _search_one_source(
             source, artist, search_title, remix_qualified_title, soundcloud_token, spotify_token, log,
             on_itunes_rate_limited=on_itunes_rate_limited, on_spotify_rate_limited=on_spotify_rate_limited,
+            own_has_generic_qualifier=own_has_generic_qualifier,
         )
         if match_result:
             found_cover_image, returned_artist, returned_title = match_result
@@ -2965,6 +2981,12 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
         # artist to search with.
         has_query = bool(prepared["search_title"])
         has_search_title = has_query
+        # See search_cover_soundcloud's own_has_generic_qualifier - the
+        # original title's generic qualifier (e.g. "Extended Mix") is
+        # already gone from search_title/remix_qualified_title by this
+        # point (compute_search_titles strips it), so it has to be
+        # recovered from the untouched detected_title instead.
+        own_has_generic_qualifier = title_has_generic_qualifier(prepared["detected_title"] or "")
 
         if USE_ITUNES and has_query:
             match_result, cover_source = _search_one_source(
@@ -2990,9 +3012,13 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
             match_result, cover_source = _search_one_source(
                 "soundcloud", prepared["detected_artist"], prepared["search_title"],
                 prepared["remix_qualified_title"], soundcloud_token, None, log,
+                own_has_generic_qualifier=own_has_generic_qualifier,
             )
 
         if not match_result and _try_acoustid_correction(prepared, log, on_rate_limited=on_acoustid_rate_limited):
+            # _try_acoustid_correction rewrites detected_title in place -
+            # recompute rather than reuse the pre-correction value above.
+            own_has_generic_qualifier = title_has_generic_qualifier(prepared["detected_title"] or "")
             for source, enabled in (
                 ("itunes", USE_ITUNES),
                 ("spotify", USE_SPOTIFY and bool(spotify_token) and not SPOTIFY_SEARCH_RATE_LIMITED),
@@ -3004,6 +3030,7 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
                     source, prepared["detected_artist"], prepared["search_title"],
                     prepared["remix_qualified_title"], soundcloud_token, spotify_token, log,
                     on_itunes_rate_limited=on_itunes_rate_limited, on_spotify_rate_limited=on_spotify_rate_limited,
+                    own_has_generic_qualifier=own_has_generic_qualifier,
                 )
                 if match_result:
                     break
@@ -3984,12 +4011,19 @@ SOUNDCLOUD_MIN_REQUEST_INTERVAL_SECONDS = 1.5
 _soundcloud_throttle = _SourceThrottle(SOUNDCLOUD_MIN_REQUEST_INTERVAL_SECONDS)
 
 
-def search_cover_soundcloud(artist, title, token, log=safe_print):
+def search_cover_soundcloud(artist, title, token, log=safe_print, own_has_generic_qualifier=False):
     """
     Checks up to 10 candidates, not just the top one - SoundCloud's
     relevance ranking doesn't always put the exact upload we want first
     (e.g. a specific named bootleg can easily rank behind more generic
     uploads of the same base song), same reasoning as search_cover_itunes().
+
+    own_has_generic_qualifier: whether the ORIGINAL (pre-search-stripping)
+    title carried a purely generic qualifier of its own (e.g. "Extended
+    Mix") - `title` here has already had that stripped by compute_search_
+    titles, so without this the "reject an unsolicited variant" check below
+    can't tell "our own track never had one" apart from "it did, just not
+    in this exact query" (see its own comment).
     """
     if not token:
         return None
@@ -4102,8 +4136,23 @@ def search_cover_soundcloud(artist, title, token, log=safe_print):
             # like "(Official Audio)"/"(HQ)" is deliberately left alone
             # (see looks_like_mix_variant) so this doesn't also reject
             # otherwise-good legitimate reposts.
+            #
+            # Exception: own_has_generic_qualifier - our OWN original track
+            # had a purely generic qualifier of its own (e.g. "Extended
+            # Mix"), just stripped from THIS query by compute_search_titles
+            # (generic labels are inconsistent across stores, so search
+            # ignores them) - if the candidate's variant is ALSO purely
+            # generic (not named), it's not "a variant we never asked for",
+            # it's the same harmless label our own title has too. Real
+            # report: our own "Hatiras - Hypnotized (Extended Mix)" (query
+            # searched as bare "Hypnotized") rejected SoundCloud's own
+            # upload titled "Hypnotized (Extended Mix)" by uploader
+            # "Hatiras" - an obviously correct match. Still strict (continue)
+            # when our own track had NO qualifier at all, or the candidate's
+            # is a NAMED one - that's the actual "Mi Amigo (Remix)" case.
             if not looks_like_mix_variant(title) and looks_like_mix_variant(track_title):
-                continue
+                if not (own_has_generic_qualifier and not title_has_named_qualifier(track_title)):
+                    continue
 
             # title_words_overlap only requires ONE shared word with the base
             # title, which a DIFFERENT upload of the same song (e.g. a plain

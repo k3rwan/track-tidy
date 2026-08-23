@@ -880,7 +880,7 @@ class SearchOneSourceTests(unittest.TestCase):
     def test_soundcloud_uses_remix_qualified_title_directly(self):
         calls = []
 
-        def fake_soundcloud(artist, title, token, log=None):
+        def fake_soundcloud(artist, title, token, log=None, **kwargs):
             calls.append(title)
             return (b"cover", artist, title)
 
@@ -1001,14 +1001,14 @@ class SearchCoverManualTests(unittest.TestCase):
 
     def test_falls_through_to_the_next_enabled_source_on_miss(self):
         tagger.search_cover_itunes = lambda artist, title, log=None, **kwargs: None
-        tagger.search_cover_soundcloud = lambda artist, title, token, log=None: (b"cover", artist, title)
+        tagger.search_cover_soundcloud = lambda artist, title, token, log=None, **kwargs: (b"cover", artist, title)
 
         result = tagger.search_cover_manual("Artist", "Title", "sc-token")
         self.assertEqual(result, (b"cover", "SoundCloud", "Artist", "Title"))
 
     def test_no_match_from_any_source_returns_none_tuple(self):
         tagger.search_cover_itunes = lambda artist, title, log=None, **kwargs: None
-        tagger.search_cover_soundcloud = lambda artist, title, token, log=None: None
+        tagger.search_cover_soundcloud = lambda artist, title, token, log=None, **kwargs: None
 
         result = tagger.search_cover_manual("Artist", "Title", None)
         self.assertEqual(result, (None, None, None, None))
@@ -1282,7 +1282,7 @@ class ScanFilesParallelITunesTests(unittest.TestCase):
 
     def test_falls_back_to_soundcloud_when_itunes_misses(self):
         tagger.search_cover_itunes = lambda artist, title, log=None, **kwargs: None
-        tagger.search_cover_soundcloud = lambda artist, title, token, log=None: (b"cover", artist, title)
+        tagger.search_cover_soundcloud = lambda artist, title, token, log=None, **kwargs: (b"cover", artist, title)
 
         results = tagger.scan_files(self.file_names[:2], log=lambda msg: None)
 
@@ -1297,7 +1297,7 @@ class ScanFilesParallelITunesTests(unittest.TestCase):
             return (b"cover", artist, title)
 
         tagger.search_cover_itunes = fake_itunes
-        tagger.search_cover_soundcloud = lambda artist, title, token, log=None: (b"cover", artist, title)
+        tagger.search_cover_soundcloud = lambda artist, title, token, log=None, **kwargs: (b"cover", artist, title)
 
         results = tagger.scan_files(self.file_names[:2], log=lambda msg: None)
 
