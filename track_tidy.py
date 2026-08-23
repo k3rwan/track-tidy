@@ -2679,8 +2679,20 @@ def _prepare_scan(file_name, log=safe_print, on_new_mention=None, history_lookup
         # for it instead of re-spending quota re-confirming what's already
         # there (this is what "double scan" means in this codebase -
         # rescanning a folder that still has already-applied files sitting
-        # in it).
-        "already_applied": _is_already_applied(file_name, history_lookup),
+        # in it). Also requires has_cover/current_artist/current_title to
+        # be true RIGHT NOW, not just a history record that it once was -
+        # history.jsonl only proves Apply ran successfully at some point in
+        # the past, not that the file still looks that way today (it can
+        # have lost its cover since, e.g. edited elsewhere, or by the
+        # force_remove_if_missing bug this same session fixed). Real
+        # report: the scan log confidently claimed "already has a cover
+        # and tags - skipping online search" for files that demonstrably
+        # did not have one anymore, permanently blocking them from ever
+        # being re-searched.
+        "already_applied": (
+            bool(has_cover and current_artist and current_title)
+            and _is_already_applied(file_name, history_lookup)
+        ),
     }
 
 
