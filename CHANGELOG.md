@@ -3,6 +3,32 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.24]
+
+### Added
+- Settings now reset to their defaults automatically the first time the
+  app runs after an update, instead of carrying forward whatever the
+  previous version had saved.
+
+### Changed
+- A folder with more than 100 tracks no longer blocks the scan outright -
+  the first 100 are loaded instead, with a one-time heads-up.
+- iTunes and Spotify are now tried even when no artist could be detected
+  from the filename (searching with just the title), instead of being
+  skipped entirely - SoundCloud already worked this way.
+- "Automatic (time of day)" is now the first (leftmost) appearance option.
+
+### Fixed
+- Dark mode: several remaining light-colored outlines (the table's column
+  headers on hover, the active tab's focus ring, the table's own border,
+  the tab content pane's border, and the OS window frame itself) still
+  fell back to the native light theme's defaults in some states.
+- Filenames carrying a trailing "KLICKAUD" watermark, or using a bare
+  hyphen with no space before it as the artist/title separator, weren't
+  parsed correctly.
+- "Reset all settings to default" no longer shows a confirmation popup
+  after the reset already happened.
+
 ## [0.23.3]
 
 ### Fixed
