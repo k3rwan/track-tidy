@@ -2367,7 +2367,6 @@ class TaggerInterface:
         dialog.title("Some tracks already scanned")
         dialog.resizable(False, False)
         dialog.transient(self.window)
-        dialog.grab_set()
 
         unit = "track" if already_scanned_count == 1 else "tracks"
         verb = "has" if already_scanned_count == 1 else "have"
@@ -2402,10 +2401,25 @@ class TaggerInterface:
 
         button_row = ttk.Frame(dialog)
         button_row.pack(pady=(5, 15))
-        ttk.Button(button_row, text="Scan", command=confirm, width=12).pack(side="left", padx=5)
+        scan_button = ttk.Button(button_row, text="Scan", command=confirm, width=12)
+        scan_button.pack(side="left", padx=5)
         ttk.Button(button_row, text="Cancel", command=cancel, width=12).pack(side="left", padx=5)
 
         self._center_dialog(dialog)
+        # grab_set()/focus deliberately deferred until AFTER the dialog is
+        # actually mapped (_center_dialog's deiconify()) rather than right
+        # after creation like most of this app's other dialogs - those
+        # don't block on wait_window() for their result, so a grab that
+        # doesn't fully "stick" on a not-yet-viewable window goes unnoticed
+        # (the OK/single button still works via normal focus). This dialog's
+        # whole return value depends on a click actually registering, so it
+        # gets the extra explicit focus_force()/focus_set() below. (NOT
+        # wait_visibility() first - tried that, it can block for a long time
+        # waiting for a Visibility event that isn't always delivered
+        # promptly, which is worse than the problem it was meant to fix.)
+        dialog.grab_set()
+        dialog.focus_force()
+        scan_button.focus_set()
         dialog.wait_window()
         return result["choice"]
 
