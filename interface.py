@@ -3677,6 +3677,13 @@ class TaggerInterface:
             if not messagebox.askyesno("Restore previous version(s)", prompt, parent=dialog, default=messagebox.NO):
                 return
 
+            def _log_restore(entry):
+                tagger.log_action(
+                    f"Restored: '{entry.get('new_file')}' -> '{entry.get('old_file')}' | "
+                    f"Artist: '{entry.get('new_artist') or ''}' -> '{entry.get('old_artist') or ''}' | "
+                    f"Title: '{entry.get('new_title') or ''}' -> '{entry.get('old_title') or ''}'"
+                )
+
             successes, failures, restored_entries = 0, [], []
             for entry in entries:
                 display_name = entry.get("new_file") or entry.get("old_file") or "the file"
@@ -3684,6 +3691,7 @@ class TaggerInterface:
                     tagger.restore_history_entry(entry, log=self._append_to_journal)
                     successes += 1
                     restored_entries.append(entry)
+                    _log_restore(entry)
                 except FileNotFoundError:
                     # restore_history_entry already tried a bounded search
                     # of the original folder tree - ask the user to locate
@@ -3700,6 +3708,7 @@ class TaggerInterface:
                                 tagger.restore_history_entry(entry, log=self._append_to_journal, override_path=chosen)
                                 successes += 1
                                 restored_entries.append(entry)
+                                _log_restore(entry)
                                 continue
                             except Exception as error:
                                 failures.append((display_name, str(error)))

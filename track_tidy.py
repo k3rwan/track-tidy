@@ -995,15 +995,23 @@ def check_and_apply_version_reset():
 # --- General activity log ---
 
 # Plain-text, human-readable record of every user-facing action (settings
-# changes, Apply/Restore runs, reports sent, updates installed...) - kept
-# separate from the live per-file scan log shown in the "Log" panel, which
-# is UI-only and never written to disk. Meant to be found and read by hand
-# (e.g. when troubleshooting a support request), not parsed back by the app.
+# changes, Apply/Restore runs - old filename/artist/title -> new, reports
+# sent, updates installed...) - kept separate from the live per-file scan
+# log shown in the "Log" panel, which is UI-only and never written to disk.
+# Meant to be found and read by hand (e.g. when troubleshooting a support
+# request), not parsed back by the app.
+#
+# Must survive forever, including across an update: log_action() only ever
+# APPENDS to it (never opened in "w"/truncating mode), and neither
+# check_and_apply_version_reset() nor "Reset all settings to default" touch
+# it - both only ever rewrite SETTINGS_FILE. Keep it that way: nothing in
+# this codebase may delete or truncate ACTION_LOG_FILE.
 ACTION_LOG_FILE = os.path.join(user_config_dir(), "activity_log.txt")
 
 
 def log_action(message):
-    """Appends one timestamped line to ACTION_LOG_FILE."""
+    """Appends one timestamped line to ACTION_LOG_FILE. Never deletes or
+    truncates it - see the module-level comment above ACTION_LOG_FILE."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
         with open(ACTION_LOG_FILE, "a", encoding="utf-8") as f:
@@ -1052,6 +1060,13 @@ def log_history_entry(old_file, new_file, old_artist, old_title, new_artist, new
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception as error:
         print(f"  Could not write history entry: {error}")
+
+    log_action(
+        f"Applied: '{old_file}' -> '{new_file}' | "
+        f"Artist: '{old_artist or ''}' -> '{new_artist or ''}' | "
+        f"Title: '{old_title or ''}' -> '{new_title or ''}' | "
+        f"Cover updated: {cover_updated} | Converted: {converted}"
+    )
 
 
 def _find_file_by_name(folder, basename):
