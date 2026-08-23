@@ -3842,7 +3842,10 @@ class TaggerInterface:
                                 f"  Found '{display_name}' automatically in the same folder."
                             )
                     if chosen is None and locate:
-                        chosen = filedialog.askopenfilename(title=f"Locate '{display_name}'", parent=dialog)
+                        expected_name = os.path.basename(entry.get("new_file") or entry.get("old_file") or "")
+                        chosen = filedialog.askopenfilename(
+                            title=f"Locate '{display_name}'", parent=dialog, initialfile=expected_name,
+                        )
                         if chosen:
                             self._history_restore_located_folder = os.path.dirname(chosen)
                     if chosen:
