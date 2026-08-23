@@ -3,6 +3,51 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.25]
+
+### Added
+- A persistent, human-readable activity log records every action (settings
+  changes, Apply/Restore runs, reports sent, updates installed) - separate
+  from the per-file scan log, and never cleared even across an update.
+- History entries from the same scan are now grouped under one collapsible
+  "Scan" row instead of being listed individually - clicking the group
+  selects every track inside it.
+- A "⚠️" marker now flags titles with no cover match in the main table,
+  alongside the existing "🎧" AcoustID marker.
+- The last folder chosen via Browse... is remembered and restored
+  automatically on the next launch.
+- When restoring a moved history entry, locating one missing file's new
+  folder now auto-locates the rest of that scan's missing files there too.
+- The app no longer opens a second instance if launched again while
+  already running.
+
+### Changed
+- The "already-tagged tracks found" popup is gone - scans now offer a
+  proper choice between rescanning everything or only new tracks (always
+  defaulting to new tracks), backed by a persistent scan history.
+- "File not found" prompts when restoring multiple history entries are now
+  grouped into one summary instead of one popup per file.
+- History entries are collapsed by default instead of expanded.
+- "extended mix" is now normalized to "Extended Mix" casing, and
+  "[Extended Mix]" to "(Extended Mix)".
+- Settings now notes that fixing a track's file name can break Rekordbox's
+  link to it.
+
+### Fixed
+- Rescanning an already-tagged file could silently strip its cover art
+  even when no fresh search ran to find a replacement.
+- Already-applied tracks were incorrectly counted/filtered as having no
+  cover match, since their search is normally skipped entirely.
+- An already-tagged file with a real improvement available (e.g. a casing
+  fix) was never re-offered for Apply.
+- A SoundCloud match could be wrongly rejected over a generic qualifier
+  (e.g. "(Extended Mix)") that our own search had already stripped from
+  the query.
+- An artist name using "_" before a trailing "(country)" disambiguator
+  (e.g. "Amine Edge_Aguilar (Italy)") wasn't split correctly.
+- Restoring a history entry now renames the file back to its exact
+  original filename and reverts a WAV->AIFF conversion, not just the tags.
+
 ## [0.24]
 
 ### Added
