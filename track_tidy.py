@@ -992,6 +992,26 @@ def check_and_apply_version_reset():
     save_setting("last_run_version", APP_VERSION)
 
 
+# --- General activity log ---
+
+# Plain-text, human-readable record of every user-facing action (settings
+# changes, Apply/Restore runs, reports sent, updates installed...) - kept
+# separate from the live per-file scan log shown in the "Log" panel, which
+# is UI-only and never written to disk. Meant to be found and read by hand
+# (e.g. when troubleshooting a support request), not parsed back by the app.
+ACTION_LOG_FILE = os.path.join(user_config_dir(), "activity_log.txt")
+
+
+def log_action(message):
+    """Appends one timestamped line to ACTION_LOG_FILE."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with open(ACTION_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"[{timestamp}] {message}\n")
+    except Exception as error:
+        print(f"  Could not write to the activity log: {error}")
+
+
 # --- Processing history log ---
 
 HISTORY_FILE = os.path.join(user_config_dir(), "history.jsonl")

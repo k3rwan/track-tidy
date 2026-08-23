@@ -16,6 +16,7 @@ import getpass
 import io
 import os
 import re
+import socket
 import sys
 import subprocess
 import tempfile
@@ -77,6 +78,32 @@ def play_short_sound(path):
         winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
     else:
         subprocess.run(["afplay", path])
+
+
+# Arbitrary fixed high port, unlikely to collide with anything else -
+# bound for the app's entire lifetime purely as a mutex (nothing ever
+# connects to it). Kept alive by _SINGLE_INSTANCE_LOCK holding a reference
+# to the socket so it isn't garbage-collected (which would close it).
+SINGLE_INSTANCE_PORT = 51793
+_SINGLE_INSTANCE_LOCK = None
+
+
+def acquire_single_instance_lock():
+    """Returns True if this is the only running instance of the app, False
+    if another one already holds the lock (e.g. the user double-clicked the
+    shortcut/exe more than once) - binding a local TCP socket is a simple,
+    dependency-free mutex that works the same way on Windows/macOS/Linux and
+    is automatically released by the OS if the process ever dies without
+    cleaning up."""
+    global _SINGLE_INSTANCE_LOCK
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", SINGLE_INSTANCE_PORT))
+    except OSError:
+        sock.close()
+        return False
+    _SINGLE_INSTANCE_LOCK = sock  # keep it alive/bound for the app's lifetime
+    return True
 
 
 def resource_path(filename):
@@ -390,6 +417,7 @@ class TaggerInterface:
         choice = self.theme_var.get()
         self._apply_theme(self._resolve_theme_choice(choice))
         tagger.save_setting("theme", choice)
+        tagger.log_action(f"Theme changed to '{choice}'")
         if choice == "auto":
             self._schedule_auto_theme_recheck()
 
@@ -435,6 +463,7 @@ class TaggerInterface:
             )
         tagger.AUTO_CONVERT_MP3 = enabled
         tagger.save_setting("auto_convert_mp3", enabled)
+        tagger.log_action(f"Convert everything to MP3: {enabled}")
 
     def _on_auto_convert_wav_aiff_changed(self):
         enabled = self.auto_convert_wav_aiff_var.get()
@@ -451,16 +480,19 @@ class TaggerInterface:
             )
         tagger.AUTO_CONVERT_WAV_TO_AIFF = enabled
         tagger.save_setting("auto_convert_wav_to_aiff", enabled)
+        tagger.log_action(f"Convert WAV to AIFF: {enabled}")
 
     def _on_fix_track_file_name_changed(self):
         enabled = self.fix_track_file_name_var.get()
         tagger.FIX_TRACK_FILE_NAME = enabled
         tagger.save_setting("fix_track_file_name", enabled)
+        tagger.log_action(f"Fix track file name: {enabled}")
 
     def _on_use_spotify_changed(self):
         enabled = self.use_spotify_var.get()
         tagger.USE_SPOTIFY = enabled
         tagger.save_setting("use_spotify", enabled)
+        tagger.log_action(f"Use Spotify: {enabled}")
 
     def _reset_settings_to_default(self):
         """Restores every Settings-tab option to its out-of-the-box value.
@@ -477,6 +509,7 @@ class TaggerInterface:
 
         for key, value in tagger.DEFAULT_SETTINGS.items():
             tagger.save_setting(key, value)
+        tagger.log_action("All settings reset to default")
 
         tagger.AUTO_CONVERT_MP3 = False
         tagger.AUTO_CONVERT_WAV_TO_AIFF = True
@@ -498,6 +531,7 @@ class TaggerInterface:
     def _on_show_log_changed(self):
         enabled = self.show_log_var.get()
         tagger.save_setting("show_log_section", enabled)
+        tagger.log_action(f"Show log section: {enabled}")
 
         if enabled:
             if not self.journal_toggle.winfo_ismapped():
@@ -1352,6 +1386,7 @@ class TaggerInterface:
             messagebox.showerror("Update failed", f"Could not launch the installer: {error}", parent=self.window)
             return
 
+        tagger.log_action(f"Update installer launched: '{os.path.basename(dest_path)}'")
         self.window.destroy()
 
     # --- Startup checks ---
@@ -3673,6 +3708,11 @@ class TaggerInterface:
                 except Exception as error:
                     failures.append((display_name, str(error)))
 
+            tagger.log_action(
+                f"Restore from history: {successes}/{len(entries)} file(s) restored"
+                + (f", {len(failures)} failed" if failures else "")
+            )
+
             if restored_entries:
                 tagger.mark_history_entries_restored(restored_entries)
                 populate()
@@ -4280,6 +4320,8 @@ class TaggerInterface:
 
         def _send():
             success, reason = tagger.send_track_report(info, reporter_name=reporter_name)
+            if success:
+                tagger.log_action(f"Reported track: '{os.path.basename(info.get('file', ''))}'")
             self.message_queue.put(("report_sent", (success, reason)))
 
         self._run_in_background(_send)
@@ -4685,6 +4727,10 @@ class TaggerInterface:
             tagger.MUSIC_FOLDER = folder
         self._sync_mentions_to_remove()
 
+        tagger.log_action(
+            f"Apply started: {len(to_process)} file(s), {len(fixes)} pending fix(es) (folder: '{folder}')"
+        )
+
         if not self.progress_canvas.winfo_ismapped():
             self.progress_canvas.pack(fill="x")
             self._adjust_window_height()
@@ -4753,6 +4799,12 @@ class TaggerInterface:
 
 
 if __name__ == "__main__":
+    if not acquire_single_instance_lock():
+        # Another instance is already running (e.g. the user double-clicked
+        # the shortcut/exe more than once in quick succession) - just exit
+        # quietly instead of opening a second window.
+        sys.exit(0)
+
     try:
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("KEVZ.TrackTidy.1")
