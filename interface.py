@@ -3663,6 +3663,7 @@ class TaggerInterface:
 
         EMPTY_ROW_ID = "__history_empty_row__"
         entries_by_parent = {}
+        group_children = {}  # group row id -> list of its track-level (old-info) row ids
 
         def matches_query(entry, query):
             haystack = " ".join(str(entry.get(key) or "") for key in (
@@ -3674,6 +3675,7 @@ class TaggerInterface:
             for row in tree.get_children():
                 tree.delete(row)
             entries_by_parent.clear()
+            group_children.clear()
 
             if getattr(history_filter_entry, "placeholder_active", False):
                 query = ""
@@ -3732,6 +3734,7 @@ class TaggerInterface:
                         "", "end", text=f"Scan - {group_date_display} ({len(group_entries)} tracks)",
                         values=("", "", "", "", ""), tags=(group_tag,), open=False,
                     )
+                    group_children[container] = []
                     row_index += 1
                 else:
                     container = ""
@@ -3763,6 +3766,8 @@ class TaggerInterface:
                     )
                     tree.item(parent_id, open=False)
                     entries_by_parent[parent_id] = entry
+                    if container:
+                        group_children[container].append(parent_id)
                     row_index += 1
 
         def schedule_history_filter(event=None):
@@ -3777,10 +3782,18 @@ class TaggerInterface:
         def enforce_parent_only_selection(event=None):
             """Clicking (or ctrl/shift-clicking) a child 'Applied' row selects
             its parent instead - Restore/Delete always act on the OLD info,
-            so only old-info rows are meant to be selectable."""
+            so only old-info rows are meant to be selectable. Clicking a
+            'Scan - ...' group row selects every track inside it, so
+            Restore/Delete can act on the whole scan at once."""
             current = tree.selection()
             corrected, seen = [], set()
             for item_id in current:
+                if item_id in group_children:
+                    for child_id in group_children[item_id]:
+                        if child_id not in seen:
+                            seen.add(child_id)
+                            corrected.append(child_id)
+                    continue
                 target = item_id if item_id in entries_by_parent else tree.parent(item_id)
                 if target and target not in seen:
                     seen.add(target)
@@ -3954,9 +3967,14 @@ class TaggerInterface:
             row_id = tree.identify_row(event.y)
             if not row_id:
                 return
-            target = row_id if row_id in entries_by_parent else tree.parent(row_id)
-            if target and target not in tree.selection():
-                tree.selection_set(target)
+            if row_id in group_children:
+                children = group_children[row_id]
+                if not set(children).issubset(tree.selection()):
+                    tree.selection_set(children)
+            else:
+                target = row_id if row_id in entries_by_parent else tree.parent(row_id)
+                if target and target not in tree.selection():
+                    tree.selection_set(target)
 
             menu = self._make_themed_menu(dialog)
             menu.add_command(label="Delete", command=delete_selected)
