@@ -3830,24 +3830,33 @@ class TaggerInterface:
                 # Restore clicks, not just within one multi-select batch.
                 for entry, display_name in not_found:
                     chosen = None
-                    if locate and self._history_restore_located_folder:
-                        expected_name = os.path.basename(entry.get("new_file") or entry.get("old_file") or "")
-                        auto_found = (
-                            tagger._find_file_by_name(self._history_restore_located_folder, expected_name)
-                            if expected_name else None
-                        )
+                    expected_name = os.path.basename(entry.get("new_file") or entry.get("old_file") or "")
+
+                    if locate and self._history_restore_located_folder and expected_name:
+                        auto_found = tagger._find_file_by_name(self._history_restore_located_folder, expected_name)
                         if auto_found:
                             chosen = auto_found
                             self._append_to_journal(
                                 f"  Found '{display_name}' automatically in the same folder."
                             )
                     if chosen is None and locate:
-                        expected_name = os.path.basename(entry.get("new_file") or entry.get("old_file") or "")
-                        chosen = filedialog.askopenfilename(
-                            title=f"Locate '{display_name}'", parent=dialog, initialfile=expected_name,
+                        # Asks for the FOLDER the library moved to, not the
+                        # exact file - matches how this actually gets used
+                        # (searched recursively for the expected filename,
+                        # same as the auto-locate above and
+                        # restore_history_entry's own bounded search), and
+                        # is what a user reorganizing a whole library
+                        # naturally has in mind ("it's over there now"),
+                        # not one specific file's exact path.
+                        picked_folder = filedialog.askdirectory(
+                            title=f"Locate the folder containing '{display_name}'", parent=dialog,
                         )
-                        if chosen:
-                            self._history_restore_located_folder = os.path.dirname(chosen)
+                        if picked_folder:
+                            self._history_restore_located_folder = picked_folder
+                            chosen = tagger._find_file_by_name(picked_folder, expected_name) if expected_name else None
+                            if chosen is None:
+                                failures.append((display_name, f"Not found in '{picked_folder}'"))
+                                continue
                     if chosen:
                         try:
                             tagger.restore_history_entry(entry, log=self._append_to_journal, override_path=chosen)
