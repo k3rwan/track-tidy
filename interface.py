@@ -2355,11 +2355,9 @@ class TaggerInterface:
     def _ask_scan_mode(self, already_scanned_count, new_count):
         """Small choice dialog shown when some of the files about to be
         scanned have already been scanned before - "Scan only new tracks"
-        is pre-selected whenever there IS at least one new track (the
-        common case: importing a folder that's grown since last time),
-        falling back to "Rescan everything" pre-selected when every
-        candidate file has already been scanned (nothing new to select
-        by default). Returns "new_only" or "all", or None if cancelled."""
+        is always the pre-selected default (even with zero new tracks;
+        clicking Scan as-is then just shows "Nothing new to scan" - see the
+        caller). Returns "new_only" or "all", or None if cancelled."""
         result = {"choice": None}
 
         dialog = tk.Toplevel(self.window)
@@ -2377,14 +2375,17 @@ class TaggerInterface:
             justify="left", wraplength=380, padding=(20, 20, 20, 10),
         ).pack()
 
-        default_choice = "new_only" if new_count > 0 else "all"
-        choice_var = tk.StringVar(value=default_choice)
+        # Always pre-selected, even when there happen to be zero new tracks -
+        # clicking "Scan" as-is then just shows the "Nothing new to scan"
+        # info dialog (see the caller), which is a clearer outcome than
+        # silently switching the default to "Rescan everything" underneath
+        # the user without them choosing that.
+        choice_var = tk.StringVar(value="new_only")
         options_frame = ttk.Frame(dialog)
         options_frame.pack(fill="x", padx=20, pady=(0, 5))
         ttk.Radiobutton(
             options_frame, text=f"Scan only new tracks ({new_count})",
             variable=choice_var, value="new_only",
-            state=("normal" if new_count > 0 else "disabled"),
         ).pack(anchor="w", pady=2)
         ttk.Radiobutton(
             options_frame, text="Rescan everything", variable=choice_var, value="all",
