@@ -2733,10 +2733,21 @@ def _finish_scan(prepared, match_result, cover_source, log=safe_print):
         # never got a filename-derived guess to second-guess. A filename
         # flagged "unreleased" starts unchecked too - see
         # contains_unreleased_marker.
+        # Exception: if detected_artist/detected_title actually differ from
+        # what's currently tagged (e.g. a clean_title() normalization added
+        # later, like "extended mix" -> "Extended Mix", now improves on a
+        # tag written by an older version of the app), there IS something to
+        # gain - stays checked even though already_applied, so the fix isn't
+        # silently invisible on a file that was tagged before that rule
+        # existed.
         "apply_changes": (
             bool(detected_title)
-            and not prepared.get("already_applied", False)
             and not contains_unreleased_marker(file_name)
+            and (
+                not prepared.get("already_applied", False)
+                or detected_title != prepared["current_title"]
+                or detected_artist != prepared["current_artist"]
+            )
         ),
         "found_cover_image": found_cover_image,
         "cover_source": cover_source,
