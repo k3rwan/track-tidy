@@ -1062,9 +1062,12 @@ def restore_history_entry(entry, log=safe_print, override_path=None):
     uses that location directly - for when the caller already asked the
     user to locate the file manually.
 
-    The file itself keeps its current format/extension (a WAV->MP3
-    conversion isn't reversible - the original file is gone), but is renamed
-    to match the restored artist/title if both are known.
+    A WAV->AIFF conversion (see convert_wav_to_aiff) is reverted back to WAV
+    too, since that's a lossless byte-order swap with nothing actually lost -
+    unlike a conversion to MP3 (a real re-encode), which isn't reversible,
+    so the file just keeps its current format/extension in that case. Either
+    way, the file is renamed to match the restored artist/title if both are
+    known.
 
     Returns the file's new absolute path (unchanged if it wasn't renamed) -
     absolute rather than relative-to-folder, since override_path/the
@@ -1093,6 +1096,22 @@ def restore_history_entry(entry, log=safe_print, override_path=None):
 
     if not os.path.exists(full_path):
         raise FileNotFoundError(f"File not found: {full_path}")
+
+    # Undo a WAV->AIFF conversion from the run being restored, before
+    # restoring tags - identified by comparing the file's format when this
+    # entry was logged (old_file's extension) against what it is now, not
+    # just the "converted" flag (which is also set for a same-run MP3
+    # conversion, which ISN'T reversible - see convert_aiff_to_wav's
+    # docstring).
+    old_extension = os.path.splitext(entry.get("old_file") or "")[1].lower()
+    current_extension = os.path.splitext(full_path)[1].lower()
+    if old_extension == ".wav" and current_extension == ".aiff":
+        reverted_path = convert_aiff_to_wav(full_path)
+        if reverted_path:
+            log(f"  Reverted the WAV->AIFF conversion: '{reverted_path}'")
+            full_path = reverted_path
+        else:
+            log("  Could not revert the WAV->AIFF conversion - tags/filename will still be restored on the AIFF.")
 
     old_artist = entry.get("old_artist") or ""
     old_title = entry.get("old_title") or ""
@@ -4561,6 +4580,55 @@ def convert_wav_to_aiff(source_path):
         return None
     except Exception as error:
         print(f"  Error during conversion: {error}")
+        return None
+
+
+def convert_aiff_to_wav(source_path):
+    """
+    Reverses convert_wav_to_aiff(): the same lossless PCM byte-order swap
+    (big-endian -> little-endian), not a re-encode, so there's no quality
+    loss - used by restore_history_entry() to fully undo a WAV->AIFF
+    conversion that happened as part of the very run being restored, not
+    just its tags/filename. Removes the source AIFF file on success.
+    """
+    source_tags = None
+    try:
+        source_audio = AIFF(source_path)
+        source_tags = source_audio.tags
+    except Exception as error:
+        print(f"  Could not read existing tags before reverting to WAV: {error}")
+
+    wav_path = os.path.splitext(source_path)[0] + ".wav"
+    try:
+        result = subprocess.run(
+            [find_ffmpeg(), "-i", source_path, "-y", wav_path],
+            capture_output=True,
+            text=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode != 0:
+            print(f"  FFmpeg error while reverting to WAV: {result.stderr[-300:]}")
+            return None
+
+        if source_tags:
+            try:
+                wav_audio = WAVE(wav_path)
+                if wav_audio.tags is None:
+                    wav_audio.add_tags()
+                for frame in source_tags.values():
+                    wav_audio.tags.add(frame)
+                wav_audio.save()
+            except Exception as error:
+                print(f"  Could not carry over existing tags while reverting to WAV: {error}")
+
+        os.remove(source_path)
+        return wav_path
+
+    except FileNotFoundError:
+        print("  FFmpeg was not found. Check that it's installed and in the PATH.")
+        return None
+    except Exception as error:
+        print(f"  Error while reverting to WAV: {error}")
         return None
 
 
