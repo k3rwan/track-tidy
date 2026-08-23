@@ -5041,8 +5041,17 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
 
             update_title = update_artist = update_cover = info.get("apply_changes", True)
 
-            force_remove_if_missing = bool(detect_fuviclan_mention(file_name)) or is_banned_cover_image(
-                info.get("current_cover_bytes")
+            # Only strip a bad-looking existing cover (fuviclan/banned-hash)
+            # when a fresh online search actually ran THIS scan - for an
+            # already_applied row (search skipped entirely, see scan_files),
+            # there's no found_cover_image to replace it with, so this would
+            # otherwise just delete the file's only cover with nothing to
+            # put back. Real report: a rescanned, previously-fully-tagged
+            # track lost its cover this way. Whatever the file currently
+            # has stays untouched until a real search has had a chance to
+            # find something better in the same run.
+            force_remove_if_missing = not info.get("already_applied", False) and (
+                bool(detect_fuviclan_mention(file_name)) or is_banned_cover_image(info.get("current_cover_bytes"))
             )
 
             cover_image = info.get("found_cover_image") if update_cover else None
