@@ -2447,5 +2447,41 @@ class AnalyzeTrackQualityTests(unittest.TestCase):
         self.assertTrue(detail)
 
 
+class ComputeTrackSpectrogramTests(unittest.TestCase):
+    """Real ffmpeg decode + real STFT, using a committed fixture - checks
+    the returned image/axis data is well-formed, not any particular
+    visual content."""
+
+    def setUp(self):
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.asset_path = os.path.join(project_root, "assets", "fart.wav")
+
+    def test_returns_a_correctly_shaped_image_and_axis_data(self):
+        result = tagger.compute_track_spectrogram(self.asset_path)
+        self.assertIsNotNone(result)
+        image = result["image"]
+        self.assertEqual(image.mode, "RGB")
+        width, height = image.size
+        # fart.wav is only a second or two long, so the STFT produces far
+        # fewer frames than QUALITY_SPECTROGRAM_TIME_BINS - _block_average()
+        # correctly clamps down to however many frames actually exist
+        # rather than padding, so only an upper bound is meaningful here.
+        self.assertGreater(width, 0)
+        self.assertLessEqual(width, tagger.QUALITY_SPECTROGRAM_TIME_BINS)
+        self.assertGreater(height, 0)
+        self.assertLessEqual(height, tagger.QUALITY_SPECTROGRAM_FREQ_BINS)
+        self.assertGreater(result["duration_seconds"], 0)
+        self.assertGreater(result["max_freq_hz"], 0)
+
+    def test_returns_none_for_a_file_too_short_to_analyze(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tiny_path = os.path.join(tmp_dir, "tiny.wav")
+            with open(self.asset_path, "rb") as source:
+                header = source.read(44)  # just the RIFF/WAVE header, no audio data
+            with open(tiny_path, "wb") as dest:
+                dest.write(header)
+            self.assertIsNone(tagger.compute_track_spectrogram(tiny_path))
+
+
 if __name__ == "__main__":
     unittest.main()

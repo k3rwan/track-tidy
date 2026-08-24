@@ -330,7 +330,7 @@ class TaggerInterface:
         # the scanned folder).
         self.quality_last_scanned_folder = None
         self.quality_row_paths = {}
-        self._quality_spectrum_requests = {}
+        self._quality_spectrogram_requests = {}
         # Remembers the folder the user last manually located a moved
         # history file in (see restore_selected in the History window) -
         # kept at the app level, not just for one Restore call, since a
@@ -2296,105 +2296,112 @@ class TaggerInterface:
         file_path = self.quality_row_paths.get(item_id)
         if not file_path or not os.path.isfile(file_path):
             messagebox.showinfo(
-                "Spectrum unavailable",
+                "Spectrogram unavailable",
                 "This result's file isn't available anymore - run a new scan first.",
                 parent=self.window,
             )
             return
-        self._show_quality_spectrum_dialog(file_path)
+        self._show_quality_spectrogram_dialog(file_path)
 
-    def _show_quality_spectrum_dialog(self, file_path):
+    def _show_quality_spectrogram_dialog(self, file_path):
         dialog = tk.Toplevel(self.window)
         self._style_toplevel(dialog)
-        dialog.title(f"Spectrum - {os.path.basename(file_path)}")
+        dialog.title(f"Spectrogram - {os.path.basename(file_path)}")
         dialog.resizable(False, False)
         dialog.transient(self.window)
 
         canvas_bg = self.theme_colors["tree_bg"] if self.theme_colors else "white"
-        canvas = tk.Canvas(dialog, width=620, height=320, highlightthickness=0, bg=canvas_bg)
+        canvas = tk.Canvas(dialog, width=640, height=340, highlightthickness=0, bg=canvas_bg)
         canvas.pack(padx=15, pady=(15, 5))
-        status_label = ttk.Label(dialog, text="Analyzing spectrum...")
+        status_label = ttk.Label(dialog, text="Analyzing spectrogram...")
         status_label.pack(pady=(0, 5))
         ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=(0, 15))
 
         self._center_dialog(dialog)
 
         request_id = str(id(dialog))
-        self._quality_spectrum_requests[request_id] = (dialog, canvas, status_label)
-        self._run_in_background(self._compute_quality_spectrum, file_path, request_id)
+        self._quality_spectrogram_requests[request_id] = (dialog, canvas, status_label)
+        self._run_in_background(self._compute_quality_spectrogram, file_path, request_id)
 
-    def _compute_quality_spectrum(self, file_path, request_id):
+    def _compute_quality_spectrogram(self, file_path, request_id):
         try:
-            data = tagger.compute_track_spectrum(file_path, log=self._append_to_journal)
-            self.message_queue.put(("quality_spectrum_ready", (request_id, data, None)))
+            data = tagger.compute_track_spectrogram(file_path, log=self._append_to_journal)
+            self.message_queue.put(("quality_spectrogram_ready", (request_id, data, None)))
         except Exception as error:
-            self.message_queue.put(("quality_spectrum_ready", (request_id, None, str(error))))
+            self.message_queue.put(("quality_spectrogram_ready", (request_id, None, str(error))))
 
-    def _draw_quality_spectrum(self, canvas, data):
-        """Downsampled frequency/magnitude points from
-        tagger.compute_track_spectrum() -> a simple line chart, with a
-        dashed marker at the detected cutoff (if any) - the same cutoff
-        analyze_track_quality() bases its verdict on, made visible instead
-        of just described in the Detail text."""
+    def _draw_quality_spectrogram(self, canvas, data):
+        """Renders tagger.compute_track_spectrogram()'s colormapped image
+        (time across, frequency up, color = dB) scaled up to fill the plot
+        area, with axis ticks/labels and a dashed marker at the detected
+        cutoff (if any) - the same cutoff analyze_track_quality() bases its
+        verdict on, made visible instead of just described in the Detail
+        text."""
         canvas.delete("all")
-        width, height = 620, 320
-        margin_left, margin_right, margin_top, margin_bottom = 45, 15, 22, 28
+        width, height = 640, 340
+        margin_left, margin_right, margin_top, margin_bottom = 50, 15, 10, 28
         plot_w = width - margin_left - margin_right
         plot_h = height - margin_top - margin_bottom
 
-        freqs = data.get("freqs_hz") or []
-        mags = data.get("magnitudes_db") or []
+        image = data.get("image")
+        duration = data.get("duration_seconds") or 0
+        max_freq = data.get("max_freq_hz") or 1
         cutoff = data.get("cutoff_hz")
-        if not freqs or not mags:
+        if image is None or duration <= 0:
             return
 
-        min_db, max_db = min(mags), max(mags)
-        if max_db - min_db < 1:
-            max_db = min_db + 1
-        max_freq = freqs[-1] or 1
+        resized = image.resize((plot_w, plot_h), Image.LANCZOS)
+        photo = ImageTk.PhotoImage(resized)
+        # Tk drops a PhotoImage as soon as nothing in Python still
+        # references it, even though the Canvas item keeps pointing at it -
+        # stash it on the canvas itself so it survives as long as the
+        # dialog does.
+        canvas.spectrogram_photo_ref = photo
+        canvas.create_image(margin_left, margin_top, anchor="nw", image=photo)
 
         is_dark = self.theme_colors is not None
         axis_color = self.theme_colors["border"] if is_dark else "#999999"
         text_color = self.theme_colors["tree_fg"] if is_dark else "#333333"
-        line_color = "#4a90d9"
-        cutoff_color = "#e74c3c"
+        cutoff_color = "#ff5555"
 
-        def x_for(freq):
-            return margin_left + (freq / max_freq) * plot_w
-
-        def y_for(db):
-            return margin_top + (1 - (db - min_db) / (max_db - min_db)) * plot_h
-
-        canvas.create_line(margin_left, margin_top, margin_left, margin_top + plot_h, fill=axis_color)
-        canvas.create_line(
-            margin_left, margin_top + plot_h, margin_left + plot_w, margin_top + plot_h, fill=axis_color,
+        canvas.create_rectangle(
+            margin_left, margin_top, margin_left + plot_w, margin_top + plot_h, outline=axis_color,
         )
 
-        tick_hz = 5000
+        # Frequency (Y) ticks - every 5kHz, top of the plot = max_freq, bottom = 0Hz.
+        freq_tick = 5000
         freq = 0
         while freq <= max_freq:
-            x = x_for(freq)
+            y = margin_top + plot_h * (1 - freq / max_freq)
+            canvas.create_line(margin_left - 4, y, margin_left, y, fill=axis_color)
+            canvas.create_text(
+                margin_left - 7, y, text=f"{freq // 1000}k", fill=text_color,
+                font=("TkDefaultFont", 8), anchor="e",
+            )
+            freq += freq_tick
+
+        # Time (X) ticks - pick a step that keeps the tick count readable
+        # regardless of how long the analyzed segment turns out to be.
+        time_tick = 60
+        for step in (1, 2, 5, 10, 15, 20, 30, 60):
+            if duration / step <= 8:
+                time_tick = step
+                break
+        t = 0
+        while t <= duration:
+            x = margin_left + plot_w * (t / duration)
             canvas.create_line(x, margin_top + plot_h, x, margin_top + plot_h + 4, fill=axis_color)
             canvas.create_text(
-                x, margin_top + plot_h + 15, text=f"{freq // 1000}k", fill=text_color,
-                font=("TkDefaultFont", 8),
+                x, margin_top + plot_h + 14, text=f"{t:g}s", fill=text_color, font=("TkDefaultFont", 8),
             )
-            freq += tick_hz
-
-        points = []
-        for freq, db in zip(freqs, mags):
-            points.extend((x_for(freq), y_for(db)))
-        if len(points) >= 4:
-            canvas.create_line(*points, fill=line_color, width=1.5, smooth=True)
+            t += time_tick
 
         if cutoff is not None and cutoff <= max_freq:
-            x = x_for(cutoff)
-            canvas.create_line(
-                x, margin_top, x, margin_top + plot_h, fill=cutoff_color, dash=(4, 2),
-            )
+            y = margin_top + plot_h * (1 - cutoff / max_freq)
+            canvas.create_line(margin_left, y, margin_left + plot_w, y, fill=cutoff_color, dash=(4, 2))
             canvas.create_text(
-                x, margin_top, text=f"{cutoff / 1000:.1f} kHz", fill=cutoff_color,
-                font=("TkDefaultFont", 8, "bold"), anchor="s",
+                margin_left + plot_w - 4, y - 3, text=f"{cutoff / 1000:.1f} kHz cutoff", fill=cutoff_color,
+                font=("TkDefaultFont", 8, "bold"), anchor="se",
             )
 
     # --- Folder / mention actions ---
@@ -5186,9 +5193,9 @@ class TaggerInterface:
                                 f"Quality analysis cancelled - {len(results)} track(s) analyzed so far."
                             )
 
-                elif message_type == "quality_spectrum_ready":
+                elif message_type == "quality_spectrogram_ready":
                     request_id, data, error = content
-                    entry = self._quality_spectrum_requests.pop(request_id, None)
+                    entry = self._quality_spectrogram_requests.pop(request_id, None)
                     if entry is not None:
                         dialog, canvas, status_label = entry
                         # The dialog may have been closed (Close button, or
@@ -5196,10 +5203,10 @@ class TaggerInterface:
                         # still running - nothing left to update.
                         if dialog.winfo_exists():
                             if error or not data:
-                                status_label.configure(text="Could not analyze this file's spectrum.")
+                                status_label.configure(text="Could not analyze this file's spectrogram.")
                             else:
                                 status_label.pack_forget()
-                                self._draw_quality_spectrum(canvas, data)
+                                self._draw_quality_spectrogram(canvas, data)
 
                 elif message_type == "internet_status":
                     is_online, is_startup_check = content

@@ -5383,11 +5383,13 @@ def _decode_pcm_segment(file_path, duration=QUALITY_ANALYSIS_SEGMENT_SECONDS,
 
 def _compute_smoothed_spectrum_db(samples, sample_rate=QUALITY_ANALYSIS_SAMPLE_RATE):
     """
-    Shared FFT groundwork for both _detect_spectral_cutoff_hz() (which only
-    needs band averages) and compute_track_spectrum() (which needs the
-    full curve to draw) - windowed magnitude spectrum in dB, smoothed with
-    a ~50Hz moving average to suppress bin-to-bin noise. Returns
-    (freqs_hz, smoothed_db), both numpy arrays.
+    Single-FFT-over-the-whole-segment groundwork for
+    _detect_spectral_cutoff_hz() - windowed magnitude spectrum in dB,
+    smoothed with a ~50Hz moving average to suppress bin-to-bin noise.
+    (compute_track_spectrogram() does its own separate short-time FFT,
+    since a spectrogram needs many FFTs over short time windows rather
+    than one FFT over the whole segment.) Returns (freqs_hz, smoothed_db),
+    both numpy arrays.
     """
     windowed = samples * np.hanning(len(samples))
     spectrum_db = 20 * np.log10(np.abs(np.fft.rfft(windowed)) + 1e-12)
@@ -5495,43 +5497,125 @@ def analyze_track_quality(file_path, log=safe_print):
     return QUALITY_GREEN, f"Cutoff around {cutoff / 1000:.1f} kHz is consistent with the declared quality"
 
 
-QUALITY_SPECTRUM_PLOT_POINTS = 400
-QUALITY_SPECTRUM_MAX_HZ = 22000
+QUALITY_SPECTROGRAM_MAX_HZ = 22000
+QUALITY_SPECTROGRAM_TIME_BINS = 300
+QUALITY_SPECTROGRAM_FREQ_BINS = 160
+QUALITY_SPECTROGRAM_FFT_SIZE = 2048
+QUALITY_SPECTROGRAM_HOP = 512
+
+# Colormap anchor points (roughly matplotlib's "magma") that _spectrogram_
+# colormap() linearly interpolates between - no matplotlib dependency,
+# just a handful of hand-picked RGB stops from near-black (quiet) through
+# purple/magenta/orange up to pale yellow (loud).
+_SPECTROGRAM_COLORMAP_STOPS = (
+    (0.00, (0, 0, 4)),
+    (0.25, (81, 18, 124)),
+    (0.50, (183, 55, 121)),
+    (0.75, (252, 137, 97)),
+    (1.00, (252, 253, 191)),
+)
 
 
-def compute_track_spectrum(file_path, log=safe_print):
+def _spectrogram_colormap(normalized):
+    """normalized: numpy array of values in [0, 1], any shape -> an array
+    of that shape + (3,), uint8 RGB."""
+    rgb = np.zeros(normalized.shape + (3,), dtype=np.float64)
+    stops = _SPECTROGRAM_COLORMAP_STOPS
+    for (t0, c0), (t1, c1) in zip(stops, stops[1:]):
+        mask = (normalized >= t0) & (normalized <= t1)
+        local_t = (normalized[mask] - t0) / ((t1 - t0) or 1.0)
+        for channel in range(3):
+            rgb[..., channel][mask] = c0[channel] + (c1[channel] - c0[channel]) * local_t
+    return rgb.astype(np.uint8)
+
+
+def _block_average(matrix, axis, num_bins):
+    """Downsamples matrix along axis into num_bins contiguous averaged
+    blocks (not a naive every-Nth-sample pick, so brief transients aren't
+    silently skipped over)."""
+    size = matrix.shape[axis]
+    num_bins = max(1, min(num_bins, size))
+    edges = np.linspace(0, size, num_bins + 1).astype(int)
+    sums = np.add.reduceat(matrix, edges[:-1], axis=axis)
+    counts = np.diff(edges)
+    counts[counts == 0] = 1
+    shape = [1] * matrix.ndim
+    shape[axis] = len(counts)
+    return sums / counts.reshape(shape)
+
+
+def compute_track_spectrogram(file_path, log=safe_print):
     """
     Decodes the same analysis segment analyze_track_quality() uses and
-    returns its smoothed frequency spectrum for the Quality tab's
-    double-click spectrum viewer - read-only, independent of
-    analyze_track_quality() itself (no verdict/tag side effects) so it can
-    be re-run on demand without re-scoring the track.
+    computes a short-time Fourier transform (STFT) spectrogram for the
+    Quality tab's double-click viewer: horizontal axis = time, vertical
+    axis = frequency, color = magnitude in dB. Read-only, independent of
+    analyze_track_quality() (no verdict/tag side effects).
 
-    Returns a plain dict (JSON-friendly, no numpy types) with:
-    - "freqs_hz": evenly-spaced frequency points from 0 up to the lower of
-      QUALITY_SPECTRUM_MAX_HZ or the Nyquist frequency
-    - "magnitudes_db": the smoothed spectrum's magnitude at each of those
-      points (interpolated - the raw FFT has far more bins than a chart
-      this size can usefully show)
+    Returns a dict with:
+    - "image": a PIL.Image (RGB), one column per time bin and one row per
+      frequency bin, already colormapped and oriented with the highest
+      frequency at the top row - ready to be scaled up and shown as-is
+    - "duration_seconds": length of the analyzed audio segment
+    - "max_freq_hz": the frequency the image's top row represents
     - "cutoff_hz": the same cutoff analyze_track_quality() would report
-      (None if no sharp cutoff was detected), so the viewer can mark it
+      (None if none detected), for an overlay reference line
     Returns None if the file couldn't be decoded at all.
     """
     samples = _decode_pcm_segment(file_path)
     if len(samples) < QUALITY_ANALYSIS_SAMPLE_RATE:
-        log(f"  Could not decode '{file_path}' for spectrum display.")
+        log(f"  Could not decode '{file_path}' for spectrogram display.")
         return None
 
-    freqs, smoothed_db = _compute_smoothed_spectrum_db(samples)
+    sample_rate = QUALITY_ANALYSIS_SAMPLE_RATE
+    fft_size = QUALITY_SPECTROGRAM_FFT_SIZE
+    hop = QUALITY_SPECTROGRAM_HOP
+    window = np.hanning(fft_size)
+
+    num_frames = max(1, (len(samples) - fft_size) // hop + 1)
+    freqs = np.fft.rfftfreq(fft_size, d=1.0 / sample_rate)
+    max_freq_hz = min(QUALITY_SPECTROGRAM_MAX_HZ, float(freqs[-1]))
+    freq_mask = freqs <= max_freq_hz
+
+    frames_db = np.empty((num_frames, int(freq_mask.sum())), dtype=np.float64)
+    for i in range(num_frames):
+        start = i * hop
+        chunk = samples[start:start + fft_size]
+        if len(chunk) < fft_size:
+            chunk = np.pad(chunk, (0, fft_size - len(chunk)))
+        spectrum_db = 20 * np.log10(np.abs(np.fft.rfft(chunk * window)) + 1e-12)
+        frames_db[i] = spectrum_db[freq_mask]
+
+    # frames_db is (time, freq) - downsample both axes to a manageable grid
+    # for a canvas-sized image (the raw STFT can be thousands of frames by
+    # a thousand-plus bins - far more detail than a few hundred pixels can
+    # show, and far too slow to hand to Tk pixel-by-pixel).
+    grid = _block_average(frames_db, axis=0, num_bins=QUALITY_SPECTROGRAM_TIME_BINS)
+    grid = _block_average(grid, axis=1, num_bins=QUALITY_SPECTROGRAM_FREQ_BINS)
+
+    # Normalize against this track's own dynamic range (2nd/99th percentile,
+    # not the true min/max, so a couple of outlier bins don't wash out the
+    # whole image) rather than a fixed dB scale - tracks vary a lot in
+    # overall loudness and a fixed scale would leave quiet ones looking
+    # almost entirely black.
+    floor_db, ceiling_db = np.percentile(grid, [2, 99])
+    if ceiling_db - floor_db < 1:
+        ceiling_db = floor_db + 1
+    normalized = np.clip((grid - floor_db) / (ceiling_db - floor_db), 0, 1)
+
+    rgb = _spectrogram_colormap(normalized)  # (time, freq, 3)
+    # Image arrays are indexed [row=y][col=x] - transpose to (freq, time, 3)
+    # so rows are frequency bins, then flip so row 0 (image top) is the
+    # HIGHEST frequency, matching how a spectrogram is normally drawn.
+    rgb = np.transpose(rgb, (1, 0, 2))[::-1, :, :]
+    image = Image.fromarray(np.ascontiguousarray(rgb), mode="RGB")
+
     cutoff = _detect_spectral_cutoff_hz(samples)
 
-    max_freq_hz = min(QUALITY_SPECTRUM_MAX_HZ, float(freqs[-1]))
-    plot_freqs = np.linspace(0, max_freq_hz, QUALITY_SPECTRUM_PLOT_POINTS)
-    plot_db = np.interp(plot_freqs, freqs, smoothed_db)
-
     return {
-        "freqs_hz": plot_freqs.tolist(),
-        "magnitudes_db": plot_db.tolist(),
+        "image": image,
+        "duration_seconds": len(samples) / sample_rate,
+        "max_freq_hz": max_freq_hz,
         "cutoff_hz": cutoff,
     }
 
