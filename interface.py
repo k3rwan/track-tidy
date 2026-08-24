@@ -1885,9 +1885,11 @@ class TaggerInterface:
         self.quality_table_frame.pack(fill="both", expand=True, padx=10, pady=(5, 10))
 
         # "#0" (the tree column) is always the leftmost column in a ttk
-        # Treeview, so it's repurposed to hold just the colored verdict dot -
-        # the emoji glyph itself is already rendered in color by the system
-        # emoji font, no extra tag/foreground needed to color it.
+        # Treeview, so it's repurposed to hold just the verdict dot. A plain
+        # "●" colored via a tag's foreground, not a colored circle emoji
+        # (\U0001f7e2 etc.) - Tk on Windows doesn't render multi-color emoji
+        # glyphs, it falls back to a flat gray outline, which is why an
+        # earlier version of this looked gray regardless of verdict.
         quality_columns = ("file", "format", "detail")
         self.quality_table = ttk.Treeview(
             self.quality_table_frame, columns=quality_columns, show="tree headings",
@@ -1901,6 +1903,14 @@ class TaggerInterface:
         self.quality_table.column("format", width=60, anchor="center")
         self.quality_table.heading("detail", text="Detail")
         self.quality_table.column("detail", width=320, anchor="w")
+        # Colors the whole row (dot + file/format/detail text) - ttk Treeview
+        # tags apply per-item, not per-cell, so there's no way to color only
+        # the dot on its own; matches what was asked for anyway ("les lignes
+        # aussi"). Independent of light/dark theming (unlike odd_row/
+        # even_row) since flat-UI green/orange/red read fine on both.
+        self.quality_table.tag_configure("verdict_green", foreground="#2ecc71")
+        self.quality_table.tag_configure("verdict_orange", foreground="#e67e22")
+        self.quality_table.tag_configure("verdict_red", foreground="#e74c3c")
 
         quality_scrollbar = ttk.Scrollbar(
             self.quality_table_frame, orient="vertical", command=self.quality_table.yview,
@@ -2181,10 +2191,12 @@ class TaggerInterface:
 
     # --- Quality tab actions ---
 
-    QUALITY_VERDICT_DOT = {
-        tagger.QUALITY_GREEN: "\U0001f7e2",
-        tagger.QUALITY_ORANGE: "\U0001f7e0",
-        tagger.QUALITY_RED: "\U0001f534",
+    # Plain "●" per verdict, colored via the matching Treeview tag - see the
+    # tag_configure comment in _build_interface for why not a colored emoji.
+    QUALITY_VERDICT_TAG = {
+        tagger.QUALITY_GREEN: "verdict_green",
+        tagger.QUALITY_ORANGE: "verdict_orange",
+        tagger.QUALITY_RED: "verdict_red",
     }
 
     def _choose_quality_folder(self):
@@ -2236,19 +2248,20 @@ class TaggerInterface:
         for index, result in enumerate(results):
             row_tag = "even_row" if index % 2 == 0 else "odd_row"
             verdict = result.get("verdict")
-            dot = self.QUALITY_VERDICT_DOT.get(verdict, "❓")
+            verdict_tag = self.QUALITY_VERDICT_TAG.get(verdict)
             if verdict in counts:
                 counts[verdict] += 1
+            tags = (row_tag, verdict_tag) if verdict_tag else (row_tag,)
             self.quality_table.insert(
-                "", "end", text=dot,
+                "", "end", text="●" if verdict_tag else "❓",
                 values=(result.get("file", ""), result.get("format", ""), result.get("detail", "")),
-                tags=(row_tag,),
+                tags=tags,
             )
 
         if results:
-            self.quality_summary_green_var.set(f"\U0001f7e2 {counts[tagger.QUALITY_GREEN]}")
-            self.quality_summary_orange_var.set(f"\U0001f7e0 {counts[tagger.QUALITY_ORANGE]}")
-            self.quality_summary_red_var.set(f"\U0001f534 {counts[tagger.QUALITY_RED]}")
+            self.quality_summary_green_var.set(f"● {counts[tagger.QUALITY_GREEN]}")
+            self.quality_summary_orange_var.set(f"● {counts[tagger.QUALITY_ORANGE]}")
+            self.quality_summary_red_var.set(f"● {counts[tagger.QUALITY_RED]}")
             self.quality_summary_frame.pack(fill="x", padx=10, pady=(0, 5), before=self.quality_table_frame)
 
     # --- Folder / mention actions ---
