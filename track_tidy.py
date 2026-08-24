@@ -5461,21 +5461,36 @@ def _detect_spectral_cutoff_hz(samples, sample_rate=QUALITY_ANALYSIS_SAMPLE_RATE
     return None
 
 
-def _check_track_level(samples):
-    """Average (RMS) level of the analyzed segment, in dBFS - see
-    QUALITY_LOW_LEVEL_ORANGE_DB/_RED_DB above for the reasoning and the
-    calibration caveat. Returns (verdict, detail) - verdict is always
-    QUALITY_GREEN when the level is unremarkable, with detail=None (there's
-    nothing worth surfacing about a normal level)."""
+def _measure_rms_db(samples):
+    """Average (RMS) level of samples, in dBFS - not true LUFS (that needs
+    K-weighting + gating per ITU-R BS.1770), but this is exactly the
+    number the quality verdict's own level check is based on, so what's
+    displayed always matches what actually drove the badge."""
     if len(samples) == 0:
-        return QUALITY_GREEN, None
+        return None
     rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
-    rms_db = 20 * np.log10(rms + 1e-12)
+    return 20 * np.log10(rms + 1e-12)
+
+
+def _level_verdict_from_db(rms_db):
+    """See QUALITY_LOW_LEVEL_ORANGE_DB/_RED_DB above for the reasoning and
+    the calibration caveat. Returns (verdict, detail) - verdict is always
+    QUALITY_GREEN when the level is unremarkable (or unknown), with
+    detail=None (there's nothing worth surfacing about a normal level)."""
+    if rms_db is None:
+        return QUALITY_GREEN, None
     if rms_db < QUALITY_LOW_LEVEL_RED_DB:
         return QUALITY_RED, f"Very quiet ({rms_db:.0f} dB average level) - would need a large gain boost in Rekordbox"
     if rms_db < QUALITY_LOW_LEVEL_ORANGE_DB:
         return QUALITY_ORANGE, f"Quieter than usual ({rms_db:.0f} dB average level) - may need a noticeable gain boost"
     return QUALITY_GREEN, None
+
+
+def _check_track_level(samples):
+    """Thin wrapper kept for direct testing - see _measure_rms_db() and
+    _level_verdict_from_db(), which analyze_track_quality() calls
+    separately so it can reuse the raw dB value for display."""
+    return _level_verdict_from_db(_measure_rms_db(samples))
 
 
 _QUALITY_SEVERITY = {QUALITY_GREEN: 0, QUALITY_ORANGE: 1, QUALITY_RED: 2}
@@ -5505,10 +5520,15 @@ def analyze_track_quality(file_path, log=safe_print):
     spectral side (NOT a certainty either way), and QUALITY_LOW_LEVEL_*_DB
     above for the level side's own calibration caveat.
 
-    Returns (verdict, detail):
+    Returns (verdict, detail, metrics):
     - verdict: QUALITY_GREEN / QUALITY_ORANGE / QUALITY_RED, or None if
       the file couldn't be analyzed at all (decode failure, too short).
     - detail: a short human-readable reason for the verdict.
+    - metrics: {"bitrate_kbps": ..., "rms_db": ...} - the raw numbers
+      behind the verdict, for display (e.g. the Quality tab's Bitrate/
+      Level columns) independent of whatever the verdict ends up being.
+      Either value may be None (bitrate_kbps for a lossless format or an
+      unreadable tag; rms_db when the file couldn't be decoded at all).
     """
     extension = os.path.splitext(file_path)[1].lower()
 
@@ -5521,16 +5541,25 @@ def analyze_track_quality(file_path, log=safe_print):
         except Exception:
             pass
 
-        # A file that already admits a low bitrate needs no spectral
-        # analysis - it's not hiding anything, the number is trustworthy
-        # at the low end (nobody mislabels a file to look WORSE).
-        if declared_bitrate_kbps is not None and declared_bitrate_kbps < QUALITY_BITRATE_LOW_KBPS:
-            return QUALITY_RED, f"Declared bitrate is only {declared_bitrate_kbps:.0f} kbps"
-
     samples = _decode_pcm_segment(file_path)
     if len(samples) < QUALITY_ANALYSIS_SAMPLE_RATE:
         log(f"  Could not analyze '{file_path}' for quality (decode failed or file too short).")
-        return None, "Could not analyze this file (decode failed or too short)"
+        metrics = {"bitrate_kbps": declared_bitrate_kbps, "rms_db": None}
+        return None, "Could not analyze this file (decode failed or too short)", metrics
+
+    rms_db = _measure_rms_db(samples)
+    level_result = _level_verdict_from_db(rms_db)
+    metrics = {"bitrate_kbps": declared_bitrate_kbps, "rms_db": rms_db}
+
+    # A file that already admits a low bitrate needs no spectral analysis
+    # - it's not hiding anything, the number is trustworthy at the low end
+    # (nobody mislabels a file to look WORSE) - but the level check above
+    # still runs regardless, so the Level column stays populated even for
+    # a file that's red for bitrate reasons alone.
+    if declared_bitrate_kbps is not None and declared_bitrate_kbps < QUALITY_BITRATE_LOW_KBPS:
+        spectral_result = QUALITY_RED, f"Declared bitrate is only {declared_bitrate_kbps:.0f} kbps"
+        verdict, detail = _worse_quality_result(spectral_result, level_result)
+        return verdict, detail, metrics
 
     cutoff = _detect_spectral_cutoff_hz(samples)
 
@@ -5552,8 +5581,8 @@ def analyze_track_quality(file_path, log=safe_print):
         # on its own.
         spectral_result = QUALITY_GREEN, f"Cutoff around {cutoff / 1000:.1f} kHz is consistent with the declared quality"
 
-    level_result = _check_track_level(samples)
-    return _worse_quality_result(spectral_result, level_result)
+    verdict, detail = _worse_quality_result(spectral_result, level_result)
+    return verdict, detail, metrics
 
 
 QUALITY_SPECTROGRAM_TIME_BINS = 300
@@ -5793,12 +5822,14 @@ def analyze_folder_quality(folder, log=safe_print, on_progress=None, should_canc
     for index, full_path in enumerate(file_list, start=1):
         if should_cancel and should_cancel():
             break
-        verdict, detail = analyze_track_quality(full_path, log=log)
+        verdict, detail, metrics = analyze_track_quality(full_path, log=log)
         results.append({
             "file": os.path.relpath(full_path, folder),
             "format": os.path.splitext(full_path)[1].lstrip(".").upper(),
             "verdict": verdict,
             "detail": detail,
+            "bitrate_kbps": metrics.get("bitrate_kbps"),
+            "rms_db": metrics.get("rms_db"),
         })
         if on_progress:
             on_progress(index, total)

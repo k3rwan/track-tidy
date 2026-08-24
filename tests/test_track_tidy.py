@@ -2487,9 +2487,10 @@ class AnalyzeTrackQualityTests(unittest.TestCase):
         # trusted from the tag alone (a file doesn't lie about being LOW
         # quality), so it must return red even though this specific short
         # sound effect has too little content for a clean spectral read.
-        verdict, detail = tagger.analyze_track_quality(self._asset("fart_low_bitrate.mp3"))
+        verdict, detail, metrics = tagger.analyze_track_quality(self._asset("fart_low_bitrate.mp3"))
         self.assertEqual(verdict, tagger.QUALITY_RED)
         self.assertIn("kbps", detail)
+        self.assertAlmostEqual(metrics["bitrate_kbps"], 96, delta=10)
 
     def test_returns_a_valid_verdict_for_a_lossless_fixture(self):
         # Real fixture, real ffmpeg decode - just confirms the whole path
@@ -2498,9 +2499,13 @@ class AnalyzeTrackQualityTests(unittest.TestCase):
         # a short/naturally bass-heavy sound effect like this one isn't
         # representative of what the heuristic is actually calibrated
         # for, so a specific color here isn't a meaningful assertion).
-        verdict, detail = tagger.analyze_track_quality(self._asset("fart.flac"))
+        verdict, detail, metrics = tagger.analyze_track_quality(self._asset("fart.flac"))
         self.assertIn(verdict, (tagger.QUALITY_GREEN, tagger.QUALITY_ORANGE, tagger.QUALITY_RED))
         self.assertTrue(detail)
+        # Lossless format - no declared bitrate to speak of, but the level
+        # is always measurable once the file decodes successfully.
+        self.assertIsNone(metrics["bitrate_kbps"])
+        self.assertIsNotNone(metrics["rms_db"])
 
     def test_very_quiet_lossless_file_is_flagged_red_for_level(self):
         # A lossless format skips the declared-bitrate shortcut entirely,
@@ -2513,9 +2518,10 @@ class AnalyzeTrackQualityTests(unittest.TestCase):
                 [tagger.find_ffmpeg(), "-y", "-i", self._asset("fart.flac"), "-af", "volume=-40dB", quiet_path],
                 capture_output=True,
             )
-            verdict, detail = tagger.analyze_track_quality(quiet_path)
+            verdict, detail, metrics = tagger.analyze_track_quality(quiet_path)
             self.assertEqual(verdict, tagger.QUALITY_RED)
             self.assertIn("dB", detail)
+            self.assertLess(metrics["rms_db"], tagger.QUALITY_LOW_LEVEL_RED_DB)
 
 
 class ComputeTrackSpectrogramTests(unittest.TestCase):

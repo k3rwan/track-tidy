@@ -1898,7 +1898,7 @@ class TaggerInterface:
         # (\U0001f7e2 etc.) - Tk on Windows doesn't render multi-color emoji
         # glyphs, it falls back to a flat gray outline, which is why an
         # earlier version of this looked gray regardless of verdict.
-        quality_columns = ("file", "format")
+        quality_columns = ("file", "level", "bitrate", "format")
         self.quality_table = ttk.Treeview(
             self.quality_table_frame, columns=quality_columns, show="tree headings",
             selectmode="browse", style="Table.Treeview",
@@ -1909,7 +1909,11 @@ class TaggerInterface:
         # Stretches to soak up all leftover width, which keeps "format" - the
         # last column - pinned flush against the table's right edge instead
         # of leaving blank space after it.
-        self.quality_table.column("file", width=400, stretch=True, anchor="w")
+        self.quality_table.column("file", width=340, stretch=True, anchor="w")
+        self.quality_table.heading("level", text="Level (RMS dB)")
+        self.quality_table.column("level", width=100, minwidth=100, stretch=False, anchor="center")
+        self.quality_table.heading("bitrate", text="Bitrate")
+        self.quality_table.column("bitrate", width=80, minwidth=80, stretch=False, anchor="center")
         self.quality_table.heading("format", text="Format")
         self.quality_table.column("format", width=70, minwidth=70, stretch=False, anchor="center")
         # Colors the whole row (dot + file/format/detail text) - ttk Treeview
@@ -2268,9 +2272,16 @@ class TaggerInterface:
             if verdict in counts:
                 counts[verdict] += 1
             final_tags = (row_tag, verdict_tag) if verdict_tag else (row_tag,)
+            bitrate_kbps = result.get("bitrate_kbps")
+            rms_db = result.get("rms_db")
             item_id = self.quality_table.insert(
                 "", "end", text="●" if verdict_tag else "❓",
-                values=(result.get("file", ""), result.get("format", "")),
+                values=(
+                    result.get("file", ""),
+                    f"{rms_db:.0f} dB" if rms_db is not None else "—",
+                    f"{bitrate_kbps:.0f} kbps" if bitrate_kbps is not None else "—",
+                    result.get("format", ""),
+                ),
                 tags=final_tags,
             )
             relative_file = result.get("file", "")
