@@ -323,6 +323,14 @@ class TaggerInterface:
         # Same reasoning as extract_cancel_requested above - the Quality
         # tab's own scan is a third independent background action.
         self.quality_cancel_requested = threading.Event()
+        # The folder a Quality scan's results are relative to, and a map of
+        # each result row's item id -> its absolute path - both needed to
+        # resolve a double-clicked row back to a real file for the spectrum
+        # viewer (analyze_folder_quality() only returns paths relative to
+        # the scanned folder).
+        self.quality_last_scanned_folder = None
+        self.quality_row_paths = {}
+        self._quality_spectrum_requests = {}
         # Remembers the folder the user last manually located a moved
         # history file in (see restore_selected in the History window) -
         # kept at the app level, not just for one Restore call, since a
@@ -1912,6 +1920,7 @@ class TaggerInterface:
         self.quality_table.tag_configure("verdict_green", foreground="#2ecc71")
         self.quality_table.tag_configure("verdict_orange", foreground="#e67e22")
         self.quality_table.tag_configure("verdict_red", foreground="#e74c3c")
+        self.quality_table.bind("<Double-1>", self._on_quality_row_double_click)
 
         quality_scrollbar = ttk.Scrollbar(
             self.quality_table_frame, orient="vertical", command=self.quality_table.yview,
@@ -2215,6 +2224,8 @@ class TaggerInterface:
         for row in self.quality_table.get_children():
             self.quality_table.delete(row)
         self.quality_summary_frame.pack_forget()
+        self.quality_last_scanned_folder = folder
+        self.quality_row_paths = {}
 
         self.quality_browse_button.configure(state="disabled")
         self.quality_cancel_requested.clear()
@@ -2245,18 +2256,31 @@ class TaggerInterface:
             self.message_queue.put(("quality_scan_done", ([], False, str(error))))
 
     def _populate_quality_table(self, results):
+        self.quality_row_paths = {}
         counts = {tagger.QUALITY_GREEN: 0, tagger.QUALITY_ORANGE: 0, tagger.QUALITY_RED: 0}
+        stagger_ms = (
+            min(25, max(4, self.ROW_APPEAR_MAX_TOTAL_STAGGER_MS // len(results))) if results else 0
+        )
         for index, result in enumerate(results):
             row_tag = "even_row" if index % 2 == 0 else "odd_row"
             verdict = result.get("verdict")
             verdict_tag = self.QUALITY_VERDICT_TAG.get(verdict)
             if verdict in counts:
                 counts[verdict] += 1
-            tags = (row_tag, verdict_tag) if verdict_tag else (row_tag,)
-            self.quality_table.insert(
+            final_tags = (row_tag, verdict_tag) if verdict_tag else (row_tag,)
+            item_id = self.quality_table.insert(
                 "", "end", text="●" if verdict_tag else "❓",
                 values=(result.get("file", ""), result.get("format", "")),
-                tags=tags,
+                tags=final_tags,
+            )
+            relative_file = result.get("file", "")
+            if self.quality_last_scanned_folder and relative_file:
+                self.quality_row_paths[item_id] = os.path.join(
+                    self.quality_last_scanned_folder, relative_file
+                )
+            self.window.after(
+                index * stagger_ms,
+                lambda iid=item_id, ft=final_tags: self._flash_new_row(iid, tree=self.quality_table, final_tags=ft),
             )
 
         if results:
@@ -2264,6 +2288,114 @@ class TaggerInterface:
             self.quality_summary_orange_var.set(f"● {counts[tagger.QUALITY_ORANGE]}")
             self.quality_summary_red_var.set(f"● {counts[tagger.QUALITY_RED]}")
             self.quality_summary_frame.pack(fill="x", padx=10, pady=(0, 5), before=self.quality_table_frame)
+
+    def _on_quality_row_double_click(self, event):
+        item_id = self.quality_table.identify_row(event.y)
+        if not item_id:
+            return
+        file_path = self.quality_row_paths.get(item_id)
+        if not file_path or not os.path.isfile(file_path):
+            messagebox.showinfo(
+                "Spectrum unavailable",
+                "This result's file isn't available anymore - run a new scan first.",
+                parent=self.window,
+            )
+            return
+        self._show_quality_spectrum_dialog(file_path)
+
+    def _show_quality_spectrum_dialog(self, file_path):
+        dialog = tk.Toplevel(self.window)
+        self._style_toplevel(dialog)
+        dialog.title(f"Spectrum - {os.path.basename(file_path)}")
+        dialog.resizable(False, False)
+        dialog.transient(self.window)
+
+        canvas_bg = self.theme_colors["tree_bg"] if self.theme_colors else "white"
+        canvas = tk.Canvas(dialog, width=620, height=320, highlightthickness=0, bg=canvas_bg)
+        canvas.pack(padx=15, pady=(15, 5))
+        status_label = ttk.Label(dialog, text="Analyzing spectrum...")
+        status_label.pack(pady=(0, 5))
+        ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=(0, 15))
+
+        self._center_dialog(dialog)
+
+        request_id = str(id(dialog))
+        self._quality_spectrum_requests[request_id] = (dialog, canvas, status_label)
+        self._run_in_background(self._compute_quality_spectrum, file_path, request_id)
+
+    def _compute_quality_spectrum(self, file_path, request_id):
+        try:
+            data = tagger.compute_track_spectrum(file_path, log=self._append_to_journal)
+            self.message_queue.put(("quality_spectrum_ready", (request_id, data, None)))
+        except Exception as error:
+            self.message_queue.put(("quality_spectrum_ready", (request_id, None, str(error))))
+
+    def _draw_quality_spectrum(self, canvas, data):
+        """Downsampled frequency/magnitude points from
+        tagger.compute_track_spectrum() -> a simple line chart, with a
+        dashed marker at the detected cutoff (if any) - the same cutoff
+        analyze_track_quality() bases its verdict on, made visible instead
+        of just described in the Detail text."""
+        canvas.delete("all")
+        width, height = 620, 320
+        margin_left, margin_right, margin_top, margin_bottom = 45, 15, 22, 28
+        plot_w = width - margin_left - margin_right
+        plot_h = height - margin_top - margin_bottom
+
+        freqs = data.get("freqs_hz") or []
+        mags = data.get("magnitudes_db") or []
+        cutoff = data.get("cutoff_hz")
+        if not freqs or not mags:
+            return
+
+        min_db, max_db = min(mags), max(mags)
+        if max_db - min_db < 1:
+            max_db = min_db + 1
+        max_freq = freqs[-1] or 1
+
+        is_dark = self.theme_colors is not None
+        axis_color = self.theme_colors["border"] if is_dark else "#999999"
+        text_color = self.theme_colors["tree_fg"] if is_dark else "#333333"
+        line_color = "#4a90d9"
+        cutoff_color = "#e74c3c"
+
+        def x_for(freq):
+            return margin_left + (freq / max_freq) * plot_w
+
+        def y_for(db):
+            return margin_top + (1 - (db - min_db) / (max_db - min_db)) * plot_h
+
+        canvas.create_line(margin_left, margin_top, margin_left, margin_top + plot_h, fill=axis_color)
+        canvas.create_line(
+            margin_left, margin_top + plot_h, margin_left + plot_w, margin_top + plot_h, fill=axis_color,
+        )
+
+        tick_hz = 5000
+        freq = 0
+        while freq <= max_freq:
+            x = x_for(freq)
+            canvas.create_line(x, margin_top + plot_h, x, margin_top + plot_h + 4, fill=axis_color)
+            canvas.create_text(
+                x, margin_top + plot_h + 15, text=f"{freq // 1000}k", fill=text_color,
+                font=("TkDefaultFont", 8),
+            )
+            freq += tick_hz
+
+        points = []
+        for freq, db in zip(freqs, mags):
+            points.extend((x_for(freq), y_for(db)))
+        if len(points) >= 4:
+            canvas.create_line(*points, fill=line_color, width=1.5, smooth=True)
+
+        if cutoff is not None and cutoff <= max_freq:
+            x = x_for(cutoff)
+            canvas.create_line(
+                x, margin_top, x, margin_top + plot_h, fill=cutoff_color, dash=(4, 2),
+            )
+            canvas.create_text(
+                x, margin_top, text=f"{cutoff / 1000:.1f} kHz", fill=cutoff_color,
+                font=("TkDefaultFont", 8, "bold"), anchor="s",
+            )
 
     # --- Folder / mention actions ---
 
@@ -2786,11 +2918,28 @@ class TaggerInterface:
     # accent tint down to its normal stripe color over a few quick steps.
     ROW_FLASH_STEPS = 8
     ROW_FLASH_STEP_MS = 25
+    # Rows inserted in one batch (Quality tab results all arrive at once,
+    # unlike the Tagger table's live per-file inserts) are staggered across
+    # this total span so they still appear to cascade in one-by-one rather
+    # than all flashing in lockstep - capped so a huge result set doesn't
+    # turn into a slow multi-second crawl.
+    ROW_APPEAR_MAX_TOTAL_STAGGER_MS = 900
 
-    def _flash_new_row(self, file_iid):
+    # Verdict-colored tags a settled Quality-tab row can carry - if a flash's
+    # final tags include one, that foreground stays visible through the
+    # flash instead of the plain row color (see _flash_new_row).
+    _VERDICT_TAG_NAMES = ("verdict_green", "verdict_orange", "verdict_red")
+
+    def _flash_new_row(self, file_iid, tree=None, final_tags=None):
+        """Reusable across both the Tagger table and the Quality table
+        (tree=self.quality_table) - same accent-tint-to-normal-color flash,
+        just parameterized over which Treeview and which tags the row
+        should settle back into (defaults match the Tagger table's own
+        original always-plain-striped behavior)."""
+        tree = tree if tree is not None else self.table
         is_dark = self.theme_colors is not None
         start_color = self.theme_colors["select_bg"] if is_dark else "#cfe0f5"
-        is_even = self.table.index(file_iid) % 2 == 0
+        is_even = tree.index(file_iid) % 2 == 0
         if is_dark:
             end_color = self.theme_colors["tree_bg"] if is_even else self.theme_colors["tree_odd_row"]
             fg_color = self.theme_colors["tree_fg"]
@@ -2798,27 +2947,34 @@ class TaggerInterface:
             end_color = "#ffffff" if is_even else "#e9e9e9"
             fg_color = "black"
 
+        if final_tags is None:
+            final_tags = ("even_row" if is_even else "odd_row",)
+        for tag in final_tags:
+            if tag in self._VERDICT_TAG_NAMES:
+                verdict_fg = tree.tag_configure(tag).get("foreground")
+                if verdict_fg:
+                    fg_color = verdict_fg
+
         flash_tag = f"flash_{file_iid}"
 
         def _step(n):
             # The row may have been removed (filtered out, deleted) or
             # restriped since scheduling - bail out rather than resurrect
             # a stale tag/color on a row that's no longer this one.
-            if not self.table.exists(file_iid) or flash_tag not in self.table.item(file_iid, "tags"):
+            if not tree.exists(file_iid) or flash_tag not in tree.item(file_iid, "tags"):
                 return
             if n > self.ROW_FLASH_STEPS:
-                current_tag = "even_row" if is_even else "odd_row"
-                self.table.item(file_iid, tags=(current_tag,))
+                tree.item(file_iid, tags=final_tags)
                 return
             t = n / self.ROW_FLASH_STEPS
-            self.table.tag_configure(
+            tree.tag_configure(
                 flash_tag,
                 background=self._interpolate_color(start_color, end_color, t),
                 foreground=fg_color,
             )
             self.window.after(self.ROW_FLASH_STEP_MS, _step, n + 1)
 
-        self.table.item(file_iid, tags=(flash_tag,))
+        tree.item(file_iid, tags=(flash_tag,))
         _step(0)
 
     @staticmethod
@@ -5029,6 +5185,21 @@ class TaggerInterface:
                             self._append_to_journal(
                                 f"Quality analysis cancelled - {len(results)} track(s) analyzed so far."
                             )
+
+                elif message_type == "quality_spectrum_ready":
+                    request_id, data, error = content
+                    entry = self._quality_spectrum_requests.pop(request_id, None)
+                    if entry is not None:
+                        dialog, canvas, status_label = entry
+                        # The dialog may have been closed (Close button, or
+                        # the whole app) while the background decode/FFT was
+                        # still running - nothing left to update.
+                        if dialog.winfo_exists():
+                            if error or not data:
+                                status_label.configure(text="Could not analyze this file's spectrum.")
+                            else:
+                                status_label.pack_forget()
+                                self._draw_quality_spectrum(canvas, data)
 
                 elif message_type == "internet_status":
                     is_online, is_startup_check = content

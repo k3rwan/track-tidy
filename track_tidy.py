@@ -5381,6 +5381,25 @@ def _decode_pcm_segment(file_path, duration=QUALITY_ANALYSIS_SEGMENT_SECONDS,
     return np.frombuffer(raw, dtype=np.float32)
 
 
+def _compute_smoothed_spectrum_db(samples, sample_rate=QUALITY_ANALYSIS_SAMPLE_RATE):
+    """
+    Shared FFT groundwork for both _detect_spectral_cutoff_hz() (which only
+    needs band averages) and compute_track_spectrum() (which needs the
+    full curve to draw) - windowed magnitude spectrum in dB, smoothed with
+    a ~50Hz moving average to suppress bin-to-bin noise. Returns
+    (freqs_hz, smoothed_db), both numpy arrays.
+    """
+    windowed = samples * np.hanning(len(samples))
+    spectrum_db = 20 * np.log10(np.abs(np.fft.rfft(windowed)) + 1e-12)
+    freqs = np.fft.rfftfreq(len(samples), d=1.0 / sample_rate)
+
+    kernel = max(3, int(len(freqs) * 50 / (sample_rate / 2)))
+    if kernel % 2 == 0:
+        kernel += 1
+    smoothed = np.convolve(spectrum_db, np.ones(kernel) / kernel, mode="same")
+    return freqs, smoothed
+
+
 def _detect_spectral_cutoff_hz(samples, sample_rate=QUALITY_ANALYSIS_SAMPLE_RATE,
                                 search_lo=8000, search_hi=21500,
                                 drop_db=12, drop_span_hz=1500, confirm_span_hz=2000):
@@ -5403,14 +5422,7 @@ def _detect_spectral_cutoff_hz(samples, sample_rate=QUALITY_ANALYSIS_SAMPLE_RATE
     if len(samples) < sample_rate:
         return None
 
-    windowed = samples * np.hanning(len(samples))
-    spectrum_db = 20 * np.log10(np.abs(np.fft.rfft(windowed)) + 1e-12)
-    freqs = np.fft.rfftfreq(len(samples), d=1.0 / sample_rate)
-
-    kernel = max(3, int(len(freqs) * 50 / (sample_rate / 2)))
-    if kernel % 2 == 0:
-        kernel += 1
-    smoothed = np.convolve(spectrum_db, np.ones(kernel) / kernel, mode="same")
+    freqs, smoothed = _compute_smoothed_spectrum_db(samples, sample_rate)
 
     def band_avg(f_lo, f_hi):
         mask = (freqs >= f_lo) & (freqs < f_hi)
@@ -5481,6 +5493,47 @@ def analyze_track_quality(file_path, log=safe_print):
     # own filterbank, unrelated to actual quality - see the module-level
     # note above), so this is NOT treated as suspicious on its own.
     return QUALITY_GREEN, f"Cutoff around {cutoff / 1000:.1f} kHz is consistent with the declared quality"
+
+
+QUALITY_SPECTRUM_PLOT_POINTS = 400
+QUALITY_SPECTRUM_MAX_HZ = 22000
+
+
+def compute_track_spectrum(file_path, log=safe_print):
+    """
+    Decodes the same analysis segment analyze_track_quality() uses and
+    returns its smoothed frequency spectrum for the Quality tab's
+    double-click spectrum viewer - read-only, independent of
+    analyze_track_quality() itself (no verdict/tag side effects) so it can
+    be re-run on demand without re-scoring the track.
+
+    Returns a plain dict (JSON-friendly, no numpy types) with:
+    - "freqs_hz": evenly-spaced frequency points from 0 up to the lower of
+      QUALITY_SPECTRUM_MAX_HZ or the Nyquist frequency
+    - "magnitudes_db": the smoothed spectrum's magnitude at each of those
+      points (interpolated - the raw FFT has far more bins than a chart
+      this size can usefully show)
+    - "cutoff_hz": the same cutoff analyze_track_quality() would report
+      (None if no sharp cutoff was detected), so the viewer can mark it
+    Returns None if the file couldn't be decoded at all.
+    """
+    samples = _decode_pcm_segment(file_path)
+    if len(samples) < QUALITY_ANALYSIS_SAMPLE_RATE:
+        log(f"  Could not decode '{file_path}' for spectrum display.")
+        return None
+
+    freqs, smoothed_db = _compute_smoothed_spectrum_db(samples)
+    cutoff = _detect_spectral_cutoff_hz(samples)
+
+    max_freq_hz = min(QUALITY_SPECTRUM_MAX_HZ, float(freqs[-1]))
+    plot_freqs = np.linspace(0, max_freq_hz, QUALITY_SPECTRUM_PLOT_POINTS)
+    plot_db = np.interp(plot_freqs, freqs, smoothed_db)
+
+    return {
+        "freqs_hz": plot_freqs.tolist(),
+        "magnitudes_db": plot_db.tolist(),
+        "cutoff_hz": cutoff,
+    }
 
 
 def analyze_folder_quality(folder, log=safe_print, on_progress=None, should_cancel=None):
