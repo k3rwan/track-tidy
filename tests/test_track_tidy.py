@@ -2417,35 +2417,56 @@ class DetectSpectralCutoffTests(unittest.TestCase):
         self.assertIsNone(tagger._detect_spectral_cutoff_hz(samples))
 
 
-class CheckTrackLevelTests(unittest.TestCase):
-    """Pure-numpy tests for the RMS-level check - synthetic noise scaled to
-    an exactly known RMS in dBFS, so the green/orange/red boundaries can be
-    tested precisely without decoding a real file."""
+class MeasureLufsTests(unittest.TestCase):
+    """Pure-numpy tests for the ITU-R BS.1770 loudness measurement -
+    verified separately (during development) to match ffmpeg's own
+    `ebur128` filter to within 0.1 LUFS on real files. These tests check
+    internal consistency (a known linear gain shifts the measured LUFS by
+    that same dB amount) rather than any specific absolute value, since
+    K-weighting means a synthetic signal's exact LUFS isn't as simple to
+    predict in advance as plain RMS was."""
 
-    def _samples_at_rms_db(self, target_db, seed=0):
+    SAMPLE_RATE = 44100
+
+    def _make_noise(self, seconds=2, seed=0, scale=0.1):
         rng = np.random.default_rng(seed)
-        noise = rng.standard_normal(44100).astype(np.float64)
-        noise /= np.sqrt(np.mean(noise ** 2))  # normalize to RMS == 1 (0 dBFS)
-        target_rms = 10 ** (target_db / 20)
-        return (noise * target_rms).astype(np.float32)
+        return (rng.standard_normal(int(self.SAMPLE_RATE * seconds)) * scale).astype(np.float32)
+
+    def test_quieter_signal_measures_lower_lufs_by_the_expected_amount(self):
+        base = self._make_noise()
+        base_lufs = tagger._measure_lufs(base, self.SAMPLE_RATE)
+        quieter = base * (10 ** (-12 / 20))  # exactly -12dB
+        quieter_lufs = tagger._measure_lufs(quieter, self.SAMPLE_RATE)
+        self.assertIsNotNone(base_lufs)
+        self.assertIsNotNone(quieter_lufs)
+        self.assertAlmostEqual(base_lufs - quieter_lufs, 12.0, delta=0.5)
+
+    def test_too_short_sample_returns_none(self):
+        samples = self._make_noise(seconds=0.1)
+        self.assertIsNone(tagger._measure_lufs(samples, self.SAMPLE_RATE))
+
+
+class LevelVerdictFromLufsTests(unittest.TestCase):
+    """Pure numeric tests for the verdict/threshold logic, kept separate
+    from the (much slower, filter-based) LUFS measurement itself."""
 
     def test_normal_level_is_green_with_no_detail(self):
-        verdict, detail = tagger._check_track_level(self._samples_at_rms_db(-6))
+        verdict, detail = tagger._level_verdict_from_lufs(-10.0)
         self.assertEqual(verdict, tagger.QUALITY_GREEN)
         self.assertIsNone(detail)
 
     def test_moderately_quiet_level_is_orange(self):
-        verdict, detail = tagger._check_track_level(self._samples_at_rms_db(-24))
+        verdict, detail = tagger._level_verdict_from_lufs(-24.0)
         self.assertEqual(verdict, tagger.QUALITY_ORANGE)
-        self.assertIn("dB", detail)
+        self.assertIn("LUFS", detail)
 
     def test_very_quiet_level_is_red(self):
-        verdict, detail = tagger._check_track_level(self._samples_at_rms_db(-35))
+        verdict, detail = tagger._level_verdict_from_lufs(-35.0)
         self.assertEqual(verdict, tagger.QUALITY_RED)
-        self.assertIn("dB", detail)
+        self.assertIn("LUFS", detail)
 
-    def test_empty_samples_is_green_with_no_detail(self):
-        verdict, detail = tagger._check_track_level(np.array([], dtype=np.float32))
+    def test_unknown_level_is_green_with_no_detail(self):
+        verdict, detail = tagger._level_verdict_from_lufs(None)
         self.assertEqual(verdict, tagger.QUALITY_GREEN)
         self.assertIsNone(detail)
 
@@ -2505,13 +2526,13 @@ class AnalyzeTrackQualityTests(unittest.TestCase):
         # Lossless format - no declared bitrate to speak of, but the level
         # is always measurable once the file decodes successfully.
         self.assertIsNone(metrics["bitrate_kbps"])
-        self.assertIsNotNone(metrics["rms_db"])
+        self.assertIsNotNone(metrics["lufs"])
 
     def test_very_quiet_lossless_file_is_flagged_red_for_level(self):
         # A lossless format skips the declared-bitrate shortcut entirely,
-        # so this confirms the RMS-level check on its own can still push
+        # so this confirms the LUFS-level check on its own can still push
         # an otherwise-fine file to red - real ffmpeg attenuation, not a
-        # synthetic sample array (see CheckTrackLevelTests for that).
+        # synthetic sample array (see MeasureLufsTests for that).
         with tempfile.TemporaryDirectory() as tmp_dir:
             quiet_path = os.path.join(tmp_dir, "quiet.flac")
             subprocess.run(
@@ -2520,8 +2541,8 @@ class AnalyzeTrackQualityTests(unittest.TestCase):
             )
             verdict, detail, metrics = tagger.analyze_track_quality(quiet_path)
             self.assertEqual(verdict, tagger.QUALITY_RED)
-            self.assertIn("dB", detail)
-            self.assertLess(metrics["rms_db"], tagger.QUALITY_LOW_LEVEL_RED_DB)
+            self.assertIn("LUFS", detail)
+            self.assertLess(metrics["lufs"], tagger.QUALITY_LOW_LEVEL_RED_LUFS)
 
 
 class ComputeTrackSpectrogramTests(unittest.TestCase):

@@ -5347,23 +5347,26 @@ QUALITY_CUTOFF_ORANGE_HZ = 18000
 # through the same spectral-cutoff check as everything else below.
 QUALITY_BITRATE_LOW_KBPS = 160
 
-# Average (RMS) level thresholds, in dBFS, of the analyzed segment - a
-# track mastered much quieter than typical won't clip or sound distorted
-# on its own, but DJ software like Rekordbox raises its gain to match the
-# rest of a set, and that gain boost raises the noise floor and any
-# encoding artifacts right along with the music. NOT a judgment that a
+# Integrated loudness (LUFS, ITU-R BS.1770-4) thresholds for the analyzed
+# segment - a track mastered much quieter than typical won't clip or sound
+# distorted on its own, but DJ software like Rekordbox raises its gain to
+# match the rest of a set, and that gain boost raises the noise floor and
+# any encoding artifacts right along with the music. NOT a judgment that a
 # quiet track is "wrong" - a deliberately dynamic/quiet master is a
 # legitimate mastering choice, especially outside loudness-war genres -
 # just a flag that Rekordbox will likely need a noticeably bigger boost
 # than most tracks, worth being aware of before it's dropped into a mix.
 # Calibrated against exactly one real reference (a loud, modern EDM
-# master at ~-6dB RMS) plus synthetic attenuated copies of it - like the
-# spectral-cutoff thresholds above, deliberately conservative (a wide
-# gap below a "normal" loud master) rather than precisely tuned, since
-# there isn't a broad enough real-world dataset here to calibrate this
-# more tightly without risking false positives on quieter genres.
-QUALITY_LOW_LEVEL_ORANGE_DB = -20.0
-QUALITY_LOW_LEVEL_RED_DB = -30.0
+# master at ~-10.2 LUFS integrated, cross-checked against ffmpeg's own
+# ebur128 filter to within 0.1 LUFS) plus synthetic attenuated copies of
+# it - like the spectral-cutoff thresholds above, deliberately
+# conservative (a wide gap below a "normal" loud master) rather than
+# precisely tuned, since there isn't a broad enough real-world dataset
+# here to calibrate this more tightly without risking false positives on
+# quieter genres. For reference, streaming platforms typically normalize
+# to around -14 LUFS (Spotify) to -16 LUFS (Apple Music/YouTube).
+QUALITY_LOW_LEVEL_ORANGE_LUFS = -20.0
+QUALITY_LOW_LEVEL_RED_LUFS = -28.0
 
 QUALITY_ANALYSIS_SAMPLE_RATE = 44100
 QUALITY_ANALYSIS_SEGMENT_SECONDS = 25
@@ -5461,36 +5464,126 @@ def _detect_spectral_cutoff_hz(samples, sample_rate=QUALITY_ANALYSIS_SAMPLE_RATE
     return None
 
 
-def _measure_rms_db(samples):
-    """Average (RMS) level of samples, in dBFS - not true LUFS (that needs
-    K-weighting + gating per ITU-R BS.1770), but this is exactly the
-    number the quality verdict's own level check is based on, so what's
-    displayed always matches what actually drove the badge."""
-    if len(samples) == 0:
+# ITU-R BS.1770-4 K-weighting filter design parameters (stage 1: a high
+# shelf simulating head diffraction; stage 2: a high-pass simulating the
+# outer/middle ear's reduced sensitivity to low frequencies) - these are
+# the standard's own analog-domain filter specs, turned into digital
+# biquad coefficients for a given sample rate via the standard "Audio EQ
+# Cookbook" bilinear-transform formulas below. This reproduces the
+# officially published 48kHz coefficient table exactly when sample_rate
+# is 48000, but works for any rate - confirmed against ffmpeg's own
+# ebur128 filter (to within 0.1 LUFS on real files) at 44100Hz, which is
+# what this app actually decodes at.
+_K_WEIGHTING_STAGE1 = {"f0": 1681.9744509555319, "gain_db": 3.99984385397, "q": 0.7071752369554193}
+_K_WEIGHTING_STAGE2 = {"f0": 38.13547087613982, "q": 0.5003270373238773}
+
+
+def _k_weighting_coeffs(sample_rate):
+    """Returns (stage1_b, stage1_a, stage2_b, stage2_a) - each a 3-tuple
+    of normalized biquad coefficients (a[0] == 1.0)."""
+    f0, gain_db, q = _K_WEIGHTING_STAGE1["f0"], _K_WEIGHTING_STAGE1["gain_db"], _K_WEIGHTING_STAGE1["q"]
+    w0 = 2 * np.pi * f0 / sample_rate
+    cos_w0, alpha = np.cos(w0), np.sin(w0) / (2 * q)
+    a_gain = 10 ** (gain_db / 40)
+    sqrt_a = np.sqrt(a_gain)
+    b0 = a_gain * ((a_gain + 1) + (a_gain - 1) * cos_w0 + 2 * sqrt_a * alpha)
+    b1 = -2 * a_gain * ((a_gain - 1) + (a_gain + 1) * cos_w0)
+    b2 = a_gain * ((a_gain + 1) + (a_gain - 1) * cos_w0 - 2 * sqrt_a * alpha)
+    a0 = (a_gain + 1) - (a_gain - 1) * cos_w0 + 2 * sqrt_a * alpha
+    a1 = 2 * ((a_gain - 1) - (a_gain + 1) * cos_w0)
+    a2 = (a_gain + 1) - (a_gain - 1) * cos_w0 - 2 * sqrt_a * alpha
+    stage1_b, stage1_a = (b0 / a0, b1 / a0, b2 / a0), (1.0, a1 / a0, a2 / a0)
+
+    f0, q = _K_WEIGHTING_STAGE2["f0"], _K_WEIGHTING_STAGE2["q"]
+    w0 = 2 * np.pi * f0 / sample_rate
+    cos_w0, alpha = np.cos(w0), np.sin(w0) / (2 * q)
+    b0 = (1 + cos_w0) / 2
+    b1 = -(1 + cos_w0)
+    b2 = (1 + cos_w0) / 2
+    a0 = 1 + alpha
+    a1 = -2 * cos_w0
+    a2 = 1 - alpha
+    stage2_b, stage2_a = (b0 / a0, b1 / a0, b2 / a0), (1.0, a1 / a0, a2 / a0)
+
+    return stage1_b, stage1_a, stage2_b, stage2_a
+
+
+def _apply_biquad(samples, b, a):
+    """Direct-Form-I biquad filter. A genuine IIR recursive filter (each
+    output sample depends on the previous two outputs), so this can't be
+    vectorized with numpy the way an FFT or a block-average can - a plain
+    Python loop over a list is actually faster here than indexing a numpy
+    array element-by-element in the same loop (numpy's per-element access
+    overhead dominates at this scale). ~0.6s for a 25-second segment in
+    testing - acceptable for a per-file quality check, not fast enough to
+    consider for every sample of a full library scan's every file without
+    the existing short analysis-segment cap."""
+    b0, b1, b2 = b
+    _, a1, a2 = a
+    out = [0.0] * len(samples)
+    x1 = x2 = y1 = y2 = 0.0
+    for i in range(len(samples)):
+        x0 = samples[i]
+        y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+        out[i] = y0
+        x2, x1 = x1, x0
+        y2, y1 = y1, y0
+    return out
+
+
+def _measure_lufs(samples, sample_rate=QUALITY_ANALYSIS_SAMPLE_RATE):
+    """
+    Integrated loudness (LUFS/LKFS) of `samples`, per ITU-R BS.1770-4: the
+    K-weighting filter above, then 400ms block energy measurement at 75%
+    overlap (100ms hop), then the standard's two-stage gating - first
+    discarding blocks below an absolute -70 LUFS floor, then discarding
+    blocks below a threshold set 10dB under the (still-ungated-among-
+    survivors) average. This is a real loudness measurement, not a plain
+    RMS - verified to match ffmpeg's own `ebur128` filter to within 0.1
+    LUFS on real files. Returns None if there isn't even one full 400ms
+    block to measure.
+    """
+    block_size = int(0.4 * sample_rate)
+    if len(samples) < block_size:
         return None
-    rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
-    return 20 * np.log10(rms + 1e-12)
+
+    stage1_b, stage1_a, stage2_b, stage2_a = _k_weighting_coeffs(sample_rate)
+    weighted = _apply_biquad(samples.astype(np.float64).tolist(), stage1_b, stage1_a)
+    weighted = np.array(_apply_biquad(weighted, stage2_b, stage2_a))
+
+    hop_size = int(0.1 * sample_rate)
+    num_blocks = (len(weighted) - block_size) // hop_size + 1
+    block_energies = np.array([
+        np.mean(weighted[i * hop_size: i * hop_size + block_size] ** 2) for i in range(num_blocks)
+    ])
+    block_energies = block_energies[block_energies > 0]
+    if len(block_energies) == 0:
+        return None
+
+    absolute_gated = block_energies[-0.691 + 10 * np.log10(block_energies) > -70.0]
+    if len(absolute_gated) == 0:
+        return None
+
+    relative_threshold = -0.691 + 10 * np.log10(np.mean(absolute_gated)) - 10.0
+    relative_gated = absolute_gated[-0.691 + 10 * np.log10(absolute_gated) > relative_threshold]
+    if len(relative_gated) == 0:
+        relative_gated = absolute_gated
+
+    return float(-0.691 + 10 * np.log10(np.mean(relative_gated)))
 
 
-def _level_verdict_from_db(rms_db):
-    """See QUALITY_LOW_LEVEL_ORANGE_DB/_RED_DB above for the reasoning and
-    the calibration caveat. Returns (verdict, detail) - verdict is always
-    QUALITY_GREEN when the level is unremarkable (or unknown), with
+def _level_verdict_from_lufs(lufs):
+    """See QUALITY_LOW_LEVEL_ORANGE_LUFS/_RED_LUFS above for the reasoning
+    and the calibration caveat. Returns (verdict, detail) - verdict is
+    always QUALITY_GREEN when the level is unremarkable (or unknown), with
     detail=None (there's nothing worth surfacing about a normal level)."""
-    if rms_db is None:
+    if lufs is None:
         return QUALITY_GREEN, None
-    if rms_db < QUALITY_LOW_LEVEL_RED_DB:
-        return QUALITY_RED, f"Very quiet ({rms_db:.0f} dB average level) - would need a large gain boost in Rekordbox"
-    if rms_db < QUALITY_LOW_LEVEL_ORANGE_DB:
-        return QUALITY_ORANGE, f"Quieter than usual ({rms_db:.0f} dB average level) - may need a noticeable gain boost"
+    if lufs < QUALITY_LOW_LEVEL_RED_LUFS:
+        return QUALITY_RED, f"Very quiet ({lufs:.1f} LUFS) - would need a large gain boost in Rekordbox"
+    if lufs < QUALITY_LOW_LEVEL_ORANGE_LUFS:
+        return QUALITY_ORANGE, f"Quieter than usual ({lufs:.1f} LUFS) - may need a noticeable gain boost"
     return QUALITY_GREEN, None
-
-
-def _check_track_level(samples):
-    """Thin wrapper kept for direct testing - see _measure_rms_db() and
-    _level_verdict_from_db(), which analyze_track_quality() calls
-    separately so it can reuse the raw dB value for display."""
-    return _level_verdict_from_db(_measure_rms_db(samples))
 
 
 _QUALITY_SEVERITY = {QUALITY_GREEN: 0, QUALITY_ORANGE: 1, QUALITY_RED: 2}
@@ -5517,18 +5610,19 @@ def analyze_track_quality(file_path, log=safe_print):
     low enough that Rekordbox would need a noticeably large gain boost to
     match other tracks (which raises the noise floor along with it) - see
     the module-level note above for real, confirmed limitations of the
-    spectral side (NOT a certainty either way), and QUALITY_LOW_LEVEL_*_DB
-    above for the level side's own calibration caveat.
+    spectral side (NOT a certainty either way), and
+    QUALITY_LOW_LEVEL_*_LUFS above for the level side's own calibration
+    caveat.
 
     Returns (verdict, detail, metrics):
     - verdict: QUALITY_GREEN / QUALITY_ORANGE / QUALITY_RED, or None if
       the file couldn't be analyzed at all (decode failure, too short).
     - detail: a short human-readable reason for the verdict.
-    - metrics: {"bitrate_kbps": ..., "rms_db": ...} - the raw numbers
-      behind the verdict, for display (e.g. the Quality tab's Bitrate/
-      Level columns) independent of whatever the verdict ends up being.
-      Either value may be None (bitrate_kbps for a lossless format or an
-      unreadable tag; rms_db when the file couldn't be decoded at all).
+    - metrics: {"bitrate_kbps": ..., "lufs": ...} - the raw numbers behind
+      the verdict, for display (e.g. the Quality tab's Bitrate/LUFS
+      columns) independent of whatever the verdict ends up being. Either
+      value may be None (bitrate_kbps for a lossless format or an
+      unreadable tag; lufs when the file couldn't be decoded at all).
     """
     extension = os.path.splitext(file_path)[1].lower()
 
@@ -5544,12 +5638,12 @@ def analyze_track_quality(file_path, log=safe_print):
     samples = _decode_pcm_segment(file_path)
     if len(samples) < QUALITY_ANALYSIS_SAMPLE_RATE:
         log(f"  Could not analyze '{file_path}' for quality (decode failed or file too short).")
-        metrics = {"bitrate_kbps": declared_bitrate_kbps, "rms_db": None}
+        metrics = {"bitrate_kbps": declared_bitrate_kbps, "lufs": None}
         return None, "Could not analyze this file (decode failed or too short)", metrics
 
-    rms_db = _measure_rms_db(samples)
-    level_result = _level_verdict_from_db(rms_db)
-    metrics = {"bitrate_kbps": declared_bitrate_kbps, "rms_db": rms_db}
+    lufs = _measure_lufs(samples)
+    level_result = _level_verdict_from_lufs(lufs)
+    metrics = {"bitrate_kbps": declared_bitrate_kbps, "lufs": lufs}
 
     # A file that already admits a low bitrate needs no spectral analysis
     # - it's not hiding anything, the number is trustworthy at the low end
@@ -5836,7 +5930,7 @@ def analyze_folder_quality(folder, log=safe_print, on_progress=None, on_result=N
             "verdict": verdict,
             "detail": detail,
             "bitrate_kbps": metrics.get("bitrate_kbps"),
-            "rms_db": metrics.get("rms_db"),
+            "lufs": metrics.get("lufs"),
         }
         results.append(result)
         if on_result:

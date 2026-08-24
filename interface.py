@@ -331,6 +331,11 @@ class TaggerInterface:
         self.quality_last_scanned_folder = None
         self.quality_row_paths = {}
         self._quality_spectrogram_requests = {}
+        self._quality_scan_counts = {tagger.QUALITY_GREEN: 0, tagger.QUALITY_ORANGE: 0, tagger.QUALITY_RED: 0}
+        # Same paced-reveal pattern as _pending_scan_reveals/_pending_scan_done
+        # below, for the Quality tab's own scan - see _reveal_next_quality_row().
+        self._pending_quality_reveals = []
+        self._pending_quality_scan_done = None
         # Remembers the folder the user last manually located a moved
         # history file in (see restore_selected in the History window) -
         # kept at the app level, not just for one Restore call, since a
@@ -403,6 +408,7 @@ class TaggerInterface:
         self.window.after(100, self._rewarm_theme)
         self._start_message_loop()
         self._reveal_next_scan_row()
+        self._reveal_next_quality_row()
         self._check_for_update_on_startup()
         self._check_internet_connection(is_startup_check=True)
         self._notify_new_install_on_startup()
@@ -1915,12 +1921,15 @@ class TaggerInterface:
         # would push "format" off the edge of the app's fixed 620px-wide
         # window instead of actually stretching).
         self.quality_table.column("file", width=170, minwidth=100, stretch=True, anchor="w")
-        self.quality_table.heading("level", text="RMS (dB)")
-        self.quality_table.column("level", width=85, minwidth=85, stretch=False, anchor="center")
+        # Unit isn't repeated in every cell (just "-13", not "-13 LUFS"/
+        # "320 kbps") - the header already says it, and it keeps these
+        # three columns tight instead of each carrying its own padding.
+        self.quality_table.heading("level", text="LUFS")
+        self.quality_table.column("level", width=50, minwidth=50, stretch=False, anchor="center")
         self.quality_table.heading("bitrate", text="Bitrate")
-        self.quality_table.column("bitrate", width=75, minwidth=75, stretch=False, anchor="center")
+        self.quality_table.column("bitrate", width=60, minwidth=60, stretch=False, anchor="center")
         self.quality_table.heading("format", text="Format")
-        self.quality_table.column("format", width=65, minwidth=65, stretch=False, anchor="center")
+        self.quality_table.column("format", width=55, minwidth=55, stretch=False, anchor="center")
         # Colors the whole row (dot + file/format/detail text) - ttk Treeview
         # tags apply per-item, not per-cell, so there's no way to color only
         # the dot on its own; matches what was asked for anyway ("les lignes
@@ -2236,6 +2245,8 @@ class TaggerInterface:
         self.quality_last_scanned_folder = folder
         self.quality_row_paths = {}
         self._quality_scan_counts = {tagger.QUALITY_GREEN: 0, tagger.QUALITY_ORANGE: 0, tagger.QUALITY_RED: 0}
+        self._pending_quality_reveals = []  # results queued for _reveal_next_quality_row
+        self._pending_quality_scan_done = None  # held until reveals catch up
 
         self.quality_browse_button.configure(state="disabled")
         self.quality_cancel_requested.clear()
@@ -2283,13 +2294,13 @@ class TaggerInterface:
             self._quality_scan_counts[verdict] += 1
         final_tags = (row_tag, verdict_tag) if verdict_tag else (row_tag,)
         bitrate_kbps = result.get("bitrate_kbps")
-        rms_db = result.get("rms_db")
+        lufs = result.get("lufs")
         item_id = self.quality_table.insert(
             "", "end", text="●" if verdict_tag else "❓",
             values=(
                 result.get("file", ""),
-                f"{rms_db:.0f} dB" if rms_db is not None else "—",
-                f"{bitrate_kbps:.0f} kbps" if bitrate_kbps is not None else "—",
+                f"{lufs:.1f}" if lufs is not None else "—",
+                f"{bitrate_kbps:.0f}" if bitrate_kbps is not None else "—",
                 result.get("format", ""),
             ),
             tags=final_tags,
@@ -2304,6 +2315,44 @@ class TaggerInterface:
         self.quality_summary_red_var.set(f"● {self._quality_scan_counts[tagger.QUALITY_RED]}")
         if not self.quality_summary_frame.winfo_ismapped():
             self.quality_summary_frame.pack(fill="x", padx=10, pady=(0, 5), before=self.quality_table_frame)
+
+    def _reveal_next_quality_row(self):
+        """Ticks every SCAN_REVEAL_INTERVAL_MS, for the app's entire
+        lifetime - same pacing mechanism as the Tagger tab's own
+        _reveal_next_scan_row(), reused here rather than reinvented: pops
+        at most one buffered quality result (see the "quality_scan_row"
+        handler in _start_message_loop) so tracks visibly appear no faster
+        than 1/second, no matter how fast the background analysis itself
+        produces them. Only finalizes the scan (see _finalize_quality_scan)
+        once every buffered result has actually been revealed.
+
+        Cancellation bypasses the pacing entirely, same as the Tagger
+        version - once Cancel is clicked, whatever's left in the buffer is
+        flushed in one go instead of continuing to trickle out."""
+        if self.quality_cancel_requested.is_set():
+            while self._pending_quality_reveals:
+                self._add_quality_row(self._pending_quality_reveals.pop(0))
+        elif self._pending_quality_reveals:
+            self._add_quality_row(self._pending_quality_reveals.pop(0))
+
+        if not self._pending_quality_reveals and self._pending_quality_scan_done is not None:
+            content, self._pending_quality_scan_done = self._pending_quality_scan_done, None
+            self._finalize_quality_scan(content)
+
+        self.window.after(SCAN_REVEAL_INTERVAL_MS, self._reveal_next_quality_row)
+
+    def _finalize_quality_scan(self, content):
+        results, cancelled, error = content
+        self.quality_browse_button.configure(state="normal")
+        self.quality_scan_button.configure(
+            text="Scan", command=self._start_quality_scan, state="normal",
+        )
+        self.quality_progress_frame.pack_forget()
+
+        if error:
+            messagebox.showerror("Analysis error", error, parent=self.window)
+        elif cancelled:
+            self._append_to_journal(f"Quality analysis cancelled - {len(results)} track(s) analyzed so far.")
 
     def _on_quality_row_double_click(self, event):
         item_id = self.quality_table.identify_row(event.y)
@@ -5242,22 +5291,15 @@ class TaggerInterface:
                     self.quality_progress_label.configure(text=f"Analyzing... {index}/{total}")
 
                 elif message_type == "quality_scan_row":
-                    self._add_quality_row(content)
+                    # Not displayed the instant it's ready - see
+                    # _reveal_next_quality_row(): queued here so the table
+                    # reveals tracks no faster than SCAN_REVEAL_INTERVAL_MS
+                    # apart, while the actual scan keeps running at full
+                    # speed underneath, unaffected.
+                    self._pending_quality_reveals.append(content)
 
                 elif message_type == "quality_scan_done":
-                    results, cancelled, error = content
-                    self.quality_browse_button.configure(state="normal")
-                    self.quality_scan_button.configure(
-                        text="Scan", command=self._start_quality_scan, state="normal",
-                    )
-                    self.quality_progress_frame.pack_forget()
-
-                    if error:
-                        messagebox.showerror("Analysis error", error, parent=self.window)
-                    elif cancelled:
-                        self._append_to_journal(
-                            f"Quality analysis cancelled - {len(results)} track(s) analyzed so far."
-                        )
+                    self._pending_quality_scan_done = content
 
                 elif message_type == "quality_spectrogram_ready":
                     request_id, data, error = content
