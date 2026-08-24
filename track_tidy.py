@@ -36,6 +36,7 @@ Contents (in the order they appear below):
     11. Format conversion                 - find_ffmpeg, convert_to_mp3
     12. Tag writing                       - open_audio_file, write_tags, fix_title_artist
     13. Processing (Apply)                - process_files, process_folder, main
+    14. Audio quality estimation          - analyze_track_quality, analyze_folder_quality
 """
 
 import os
@@ -57,6 +58,7 @@ from datetime import datetime, timezone
 import requests
 import keyring
 import platformdirs
+import numpy as np
 import acoustid
 from PIL import Image
 from mutagen import File as MutagenFile
@@ -5292,6 +5294,227 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
             on_progress(index, total)
 
     log("Processing complete.")
+
+
+# ============================================================================
+# 14. AUDIO QUALITY ESTIMATION
+# ============================================================================
+
+# Best-effort detector for a track whose actual audio content doesn't match
+# what its format/bitrate implies - most commonly a WAV/FLAC that's secretly
+# an upscaled low-bitrate MP3 (or an MP3 mislabeled at a higher bitrate than
+# its content actually supports). Surfaced in the Quality tab as a green/
+# orange/red marker - explicitly presented there as an ESTIMATE to verify,
+# not a certainty, same spirit as the AcoustID "🎧" marker in the main
+# Tagger table.
+#
+# Why this is inherently approximate - two real limitations confirmed
+# empirically while calibrating this, not just theoretical caveats:
+# - A CBR-encoded lossy source (a very common real-world case) doesn't
+#   reliably show a detectable spectral cutoff at all: a 128kbps CBR MP3
+#   and a 320kbps CBR MP3 encoded through the SAME ffmpeg/libmp3lame build
+#   showed an IDENTICAL ~19-20kHz cutoff in testing - only VBR-mode
+#   encoding produced a genuinely bitrate-dependent cutoff. A "green"
+#   verdict is therefore NOT proof of a genuine lossless source.
+# - A real, legitimately mastered track can naturally roll off high
+#   frequencies (mastering choice, genre, source recording) with no
+#   transcoding involved at all - confirmed on a real track while testing
+#   this, which showed an ~18.75kHz "cutoff" that's most likely just its
+#   own mastering, not evidence of a fake. A "red"/"orange" verdict is a
+#   prompt to listen for yourself, not a verdict of fraud.
+QUALITY_GREEN = "green"
+QUALITY_ORANGE = "orange"
+QUALITY_RED = "red"
+
+LOSSLESS_QUALITY_EXTENSIONS = (".wav", ".flac", ".aiff", ".aif")
+
+# Spectral-cutoff thresholds (Hz) - a lower cutoff means an encoder's
+# bandpass filter cut more of the audio away, implying a lower-quality
+# source. Calibrated against real MP3 VBR-quality encodes (see the note
+# above for why CBR-mode encodes don't reliably trigger this at all) -
+# NOT a precise science. Deliberately set BELOW ~19kHz: real CBR-encoded
+# MP3s at every bitrate tested (128/192/320) all showed a ~19-20kHz
+# cutoff from the encoder's own filterbank, unrelated to actual quality -
+# a higher threshold here would flag essentially every ordinary MP3.
+QUALITY_CUTOFF_RED_HZ = 15500
+QUALITY_CUTOFF_ORANGE_HZ = 18000
+
+# Declared-bitrate threshold (kbps) for lossy formats (MP3/AAC/OGG/WMA/
+# Opus), read straight from the file's own tags - trusted at face value:
+# a file admitting a low bitrate needs no spectral analysis, since nobody
+# mislabels a file to look WORSE than it is. A declared bitrate at or
+# above this is NOT treated as trustworthy on its own - it still goes
+# through the same spectral-cutoff check as everything else below.
+QUALITY_BITRATE_LOW_KBPS = 160
+
+QUALITY_ANALYSIS_SAMPLE_RATE = 44100
+QUALITY_ANALYSIS_SEGMENT_SECONDS = 25
+QUALITY_ANALYSIS_SKIP_SECONDS = 20  # skip likely intro silence/fade-in
+
+
+def _decode_pcm_segment(file_path, duration=QUALITY_ANALYSIS_SEGMENT_SECONDS,
+                         skip=QUALITY_ANALYSIS_SKIP_SECONDS, sample_rate=QUALITY_ANALYSIS_SAMPLE_RATE):
+    """
+    Decodes a mono PCM segment of file_path via the bundled FFmpeg, for
+    spectral analysis - not the whole file (unnecessary and slow for a
+    library scan). Retries once from the very start if skipping ahead
+    landed past the end of a short file. Returns a numpy float32 array,
+    empty on any failure (missing ffmpeg, corrupted file...).
+    """
+    def _run(start):
+        command = [
+            find_ffmpeg(), "-y", "-nostdin", "-ss", str(start), "-i", file_path,
+            "-t", str(duration), "-ac", "1", "-ar", str(sample_rate), "-f", "f32le", "pipe:1",
+        ]
+        try:
+            result = subprocess.run(
+                command, capture_output=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception:
+            return b""
+        return result.stdout if result.returncode == 0 else b""
+
+    raw = _run(skip)
+    if len(raw) < sample_rate * 2 * 2:  # under ~1s of audio (2 bytes/sample, sanity margin)
+        raw = _run(0)
+    return np.frombuffer(raw, dtype=np.float32)
+
+
+def _detect_spectral_cutoff_hz(samples, sample_rate=QUALITY_ANALYSIS_SAMPLE_RATE,
+                                search_lo=8000, search_hi=21500,
+                                drop_db=12, drop_span_hz=1500, confirm_span_hz=2000):
+    """
+    Looks for a sharp, SUSTAINED drop in spectral energy within
+    [search_lo, search_hi] - the brick-wall signature of a lossy encoder's
+    bandpass filter - as opposed to a real full-bandwidth signal's
+    gradual, natural high-frequency rolloff (an earlier, naive "energy
+    relative to the global peak" approach false-triggered on that instead
+    - see the module-level note above).
+
+    For each candidate frequency, compares average smoothed energy just
+    BEFORE it to just AFTER it; a genuine cutoff drops sharply and stays
+    down over a further stretch past that point (confirmed separately, to
+    rule out a brief notch/dip in otherwise-normal content).
+
+    Returns the cutoff frequency in Hz, or None if no such drop is found
+    (full-bandwidth content, or too little audio to analyze).
+    """
+    if len(samples) < sample_rate:
+        return None
+
+    windowed = samples * np.hanning(len(samples))
+    spectrum_db = 20 * np.log10(np.abs(np.fft.rfft(windowed)) + 1e-12)
+    freqs = np.fft.rfftfreq(len(samples), d=1.0 / sample_rate)
+
+    kernel = max(3, int(len(freqs) * 50 / (sample_rate / 2)))
+    if kernel % 2 == 0:
+        kernel += 1
+    smoothed = np.convolve(spectrum_db, np.ones(kernel) / kernel, mode="same")
+
+    def band_avg(f_lo, f_hi):
+        mask = (freqs >= f_lo) & (freqs < f_hi)
+        return np.mean(smoothed[mask]) if np.any(mask) else None
+
+    for f in np.arange(search_lo, search_hi, 250):
+        before = band_avg(f - drop_span_hz, f)
+        after = band_avg(f, f + drop_span_hz)
+        if before is None or after is None or (before - after) < drop_db:
+            continue
+        confirm = band_avg(f, min(f + confirm_span_hz, search_hi))
+        if confirm is None or (before - confirm) < drop_db * 0.7:
+            continue
+        return float(f)
+
+    return None
+
+
+def analyze_track_quality(file_path, log=safe_print):
+    """
+    Best-effort estimate of whether file_path's audio content matches what
+    its format/declared bitrate implies - see the module-level note above
+    for real, confirmed limitations (NOT a certainty either way).
+
+    Returns (verdict, detail):
+    - verdict: QUALITY_GREEN / QUALITY_ORANGE / QUALITY_RED, or None if
+      the file couldn't be analyzed at all (decode failure, too short).
+    - detail: a short human-readable reason for the verdict.
+    """
+    extension = os.path.splitext(file_path)[1].lower()
+
+    declared_bitrate_kbps = None
+    if extension not in LOSSLESS_QUALITY_EXTENSIONS:
+        try:
+            audio = MutagenFile(file_path)
+            if audio is not None and audio.info is not None and getattr(audio.info, "bitrate", None):
+                declared_bitrate_kbps = audio.info.bitrate / 1000
+        except Exception:
+            pass
+
+        # A file that already admits a low bitrate needs no spectral
+        # analysis - it's not hiding anything, the number is trustworthy
+        # at the low end (nobody mislabels a file to look WORSE).
+        if declared_bitrate_kbps is not None and declared_bitrate_kbps < QUALITY_BITRATE_LOW_KBPS:
+            return QUALITY_RED, f"Declared bitrate is only {declared_bitrate_kbps:.0f} kbps"
+
+    samples = _decode_pcm_segment(file_path)
+    if len(samples) < QUALITY_ANALYSIS_SAMPLE_RATE:
+        log(f"  Could not analyze '{file_path}' for quality (decode failed or file too short).")
+        return None, "Could not analyze this file (decode failed or too short)"
+
+    cutoff = _detect_spectral_cutoff_hz(samples)
+
+    if cutoff is None:
+        if declared_bitrate_kbps is not None:
+            return QUALITY_GREEN, f"No lossy cutoff detected ({declared_bitrate_kbps:.0f} kbps declared)"
+        return QUALITY_GREEN, "No lossy cutoff detected in the audio content"
+
+    if cutoff < QUALITY_CUTOFF_RED_HZ:
+        return QUALITY_RED, f"Audio content cuts off around {cutoff / 1000:.1f} kHz - likely a lossy source"
+
+    if cutoff < QUALITY_CUTOFF_ORANGE_HZ:
+        return QUALITY_ORANGE, f"Audio content cuts off around {cutoff / 1000:.1f} kHz - worth a listen"
+
+    # A cutoff was detected but it's up near ~18-20kHz - well within the
+    # range an ordinary, undamaged MP3 encode lands in on its own (every
+    # CBR bitrate tested showed a cutoff there purely from the encoder's
+    # own filterbank, unrelated to actual quality - see the module-level
+    # note above), so this is NOT treated as suspicious on its own.
+    return QUALITY_GREEN, f"Cutoff around {cutoff / 1000:.1f} kHz is consistent with the declared quality"
+
+
+def analyze_folder_quality(folder, log=safe_print, on_progress=None, should_cancel=None):
+    """
+    Walks `folder` for every supported audio file and runs
+    analyze_track_quality() over each one - the Quality tab's own scan.
+    Takes an explicit folder rather than depending on the global
+    MUSIC_FOLDER, same as the Extractor tab's own tools - the Quality tab
+    has its own independent folder selection and must never interfere
+    with whatever the Tagger tab currently has scanned. Read-only, never
+    touches tags or covers.
+    """
+    file_list = []
+    for current_folder, _dirs, file_names in os.walk(folder):
+        for name in file_names:
+            if name.lower().endswith(SUPPORTED_EXTENSIONS):
+                file_list.append(os.path.join(current_folder, name))
+    file_list.sort()
+
+    results = []
+    total = len(file_list)
+    for index, full_path in enumerate(file_list, start=1):
+        if should_cancel and should_cancel():
+            break
+        verdict, detail = analyze_track_quality(full_path, log=log)
+        results.append({
+            "file": os.path.relpath(full_path, folder),
+            "format": os.path.splitext(full_path)[1].lstrip(".").upper(),
+            "verdict": verdict,
+            "detail": detail,
+        })
+        if on_progress:
+            on_progress(index, total)
+    return results
 
 
 def process_folder(log=safe_print, on_progress=None):

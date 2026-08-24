@@ -16,6 +16,7 @@ import unittest
 import tempfile
 import keyring
 import keyring.backend
+import numpy as np
 from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -2371,6 +2372,79 @@ class SafePrintTests(unittest.TestCase):
             tagger.safe_print("Uploader: \U0001f31e Sun Guy")
         except UnicodeEncodeError:
             self.fail("safe_print() should never raise UnicodeEncodeError")
+
+
+class DetectSpectralCutoffTests(unittest.TestCase):
+    """Pure-numpy tests for the FFT-based cutoff detector - no ffmpeg/real
+    audio file needed, since it operates on an already-decoded sample
+    array. Uses synthetic wideband noise (optionally low-pass filtered in
+    the frequency domain) so the expected cutoff is exactly known,
+    unlike a real music file where the "correct" answer is a judgment
+    call."""
+
+    SAMPLE_RATE = 44100
+
+    def _make_noise(self, seconds=3, seed=0):
+        rng = np.random.default_rng(seed)
+        return rng.normal(0, 0.3, size=int(self.SAMPLE_RATE * seconds)).astype(np.float32)
+
+    def _lowpass_in_frequency_domain(self, samples, cutoff_hz):
+        spectrum = np.fft.rfft(samples)
+        freqs = np.fft.rfftfreq(len(samples), d=1.0 / self.SAMPLE_RATE)
+        spectrum[freqs > cutoff_hz] = 0
+        return np.fft.irfft(spectrum, n=len(samples)).astype(np.float32)
+
+    def test_full_bandwidth_noise_has_no_cutoff(self):
+        samples = self._make_noise()
+        self.assertIsNone(tagger._detect_spectral_cutoff_hz(samples))
+
+    def test_lowpassed_noise_detects_cutoff_near_the_filter_frequency(self):
+        samples = self._lowpass_in_frequency_domain(self._make_noise(), cutoff_hz=12000)
+        cutoff = tagger._detect_spectral_cutoff_hz(samples)
+        self.assertIsNotNone(cutoff)
+        self.assertLess(abs(cutoff - 12000), 1500)
+
+    def test_lower_cutoff_filter_is_detected_lower_than_a_higher_one(self):
+        low = tagger._detect_spectral_cutoff_hz(self._lowpass_in_frequency_domain(self._make_noise(), 10000))
+        high = tagger._detect_spectral_cutoff_hz(self._lowpass_in_frequency_domain(self._make_noise(), 18000))
+        self.assertIsNotNone(low)
+        self.assertIsNotNone(high)
+        self.assertLess(low, high)
+
+    def test_too_short_sample_returns_none(self):
+        samples = self._make_noise(seconds=0.1)
+        self.assertIsNone(tagger._detect_spectral_cutoff_hz(samples))
+
+
+class AnalyzeTrackQualityTests(unittest.TestCase):
+    """Uses committed audio fixtures (assets/) - real ffmpeg decode, real
+    verdict logic end to end."""
+
+    def setUp(self):
+        self.project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def _asset(self, name):
+        return os.path.join(self.project_root, "assets", name)
+
+    def test_low_declared_bitrate_is_red_without_needing_a_clean_cutoff(self):
+        # fart_low_bitrate.mp3 is a real ~96kbps encode - this path is
+        # trusted from the tag alone (a file doesn't lie about being LOW
+        # quality), so it must return red even though this specific short
+        # sound effect has too little content for a clean spectral read.
+        verdict, detail = tagger.analyze_track_quality(self._asset("fart_low_bitrate.mp3"))
+        self.assertEqual(verdict, tagger.QUALITY_RED)
+        self.assertIn("kbps", detail)
+
+    def test_returns_a_valid_verdict_for_a_lossless_fixture(self):
+        # Real fixture, real ffmpeg decode - just confirms the whole path
+        # runs end to end and returns one of the three real verdicts, not
+        # asserting which one (see the module's own documented caveat:
+        # a short/naturally bass-heavy sound effect like this one isn't
+        # representative of what the heuristic is actually calibrated
+        # for, so a specific color here isn't a meaningful assertion).
+        verdict, detail = tagger.analyze_track_quality(self._asset("fart.flac"))
+        self.assertIn(verdict, (tagger.QUALITY_GREEN, tagger.QUALITY_ORANGE, tagger.QUALITY_RED))
+        self.assertTrue(detail)
 
 
 if __name__ == "__main__":

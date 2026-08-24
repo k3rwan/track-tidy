@@ -320,6 +320,9 @@ class TaggerInterface:
         # (different tabs, nothing stops both running at once), so sharing
         # one Event would let cancelling one spuriously cancel the other.
         self.extract_cancel_requested = threading.Event()
+        # Same reasoning as extract_cancel_requested above - the Quality
+        # tab's own scan is a third independent background action.
+        self.quality_cancel_requested = threading.Event()
         # Remembers the folder the user last manually located a moved
         # history file in (see restore_selected in the History window) -
         # kept at the app level, not just for one Restore call, since a
@@ -1032,6 +1035,10 @@ class TaggerInterface:
             self.progress_canvas.itemconfig(self.progress_text, fill=colors["progress_text"])
             self.table.tag_configure("odd_row", background=colors["tree_odd_row"], foreground=colors["tree_fg"])
             self.table.tag_configure("even_row", background=colors["tree_bg"], foreground=colors["tree_fg"])
+            self.quality_table.tag_configure(
+                "odd_row", background=colors["tree_odd_row"], foreground=colors["tree_fg"],
+            )
+            self.quality_table.tag_configure("even_row", background=colors["tree_bg"], foreground=colors["tree_fg"])
         else:
             style.map(
                 "ReadonlyWhite.TEntry",
@@ -1057,6 +1064,8 @@ class TaggerInterface:
             self.progress_canvas.itemconfig(self.progress_text, fill="#1a1a1a")
             self.table.tag_configure("odd_row", background="#e9e9e9", foreground="black")
             self.table.tag_configure("even_row", background="white", foreground="black")
+            self.quality_table.tag_configure("odd_row", background="#e9e9e9", foreground="black")
+            self.quality_table.tag_configure("even_row", background="white", foreground="black")
 
         for entry in (self.new_mention_entry, self.table_filter_entry):
             entry.normal_color = colors["entry_fg"] if dark else "black"
@@ -1534,10 +1543,12 @@ class TaggerInterface:
 
         tagger_tab = ttk.Frame(self.notebook)
         extractor_tab = ttk.Frame(self.notebook)
+        quality_tab = ttk.Frame(self.notebook)
         soundcloud_tab = ttk.Frame(self.notebook)
         self.tagger_tab = tagger_tab
         self.notebook.add(tagger_tab, text="Tagger")
         self.notebook.add(extractor_tab, text="Extractor")
+        self.notebook.add(quality_tab, text="Quality")
         self.notebook.add(soundcloud_tab, text="Settings")
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
@@ -1787,6 +1798,79 @@ class TaggerInterface:
         )
         self.extract_button.configure(state="disabled")
         self.extract_button.pack(side="left", fill="x", expand=True)
+
+        # ============================== Quality tab ==============================
+
+        quality_intro_label = ttk.Label(
+            quality_tab,
+            text=(
+                "Estimates whether a track's actual audio content matches what its "
+                "format/bitrate implies - catches a WAV/FLAC that's secretly an "
+                "upscaled low-bitrate MP3, or an MP3 relabeled at a higher bitrate "
+                "than its content supports.\n"
+                "This is a best-effort ESTIMATE, not a certainty - a real track can "
+                "legitimately roll off high frequencies (mastering, genre), and some "
+                "lossy sources don't show a detectable trace at all. Treat orange/red "
+                "as \"worth a listen\", not proof."
+            ),
+            justify="left",
+        )
+        quality_intro_label.pack(anchor="w", fill="x", padx=10, pady=(15, 10))
+        quality_intro_label.bind("<Configure>", lambda e: e.widget.configure(wraplength=e.width))
+
+        ttk.Label(quality_tab, text="Folder to analyze:").pack(anchor="w", padx=10)
+        self.quality_folder_var = tk.StringVar(value="")
+        quality_folder_entry = ttk.Entry(
+            quality_tab, textvariable=self.quality_folder_var, state="readonly", style="ReadonlyWhite.TEntry"
+        )
+        quality_folder_entry.pack(fill="x", padx=10, pady=(0, 5))
+        self._bind_entry_context_menu(quality_folder_entry, readonly=True)
+
+        quality_buttons_frame = ttk.Frame(quality_tab)
+        quality_buttons_frame.pack(fill="x", padx=10, pady=(0, 5))
+        self.quality_browse_button = ttk.Button(
+            quality_buttons_frame, text="Browse...", command=self._choose_quality_folder
+        )
+        self.quality_browse_button.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        self.quality_scan_button = ttk.Button(
+            quality_buttons_frame, text="Analyze", command=self._start_quality_scan
+        )
+        self.quality_scan_button.configure(state="disabled")
+        self.quality_scan_button.pack(side="left", fill="x", expand=True)
+
+        self.quality_progress_frame = ttk.Frame(quality_tab)
+        # not packed yet - only shown once a scan has actually started
+        self.quality_progress_var = tk.DoubleVar(value=0)
+        self.quality_progress_bar = ttk.Progressbar(
+            self.quality_progress_frame, variable=self.quality_progress_var, maximum=100,
+        )
+        self.quality_progress_bar.pack(fill="x", padx=10, pady=(5, 2))
+        self.quality_progress_label = ttk.Label(self.quality_progress_frame, text="")
+        self.quality_progress_label.pack(anchor="w", padx=10, pady=(0, 5))
+
+        self.quality_table_frame = ttk.Frame(quality_tab)
+        self.quality_table_frame.pack(fill="both", expand=True, padx=10, pady=(5, 10))
+
+        quality_columns = ("format", "verdict", "detail")
+        self.quality_table = ttk.Treeview(
+            self.quality_table_frame, columns=quality_columns, show="tree headings",
+            selectmode="browse", style="Table.Treeview",
+        )
+        self.quality_table.heading("#0", text="File")
+        self.quality_table.column("#0", width=260, anchor="w")
+        self.quality_table.heading("format", text="Format")
+        self.quality_table.column("format", width=60, anchor="center")
+        self.quality_table.heading("verdict", text="Quality")
+        self.quality_table.column("verdict", width=140, anchor="w")
+        self.quality_table.heading("detail", text="Detail")
+        self.quality_table.column("detail", width=320, anchor="w")
+
+        quality_scrollbar = ttk.Scrollbar(
+            self.quality_table_frame, orient="vertical", command=self.quality_table.yview,
+        )
+        self.quality_table.configure(yscrollcommand=quality_scrollbar.set)
+        self.quality_table.pack(side="left", fill="both", expand=True)
+        quality_scrollbar.pack(side="left", fill="y")
 
         # ============================== Settings tab ==============================
 
@@ -2057,6 +2141,68 @@ class TaggerInterface:
         except Exception as error:
             tagger.send_extraction_report(reporter_name=reporter_name, error=str(error))
             self.message_queue.put(("extract_done", (folder, 0, 0, False, str(error))))
+
+    # --- Quality tab actions ---
+
+    QUALITY_VERDICT_DISPLAY = {
+        tagger.QUALITY_GREEN: "\U0001f7e2 Likely genuine",
+        tagger.QUALITY_ORANGE: "\U0001f7e0 Worth checking",
+        tagger.QUALITY_RED: "\U0001f534 Likely low quality",
+    }
+
+    def _choose_quality_folder(self):
+        folder = filedialog.askdirectory(title="Choose the folder to analyze")
+        if folder:
+            self.quality_folder_var.set(folder)
+            self.quality_scan_button.configure(state="normal")
+
+    def _start_quality_scan(self):
+        folder = self.quality_folder_var.get().strip()
+        if not folder or not os.path.isdir(folder):
+            messagebox.showwarning("Missing folder", "Please choose a valid folder first.", parent=self.window)
+            return
+
+        for row in self.quality_table.get_children():
+            self.quality_table.delete(row)
+
+        self.quality_browse_button.configure(state="disabled")
+        self.quality_cancel_requested.clear()
+        self.quality_scan_button.configure(text="Cancel", command=self._request_quality_cancel, state="normal")
+
+        self.quality_progress_var.set(0)
+        self.quality_progress_label.configure(text="Analyzing...")
+        self.quality_progress_frame.pack(fill="x", padx=0, pady=0, before=self.quality_table_frame)
+
+        self._run_in_background(self._run_quality_scan, folder)
+
+    def _request_quality_cancel(self):
+        self.quality_cancel_requested.set()
+        self.quality_scan_button.configure(state="disabled")
+
+    def _run_quality_scan(self, folder):
+        def on_progress(index, total):
+            self.message_queue.put(("quality_scan_progress", (index, total)))
+
+        try:
+            results = tagger.analyze_folder_quality(
+                folder, log=self._append_to_journal, on_progress=on_progress,
+                should_cancel=self.quality_cancel_requested.is_set,
+            )
+            cancelled = self.quality_cancel_requested.is_set()
+            self.message_queue.put(("quality_scan_done", (results, cancelled, None)))
+        except Exception as error:
+            self.message_queue.put(("quality_scan_done", ([], False, str(error))))
+
+    def _populate_quality_table(self, results):
+        for index, result in enumerate(results):
+            tag = "even_row" if index % 2 == 0 else "odd_row"
+            verdict = result.get("verdict")
+            verdict_display = self.QUALITY_VERDICT_DISPLAY.get(verdict, "❓ Couldn't analyze")
+            self.quality_table.insert(
+                "", "end", text=result.get("file", ""),
+                values=(result.get("format", ""), verdict_display, result.get("detail", "")),
+                tags=(tag,),
+            )
 
     # --- Folder / mention actions ---
 
@@ -4799,6 +4945,29 @@ class TaggerInterface:
                             open_with_default_app(folder)
                         except Exception:
                             pass
+
+                elif message_type == "quality_scan_progress":
+                    index, total = content
+                    fraction = (index / total * 100) if total else 0
+                    self.quality_progress_var.set(fraction)
+                    self.quality_progress_label.configure(text=f"Analyzing... {index}/{total}")
+
+                elif message_type == "quality_scan_done":
+                    results, cancelled, error = content
+                    self.quality_browse_button.configure(state="normal")
+                    self.quality_scan_button.configure(
+                        text="Analyze", command=self._start_quality_scan, state="normal",
+                    )
+                    self.quality_progress_frame.pack_forget()
+
+                    if error:
+                        messagebox.showerror("Analysis error", error, parent=self.window)
+                    else:
+                        self._populate_quality_table(results)
+                        if cancelled:
+                            self._append_to_journal(
+                                f"Quality analysis cancelled - {len(results)} track(s) analyzed so far."
+                            )
 
                 elif message_type == "internet_status":
                     is_online, is_startup_check = content
