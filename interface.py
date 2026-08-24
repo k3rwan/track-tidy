@@ -2230,6 +2230,7 @@ class TaggerInterface:
         self.quality_summary_frame.pack_forget()
         self.quality_last_scanned_folder = folder
         self.quality_row_paths = {}
+        self._quality_scan_counts = {tagger.QUALITY_GREEN: 0, tagger.QUALITY_ORANGE: 0, tagger.QUALITY_RED: 0}
 
         self.quality_browse_button.configure(state="disabled")
         self.quality_cancel_requested.clear()
@@ -2249,9 +2250,15 @@ class TaggerInterface:
         def on_progress(index, total):
             self.message_queue.put(("quality_scan_progress", (index, total)))
 
+        def on_result(result):
+            # Streamed one at a time as each file finishes analyzing
+            # (rather than only at the very end), so the table fills in
+            # live the same way the Tagger tab's own scan does.
+            self.message_queue.put(("quality_scan_row", result))
+
         try:
             results = tagger.analyze_folder_quality(
-                folder, log=self._append_to_journal, on_progress=on_progress,
+                folder, log=self._append_to_journal, on_progress=on_progress, on_result=on_result,
                 should_cancel=self.quality_cancel_requested.is_set,
             )
             cancelled = self.quality_cancel_requested.is_set()
@@ -2259,45 +2266,38 @@ class TaggerInterface:
         except Exception as error:
             self.message_queue.put(("quality_scan_done", ([], False, str(error))))
 
-    def _populate_quality_table(self, results):
-        self.quality_row_paths = {}
-        counts = {tagger.QUALITY_GREEN: 0, tagger.QUALITY_ORANGE: 0, tagger.QUALITY_RED: 0}
-        stagger_ms = (
-            min(25, max(4, self.ROW_APPEAR_MAX_TOTAL_STAGGER_MS // len(results))) if results else 0
+    def _add_quality_row(self, result):
+        """Inserts and flashes a single scan result as soon as it arrives -
+        counterpart to _run_quality_scan's on_result callback. Running
+        counts/the summary strip update live here too, rather than being
+        computed once at the end."""
+        row_tag = "even_row" if len(self.quality_table.get_children()) % 2 == 0 else "odd_row"
+        verdict = result.get("verdict")
+        verdict_tag = self.QUALITY_VERDICT_TAG.get(verdict)
+        if verdict in self._quality_scan_counts:
+            self._quality_scan_counts[verdict] += 1
+        final_tags = (row_tag, verdict_tag) if verdict_tag else (row_tag,)
+        bitrate_kbps = result.get("bitrate_kbps")
+        rms_db = result.get("rms_db")
+        item_id = self.quality_table.insert(
+            "", "end", text="●" if verdict_tag else "❓",
+            values=(
+                result.get("file", ""),
+                f"{rms_db:.0f} dB" if rms_db is not None else "—",
+                f"{bitrate_kbps:.0f} kbps" if bitrate_kbps is not None else "—",
+                result.get("format", ""),
+            ),
+            tags=final_tags,
         )
-        for index, result in enumerate(results):
-            row_tag = "even_row" if index % 2 == 0 else "odd_row"
-            verdict = result.get("verdict")
-            verdict_tag = self.QUALITY_VERDICT_TAG.get(verdict)
-            if verdict in counts:
-                counts[verdict] += 1
-            final_tags = (row_tag, verdict_tag) if verdict_tag else (row_tag,)
-            bitrate_kbps = result.get("bitrate_kbps")
-            rms_db = result.get("rms_db")
-            item_id = self.quality_table.insert(
-                "", "end", text="●" if verdict_tag else "❓",
-                values=(
-                    result.get("file", ""),
-                    f"{rms_db:.0f} dB" if rms_db is not None else "—",
-                    f"{bitrate_kbps:.0f} kbps" if bitrate_kbps is not None else "—",
-                    result.get("format", ""),
-                ),
-                tags=final_tags,
-            )
-            relative_file = result.get("file", "")
-            if self.quality_last_scanned_folder and relative_file:
-                self.quality_row_paths[item_id] = os.path.join(
-                    self.quality_last_scanned_folder, relative_file
-                )
-            self.window.after(
-                index * stagger_ms,
-                lambda iid=item_id, ft=final_tags: self._flash_new_row(iid, tree=self.quality_table, final_tags=ft),
-            )
+        relative_file = result.get("file", "")
+        if self.quality_last_scanned_folder and relative_file:
+            self.quality_row_paths[item_id] = os.path.join(self.quality_last_scanned_folder, relative_file)
+        self._flash_new_row(item_id, tree=self.quality_table, final_tags=final_tags)
 
-        if results:
-            self.quality_summary_green_var.set(f"● {counts[tagger.QUALITY_GREEN]}")
-            self.quality_summary_orange_var.set(f"● {counts[tagger.QUALITY_ORANGE]}")
-            self.quality_summary_red_var.set(f"● {counts[tagger.QUALITY_RED]}")
+        self.quality_summary_green_var.set(f"● {self._quality_scan_counts[tagger.QUALITY_GREEN]}")
+        self.quality_summary_orange_var.set(f"● {self._quality_scan_counts[tagger.QUALITY_ORANGE]}")
+        self.quality_summary_red_var.set(f"● {self._quality_scan_counts[tagger.QUALITY_RED]}")
+        if not self.quality_summary_frame.winfo_ismapped():
             self.quality_summary_frame.pack(fill="x", padx=10, pady=(0, 5), before=self.quality_table_frame)
 
     def _on_quality_row_double_click(self, event):
@@ -2991,12 +2991,6 @@ class TaggerInterface:
     # accent tint down to its normal stripe color over a few quick steps.
     ROW_FLASH_STEPS = 8
     ROW_FLASH_STEP_MS = 25
-    # Rows inserted in one batch (Quality tab results all arrive at once,
-    # unlike the Tagger table's live per-file inserts) are staggered across
-    # this total span so they still appear to cascade in one-by-one rather
-    # than all flashing in lockstep - capped so a huge result set doesn't
-    # turn into a slow multi-second crawl.
-    ROW_APPEAR_MAX_TOTAL_STAGGER_MS = 900
 
     # Verdict-colored tags a settled Quality-tab row can carry - if a flash's
     # final tags include one, that foreground stays visible through the
@@ -5242,6 +5236,9 @@ class TaggerInterface:
                     self.quality_progress_var.set(fraction)
                     self.quality_progress_label.configure(text=f"Analyzing... {index}/{total}")
 
+                elif message_type == "quality_scan_row":
+                    self._add_quality_row(content)
+
                 elif message_type == "quality_scan_done":
                     results, cancelled, error = content
                     self.quality_browse_button.configure(state="normal")
@@ -5252,12 +5249,10 @@ class TaggerInterface:
 
                     if error:
                         messagebox.showerror("Analysis error", error, parent=self.window)
-                    else:
-                        self._populate_quality_table(results)
-                        if cancelled:
-                            self._append_to_journal(
-                                f"Quality analysis cancelled - {len(results)} track(s) analyzed so far."
-                            )
+                    elif cancelled:
+                        self._append_to_journal(
+                            f"Quality analysis cancelled - {len(results)} track(s) analyzed so far."
+                        )
 
                 elif message_type == "quality_spectrogram_ready":
                     request_id, data, error = content

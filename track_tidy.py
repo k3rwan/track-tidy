@@ -5800,7 +5800,7 @@ def spectrogram_legend_image(width, height):
     return Image.fromarray(np.ascontiguousarray(rgb), mode="RGB")
 
 
-def analyze_folder_quality(folder, log=safe_print, on_progress=None, should_cancel=None):
+def analyze_folder_quality(folder, log=safe_print, on_progress=None, on_result=None, should_cancel=None):
     """
     Walks `folder` for every supported audio file and runs
     analyze_track_quality() over each one - the Quality tab's own scan.
@@ -5809,6 +5809,13 @@ def analyze_folder_quality(folder, log=safe_print, on_progress=None, should_canc
     has its own independent folder selection and must never interfere
     with whatever the Tagger tab currently has scanned. Read-only, never
     touches tags or covers.
+
+    on_result(result), if given, fires with each file's result dict right
+    as it's produced - lets the caller stream rows into the UI live
+    instead of waiting for the whole folder to finish, the same way the
+    Tagger tab's own scan reveals rows as it goes. The full list is still
+    returned at the end regardless (used for the final "N analyzed"
+    count on cancel).
     """
     file_list = []
     for current_folder, _dirs, file_names in os.walk(folder):
@@ -5823,14 +5830,17 @@ def analyze_folder_quality(folder, log=safe_print, on_progress=None, should_canc
         if should_cancel and should_cancel():
             break
         verdict, detail, metrics = analyze_track_quality(full_path, log=log)
-        results.append({
+        result = {
             "file": os.path.relpath(full_path, folder),
             "format": os.path.splitext(full_path)[1].lstrip(".").upper(),
             "verdict": verdict,
             "detail": detail,
             "bitrate_kbps": metrics.get("bitrate_kbps"),
             "rms_db": metrics.get("rms_db"),
-        })
+        }
+        results.append(result)
+        if on_result:
+            on_result(result)
         if on_progress:
             on_progress(index, total)
     return results
