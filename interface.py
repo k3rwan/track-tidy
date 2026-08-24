@@ -1908,14 +1908,19 @@ class TaggerInterface:
         self.quality_table.heading("file", text="File")
         # Stretches to soak up all leftover width, which keeps "format" - the
         # last column - pinned flush against the table's right edge instead
-        # of leaving blank space after it.
-        self.quality_table.column("file", width=340, stretch=True, anchor="w")
-        self.quality_table.heading("level", text="Level (RMS dB)")
-        self.quality_table.column("level", width=100, minwidth=100, stretch=False, anchor="center")
+        # of leaving blank space after it. Base width kept modest (unlike
+        # the other, fixed-width columns here, ttk never shrinks a
+        # stretching column below its configured width to make room for
+        # its neighbors - only grows it - so a too-wide base width here
+        # would push "format" off the edge of the app's fixed 620px-wide
+        # window instead of actually stretching).
+        self.quality_table.column("file", width=170, minwidth=100, stretch=True, anchor="w")
+        self.quality_table.heading("level", text="RMS (dB)")
+        self.quality_table.column("level", width=85, minwidth=85, stretch=False, anchor="center")
         self.quality_table.heading("bitrate", text="Bitrate")
-        self.quality_table.column("bitrate", width=80, minwidth=80, stretch=False, anchor="center")
+        self.quality_table.column("bitrate", width=75, minwidth=75, stretch=False, anchor="center")
         self.quality_table.heading("format", text="Format")
-        self.quality_table.column("format", width=70, minwidth=70, stretch=False, anchor="center")
+        self.quality_table.column("format", width=65, minwidth=65, stretch=False, anchor="center")
         # Colors the whole row (dot + file/format/detail text) - ttk Treeview
         # tags apply per-item, not per-cell, so there's no way to color only
         # the dot on its own; matches what was asked for anyway ("les lignes
