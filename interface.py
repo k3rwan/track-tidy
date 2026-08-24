@@ -3241,7 +3241,15 @@ class TaggerInterface:
         # AIFF is treated like MP3 here - already taggable and lossless, it
         # never defaults to converting (see _finish_scan) and isn't offered
         # a convert checkbox at all, same plain "AIFF" display as "MP3".
-        needs_conversion = info["format"] not in ("MP3", "AIFF")
+        # FLAC gets the same treatment, but only while "Convert everything
+        # to MP3" is off - it's tagged in place then too (see
+        # open_audio_file/write_tags), same as AIFF. Once that setting is
+        # on, FLAC converts to MP3 like every other non-MP3/AIFF/WAV
+        # format (see _resolve_conversion_target), so its checkbox comes
+        # back - forced on, same as the rest, not a per-row choice.
+        needs_conversion = info["format"] not in ("MP3", "AIFF") and not (
+            info["format"] == "FLAC" and not tagger.AUTO_CONVERT_MP3
+        )
         # What "convert" actually resolves to for THIS file - MP3 for most
         # formats, but WAV can go to AIFF instead (see AUTO_CONVERT_WAV_TO_AIFF /
         # _resolve_conversion_target) purely for cover-art compatibility
