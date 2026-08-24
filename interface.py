@@ -474,9 +474,10 @@ class TaggerInterface:
             )
             messagebox.showwarning(
                 "Convert to MP3 disabled",
-                f"WAV files will now be {wav_fate}. Other non-MP3 formats "
-                "(FLAC, M4A, OGG...) will be ignored when scanning - they "
-                "can't be tagged without converting to MP3 first.",
+                f"WAV files will now be {wav_fate}. FLAC files will be tagged "
+                "(and get a cover) in place too. Other non-MP3 formats "
+                "(M4A, OGG...) will be ignored when scanning - they can't be "
+                "tagged without converting to MP3 first.",
                 parent=self.window,
             )
         tagger.AUTO_CONVERT_MP3 = enabled
@@ -1496,10 +1497,10 @@ class TaggerInterface:
                 continue
             if (
                 not tagger.AUTO_CONVERT_MP3
-                and not path.lower().endswith((".mp3", ".wav", ".aiff", ".aif"))
+                and not path.lower().endswith((".mp3", ".wav", ".aiff", ".aif", ".flac"))
             ):
                 self._append_to_journal(
-                    f"Ignored '{os.path.basename(path)}' - only MP3/WAV/AIFF can be tagged "
+                    f"Ignored '{os.path.basename(path)}' - only MP3/WAV/AIFF/FLAC can be tagged "
                     "without converting (Settings > Convert everything to MP3)."
                 )
                 continue

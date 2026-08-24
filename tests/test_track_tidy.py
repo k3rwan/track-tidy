@@ -5,6 +5,7 @@ Run with: python -m unittest discover -s tests
 """
 
 import hashlib
+import io
 import os
 import sys
 import json
@@ -15,6 +16,7 @@ import unittest
 import tempfile
 import keyring
 import keyring.backend
+from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import track_tidy as tagger
@@ -1138,7 +1140,7 @@ class ListAudioFilesTests(unittest.TestCase):
         self._original_auto_convert = tagger.AUTO_CONVERT_MP3
         self._tmp_dir = tempfile.TemporaryDirectory()
         tagger.MUSIC_FOLDER = self._tmp_dir.name
-        for name in ("Song.mp3", "Track.wav", "Other.flac"):
+        for name in ("Song.mp3", "Track.wav", "Other.flac", "Track.m4a"):
             with open(os.path.join(self._tmp_dir.name, name), "w") as f:
                 f.write("x")
 
@@ -1149,14 +1151,16 @@ class ListAudioFilesTests(unittest.TestCase):
 
     def test_includes_wav_when_auto_convert_enabled(self):
         tagger.AUTO_CONVERT_MP3 = True
-        self.assertEqual(set(tagger.list_audio_files()), {"Song.mp3", "Track.wav", "Other.flac"})
+        self.assertEqual(
+            set(tagger.list_audio_files()), {"Song.mp3", "Track.wav", "Other.flac", "Track.m4a"},
+        )
 
-    def test_excludes_non_wav_non_mp3_when_auto_convert_disabled(self):
-        # WAV can be tagged directly (no conversion needed), so it stays
-        # included either way - only FLAC (needs converting to be taggable
-        # at all) drops out when auto-convert is off.
+    def test_excludes_non_taggable_formats_when_auto_convert_disabled(self):
+        # WAV and FLAC can both be tagged directly (no conversion needed),
+        # so they stay included either way - only M4A (needs converting to
+        # be taggable at all) drops out when auto-convert is off.
         tagger.AUTO_CONVERT_MP3 = False
-        self.assertEqual(set(tagger.list_audio_files()), {"Song.mp3", "Track.wav"})
+        self.assertEqual(set(tagger.list_audio_files()), {"Song.mp3", "Track.wav", "Other.flac"})
 
 
 class ExtractAudioFilesTests(unittest.TestCase):
@@ -1542,6 +1546,83 @@ class WriteTagsWavRiffInfoTests(unittest.TestCase):
         _, artist, title, _ = tagger.read_current_info(self.file_path)
         self.assertEqual(artist, "New Artist")
         self.assertEqual(title, "New Title")
+
+
+class WriteTagsFlacTests(unittest.TestCase):
+    """FLAC has no ID3 support - write_tags() has to use Vorbis comments
+    (title/artist) and a separate Picture block (cover) instead, unlike
+    the ID3-based path shared by mp3/wav/aiff."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.file_path = os.path.join(self._tmp_dir.name, "song.flac")
+        shutil.copy(os.path.join(project_root, "assets", "fart.flac"), self.file_path)
+
+    def tearDown(self):
+        self._tmp_dir.cleanup()
+
+    def _jpeg_bytes(self, size=(40, 30), color=(200, 50, 50)):
+        buffer = io.BytesIO()
+        Image.new("RGB", size, color).save(buffer, format="JPEG")
+        return buffer.getvalue()
+
+    def test_writes_title_and_artist(self):
+        tagger.write_tags(
+            self.file_path, "New Artist", "New Title", cover_image=None, force_remove_if_missing=False,
+            update_title=True, update_artist=True, update_cover=False, log=lambda *_: None,
+        )
+        _, artist, title, _ = tagger.read_current_info(self.file_path)
+        self.assertEqual(artist, "New Artist")
+        self.assertEqual(title, "New Title")
+
+    def test_writes_and_replaces_cover(self):
+        cover = self._jpeg_bytes(color=(200, 50, 50))
+        tagger.write_tags(
+            self.file_path, "Artist", "Title", cover_image=cover, force_remove_if_missing=False,
+            update_title=False, update_artist=False, update_cover=True, log=lambda *_: None,
+        )
+        has_cover, _, _, cover_bytes = tagger.read_current_info(self.file_path)
+        self.assertTrue(has_cover)
+        self.assertEqual(cover_bytes, cover)
+
+        # Replacing must not leave the old picture behind alongside the new one.
+        new_cover = self._jpeg_bytes(color=(50, 50, 200))
+        tagger.write_tags(
+            self.file_path, "Artist", "Title", cover_image=new_cover, force_remove_if_missing=False,
+            update_title=False, update_artist=False, update_cover=True, log=lambda *_: None,
+        )
+        audio = tagger.FLAC(self.file_path)
+        self.assertEqual(len(audio.pictures), 1)
+        self.assertEqual(audio.pictures[0].data, new_cover)
+
+    def test_force_remove_if_missing_clears_cover(self):
+        cover = self._jpeg_bytes()
+        tagger.write_tags(
+            self.file_path, "Artist", "Title", cover_image=cover, force_remove_if_missing=False,
+            update_title=False, update_artist=False, update_cover=True, log=lambda *_: None,
+        )
+        tagger.write_tags(
+            self.file_path, "Artist", "Title", cover_image=None, force_remove_if_missing=True,
+            update_title=False, update_artist=False, update_cover=True, log=lambda *_: None,
+        )
+        has_cover, _, _, _ = tagger.read_current_info(self.file_path)
+        self.assertFalse(has_cover)
+
+    def test_keeps_existing_cover_when_not_replacing(self):
+        cover = self._jpeg_bytes()
+        tagger.write_tags(
+            self.file_path, "Artist", "Title", cover_image=cover, force_remove_if_missing=False,
+            update_title=False, update_artist=False, update_cover=True, log=lambda *_: None,
+        )
+        # No fresh cover found, and not forced to remove - existing picture untouched.
+        tagger.write_tags(
+            self.file_path, "Artist", "Title", cover_image=None, force_remove_if_missing=False,
+            update_title=False, update_artist=False, update_cover=True, log=lambda *_: None,
+        )
+        has_cover, _, _, cover_bytes = tagger.read_current_info(self.file_path)
+        self.assertTrue(has_cover)
+        self.assertEqual(cover_bytes, cover)
 
 
 class ProcessFilesTests(unittest.TestCase):

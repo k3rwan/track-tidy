@@ -63,6 +63,7 @@ from mutagen import File as MutagenFile
 from mutagen.mp3 import MP3
 from mutagen.wave import WAVE
 from mutagen.aiff import AIFF
+from mutagen.flac import FLAC, Picture
 from mutagen.id3 import TIT2, TPE1, APIC
 
 
@@ -1335,14 +1336,14 @@ USE_SOUNDCLOUD = True
 # ACOUSTID_API_KEY is somehow unavailable.
 USE_ACOUSTID_FALLBACK = True
 
-# Whether non-MP3, non-WAV, non-AIFF files get converted to MP3 (320 kbps)
-# automatically (set by the UI). WAV/AIFF are always tagged directly, on or
-# off - they're the only non-MP3 formats mutagen can write ID3 tags/cover
-# art to without converting first (see open_audio_file/write_tags) - so
-# when this is off, only the other formats (FLAC, M4A, OGG, ...), which
-# truly can't be tagged without converting, are skipped during scanning.
-# Takes priority over AUTO_CONVERT_WAV_TO_AIFF below when both apply to a
-# WAV file (see _resolve_conversion_target).
+# Whether non-MP3, non-WAV, non-AIFF, non-FLAC files get converted to MP3
+# (320 kbps) automatically (set by the UI). WAV/AIFF/FLAC are always tagged
+# directly, on or off - they're the only non-MP3 formats mutagen can write
+# tags/cover art to without converting first (see open_audio_file/
+# write_tags) - so when this is off, only the remaining formats (M4A, OGG,
+# ...), which truly can't be tagged without converting, are skipped during
+# scanning. Takes priority over AUTO_CONVERT_WAV_TO_AIFF below when both
+# apply to a WAV file (see _resolve_conversion_target).
 AUTO_CONVERT_MP3 = False
 
 # Whether WAV files get converted to AIFF instead of being tagged as WAV
@@ -2016,6 +2017,17 @@ def read_current_info(file_path):
         tags = audio.tags
 
         try:
+            # Vorbis comment dicts (flac/ogg/opus) raise ValueError from
+            # `key in tags` for a key outside their allowed charset, instead
+            # of just returning False like every other tag type here - a
+            # plain "\xa9nam" in tags below would otherwise blow up the
+            # whole read for those formats (caught by the bare except, so
+            # it silently looked like "no tags at all" rather than a bug).
+            try:
+                has_mp4_atoms = "\xa9nam" in tags or "\xa9ART" in tags or "covr" in tags
+            except ValueError:
+                has_mp4_atoms = False
+
             if hasattr(tags, "getall") and ("TIT2" in tags or "TPE1" in tags or "APIC" in tags):
                 # ID3-based: mp3, wav, aiff
                 if "TIT2" in tags:
@@ -2026,7 +2038,7 @@ def read_current_info(file_path):
                 has_cover = bool(covers)
                 cover_bytes = covers[0].data if covers else None
 
-            elif "\xa9nam" in tags or "\xa9ART" in tags or "covr" in tags:
+            elif has_mp4_atoms:
                 # MP4 atoms: m4a, aac, alac
                 if "\xa9nam" in tags:
                     current_title = str(tags["\xa9nam"][0])
@@ -2164,15 +2176,16 @@ def list_audio_files():
     of relative paths of the audio files found (without reading any tags).
     Fast: useful for detecting new files without rescanning everything.
 
-    Skips formats other than MP3/WAV/AIFF when AUTO_CONVERT_MP3 is off - those
-    are the only formats mutagen can tag directly (see open_audio_file), so
-    with auto-convert disabled there's nothing usable left to do with the
-    rest. WAV/AIFF themselves are always included either way.
+    Skips formats other than MP3/WAV/AIFF/FLAC when AUTO_CONVERT_MP3 is off -
+    those are the only formats mutagen can tag directly (see
+    open_audio_file), so with auto-convert disabled there's nothing usable
+    left to do with the rest. MP3/WAV/AIFF/FLAC themselves are always
+    included either way.
     """
     if not os.path.isdir(MUSIC_FOLDER):
         return []
 
-    extensions = SUPPORTED_EXTENSIONS if AUTO_CONVERT_MP3 else (".mp3", ".wav", ".aiff")
+    extensions = SUPPORTED_EXTENSIONS if AUTO_CONVERT_MP3 else (".mp3", ".wav", ".aiff", ".flac")
 
     audio_files = []
     for current_folder, _, file_names in os.walk(MUSIC_FOLDER):
@@ -2793,15 +2806,16 @@ def _finish_scan(prepared, match_result, cover_source, log=safe_print):
         "current_title": prepared["current_title"],
         "has_cover": prepared["has_cover"],
         "mention_detected": contains_mention_to_remove(file_name),
-        # WAV can be tagged either way, so its default follows the user's
-        # global choices (see _resolve_conversion_target) - other non-MP3
-        # formats have no such choice (can't be tagged without converting
-        # at all), so they always default on. AIFF is the one exception:
-        # it's already the taggable, lossless format WAV_TO_AIFF converts
-        # WAV *into* - even with "Convert everything to MP3" on, a file
-        # that's already AIFF shouldn't default to being downgraded to
-        # lossy MP3 just because it happens to not be MP3 already. The
-        # user can still check it manually if they really want that.
+        # WAV and FLAC can both be tagged in place, so their default follows
+        # the user's global choices (see _resolve_conversion_target) - the
+        # remaining non-MP3 formats have no such choice (can't be tagged
+        # without converting at all), so they always default on. AIFF is
+        # the one exception: it's already the taggable, lossless format
+        # WAV_TO_AIFF converts WAV *into* - even with "Convert everything
+        # to MP3" on, a file that's already AIFF shouldn't default to being
+        # downgraded to lossy MP3 just because it happens to not be MP3
+        # already. The user can still check it manually if they really
+        # want that.
         "convert": (
             False
             if file_name.lower().endswith(".aiff")
@@ -4849,7 +4863,7 @@ def _resolve_conversion_target(file_name):
     settings - shared by _finish_scan() (the per-row "convert" default) and
     process_files() (which converter to actually run). Returns "mp3",
     "aiff", or None (stays in its current format, tagged directly - only
-    possible for WAV/AIFF, the two formats open_audio_file/write_tags
+    possible for WAV/AIFF/FLAC, the formats open_audio_file/write_tags
     support without converting first).
 
     AUTO_CONVERT_MP3 always wins when it's on, for any format, including
@@ -4877,6 +4891,8 @@ def open_audio_file(file_path):
         audio = WAVE(file_path)
     elif file_path.lower().endswith((".aiff", ".aif")):
         audio = AIFF(file_path)
+    elif file_path.lower().endswith(".flac"):
+        audio = FLAC(file_path)
     else:
         raise ValueError("Unsupported file format")
 
@@ -4997,26 +5013,63 @@ def write_tags(file_path, artist, title, cover_image, force_remove_if_missing,
         _write_wav_riff_info(file_path, artist, title, update_artist, update_title, log=log)
 
     audio = open_audio_file(file_path)
-    tags = audio.tags
 
-    if update_title:
-        if title:
-            tags.setall("TIT2", [TIT2(encoding=3, text=[title])])
-        else:
-            tags.delall("TIT2")
-    if update_artist:
-        if artist:
-            tags.setall("TPE1", [TPE1(encoding=3, text=[artist])])
-        else:
-            tags.delall("TPE1")
+    if isinstance(audio, FLAC):
+        # FLAC has no ID3 support - title/artist are plain Vorbis comment
+        # fields, and cover art is a separate list of Picture blocks
+        # (audio.pictures), not a tag frame - so this can't share the
+        # ID3-based branch below.
+        tags = audio.tags
+        if update_title:
+            if title:
+                tags["title"] = [title]
+            else:
+                tags.pop("title", None)
+        if update_artist:
+            if artist:
+                tags["artist"] = [artist]
+            else:
+                tags.pop("artist", None)
 
-    if update_cover:
-        if cover_image:
-            tags.delall("APIC")
-            tags.add(APIC(encoding=3, mime="image/jpeg", type=3, desc="Cover", data=cover_image))
-        elif force_remove_if_missing:
-            tags.delall("APIC")
-        # otherwise: leave the existing cover untouched
+        if update_cover:
+            if cover_image:
+                audio.clear_pictures()
+                picture = Picture()
+                picture.type = 3  # "Cover (front)"
+                picture.mime = "image/jpeg"
+                picture.desc = "Cover"
+                picture.data = cover_image
+                try:
+                    with Image.open(io.BytesIO(cover_image)) as decoded:
+                        picture.width, picture.height = decoded.size
+                        picture.depth = 24
+                except Exception:
+                    pass  # width/height/depth are informational - a bad read just leaves them at 0
+                audio.add_picture(picture)
+            elif force_remove_if_missing:
+                audio.clear_pictures()
+            # otherwise: leave the existing cover untouched
+    else:
+        tags = audio.tags
+
+        if update_title:
+            if title:
+                tags.setall("TIT2", [TIT2(encoding=3, text=[title])])
+            else:
+                tags.delall("TIT2")
+        if update_artist:
+            if artist:
+                tags.setall("TPE1", [TPE1(encoding=3, text=[artist])])
+            else:
+                tags.delall("TPE1")
+
+        if update_cover:
+            if cover_image:
+                tags.delall("APIC")
+                tags.add(APIC(encoding=3, mime="image/jpeg", type=3, desc="Cover", data=cover_image))
+            elif force_remove_if_missing:
+                tags.delall("APIC")
+            # otherwise: leave the existing cover untouched
 
     save_audio(audio)
 
