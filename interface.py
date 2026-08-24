@@ -1884,25 +1884,23 @@ class TaggerInterface:
         self.quality_table_frame = ttk.Frame(quality_tab)
         self.quality_table_frame.pack(fill="both", expand=True, padx=10, pady=(5, 10))
 
-        quality_columns = ("format", "verdict", "detail")
+        # "#0" (the tree column) is always the leftmost column in a ttk
+        # Treeview, so it's repurposed to hold just the colored verdict dot -
+        # the emoji glyph itself is already rendered in color by the system
+        # emoji font, no extra tag/foreground needed to color it.
+        quality_columns = ("file", "format", "detail")
         self.quality_table = ttk.Treeview(
             self.quality_table_frame, columns=quality_columns, show="tree headings",
             selectmode="browse", style="Table.Treeview",
         )
-        self.quality_table.heading("#0", text="File")
-        self.quality_table.column("#0", width=260, anchor="w")
+        self.quality_table.heading("#0", text="")
+        self.quality_table.column("#0", width=36, minwidth=36, stretch=False, anchor="center")
+        self.quality_table.heading("file", text="File")
+        self.quality_table.column("file", width=260, anchor="w")
         self.quality_table.heading("format", text="Format")
         self.quality_table.column("format", width=60, anchor="center")
-        self.quality_table.heading("verdict", text="Quality")
-        self.quality_table.column("verdict", width=140, anchor="w")
         self.quality_table.heading("detail", text="Detail")
         self.quality_table.column("detail", width=320, anchor="w")
-        # Verdict color reinforces the emoji at a glance - kept independent
-        # of light/dark theming (unlike odd_row/even_row) since flat-UI
-        # green/orange/red already read fine on both table backgrounds.
-        self.quality_table.tag_configure("verdict_green", foreground="#2ecc71")
-        self.quality_table.tag_configure("verdict_orange", foreground="#e67e22")
-        self.quality_table.tag_configure("verdict_red", foreground="#e74c3c")
 
         quality_scrollbar = ttk.Scrollbar(
             self.quality_table_frame, orient="vertical", command=self.quality_table.yview,
@@ -2183,10 +2181,10 @@ class TaggerInterface:
 
     # --- Quality tab actions ---
 
-    QUALITY_VERDICT_DISPLAY = {
-        tagger.QUALITY_GREEN: "\U0001f7e2 Likely genuine",
-        tagger.QUALITY_ORANGE: "\U0001f7e0 Worth checking",
-        tagger.QUALITY_RED: "\U0001f534 Likely low quality",
+    QUALITY_VERDICT_DOT = {
+        tagger.QUALITY_GREEN: "\U0001f7e2",
+        tagger.QUALITY_ORANGE: "\U0001f7e0",
+        tagger.QUALITY_RED: "\U0001f534",
     }
 
     def _choose_quality_folder(self):
@@ -2233,25 +2231,18 @@ class TaggerInterface:
         except Exception as error:
             self.message_queue.put(("quality_scan_done", ([], False, str(error))))
 
-    QUALITY_VERDICT_TAG = {
-        tagger.QUALITY_GREEN: "verdict_green",
-        tagger.QUALITY_ORANGE: "verdict_orange",
-        tagger.QUALITY_RED: "verdict_red",
-    }
-
     def _populate_quality_table(self, results):
         counts = {tagger.QUALITY_GREEN: 0, tagger.QUALITY_ORANGE: 0, tagger.QUALITY_RED: 0}
         for index, result in enumerate(results):
             row_tag = "even_row" if index % 2 == 0 else "odd_row"
             verdict = result.get("verdict")
-            verdict_display = self.QUALITY_VERDICT_DISPLAY.get(verdict, "❓ Couldn't analyze")
-            tags = (row_tag, self.QUALITY_VERDICT_TAG[verdict]) if verdict in counts else (row_tag,)
+            dot = self.QUALITY_VERDICT_DOT.get(verdict, "❓")
             if verdict in counts:
                 counts[verdict] += 1
             self.quality_table.insert(
-                "", "end", text=result.get("file", ""),
-                values=(result.get("format", ""), verdict_display, result.get("detail", "")),
-                tags=tags,
+                "", "end", text=dot,
+                values=(result.get("file", ""), result.get("format", ""), result.get("detail", "")),
+                tags=(row_tag,),
             )
 
         if results:
