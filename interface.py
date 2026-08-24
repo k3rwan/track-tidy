@@ -2303,6 +2303,15 @@ class TaggerInterface:
             return
         self._show_quality_spectrogram_dialog(file_path)
 
+    # Canvas geometry for the spectrogram dialog - a bit larger than the
+    # single-curve chart it replaced, to fit a real plot plus a dB color
+    # legend bar (like a dedicated spectrogram viewer, e.g. Spek).
+    QUALITY_SPECTROGRAM_CANVAS_W = 780
+    QUALITY_SPECTROGRAM_CANVAS_H = 420
+    QUALITY_SPECTROGRAM_MARGIN = (55, 95, 10, 30)  # left, right, top, bottom
+    QUALITY_SPECTROGRAM_LEGEND_W = 18
+    QUALITY_SPECTROGRAM_LEGEND_GAP = 20
+
     def _show_quality_spectrogram_dialog(self, file_path):
         dialog = tk.Toplevel(self.window)
         self._style_toplevel(dialog)
@@ -2310,9 +2319,21 @@ class TaggerInterface:
         dialog.resizable(False, False)
         dialog.transient(self.window)
 
+        muted_color = DARK_MUTED_TEXT_COLOR if self.theme_colors else MUTED_TEXT_COLOR
+        ttk.Label(dialog, text=file_path, font=("TkDefaultFont", 8)).pack(
+            anchor="w", padx=15, pady=(12, 0),
+        )
+        ttk.Label(
+            dialog, text=tagger.describe_audio_stream(file_path), foreground=muted_color,
+            font=("TkDefaultFont", 8),
+        ).pack(anchor="w", padx=15, pady=(0, 8))
+
         canvas_bg = self.theme_colors["tree_bg"] if self.theme_colors else "white"
-        canvas = tk.Canvas(dialog, width=640, height=340, highlightthickness=0, bg=canvas_bg)
-        canvas.pack(padx=15, pady=(15, 5))
+        canvas = tk.Canvas(
+            dialog, width=self.QUALITY_SPECTROGRAM_CANVAS_W, height=self.QUALITY_SPECTROGRAM_CANVAS_H,
+            highlightthickness=0, bg=canvas_bg,
+        )
+        canvas.pack(padx=15, pady=(0, 5))
         status_label = ttk.Label(dialog, text="Analyzing spectrogram...")
         status_label.pack(pady=(0, 5))
         ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=(0, 15))
@@ -2330,33 +2351,43 @@ class TaggerInterface:
         except Exception as error:
             self.message_queue.put(("quality_spectrogram_ready", (request_id, None, str(error))))
 
+    @staticmethod
+    def _format_mmss(seconds):
+        seconds = max(0, int(round(seconds)))
+        minutes, secs = divmod(seconds, 60)
+        return f"{minutes}:{secs:02d}"
+
     def _draw_quality_spectrogram(self, canvas, data):
         """Renders tagger.compute_track_spectrogram()'s colormapped image
         (time across, frequency up, color = dB) scaled up to fill the plot
-        area, with axis ticks/labels and a dashed marker at the detected
-        cutoff (if any) - the same cutoff analyze_track_quality() bases its
-        verdict on, made visible instead of just described in the Detail
-        text."""
+        area, with a dB color legend, real axis ticks/labels (frequency in
+        kHz, time in mm:ss), and a dashed marker at the detected cutoff (if
+        any) - the same cutoff analyze_track_quality() bases its verdict
+        on, made visible instead of just described in the Detail text."""
         canvas.delete("all")
-        width, height = 640, 340
-        margin_left, margin_right, margin_top, margin_bottom = 50, 15, 10, 28
-        plot_w = width - margin_left - margin_right
-        plot_h = height - margin_top - margin_bottom
+        margin_left, margin_right, margin_top, margin_bottom = self.QUALITY_SPECTROGRAM_MARGIN
+        plot_w = self.QUALITY_SPECTROGRAM_CANVAS_W - margin_left - margin_right
+        plot_h = self.QUALITY_SPECTROGRAM_CANVAS_H - margin_top - margin_bottom
 
         image = data.get("image")
         duration = data.get("duration_seconds") or 0
         max_freq = data.get("max_freq_hz") or 1
+        min_db = data.get("min_db", -120.0)
+        max_db = data.get("max_db", 0.0)
         cutoff = data.get("cutoff_hz")
         if image is None or duration <= 0:
             return
 
         resized = image.resize((plot_w, plot_h), Image.LANCZOS)
         photo = ImageTk.PhotoImage(resized)
+        legend_image = ImageTk.PhotoImage(
+            tagger.spectrogram_legend_image(self.QUALITY_SPECTROGRAM_LEGEND_W, plot_h)
+        )
         # Tk drops a PhotoImage as soon as nothing in Python still
         # references it, even though the Canvas item keeps pointing at it -
-        # stash it on the canvas itself so it survives as long as the
+        # stash both on the canvas itself so they survive as long as the
         # dialog does.
-        canvas.spectrogram_photo_ref = photo
+        canvas.spectrogram_photo_refs = (photo, legend_image)
         canvas.create_image(margin_left, margin_top, anchor="nw", image=photo)
 
         is_dark = self.theme_colors is not None
@@ -2368,7 +2399,8 @@ class TaggerInterface:
             margin_left, margin_top, margin_left + plot_w, margin_top + plot_h, outline=axis_color,
         )
 
-        # Frequency (Y) ticks - every 5kHz, top of the plot = max_freq, bottom = 0Hz.
+        # Frequency (Y) ticks - every 5kHz, top of the plot = max_freq (the
+        # file's own Nyquist frequency), bottom = 0Hz.
         freq_tick = 5000
         freq = 0
         while freq <= max_freq:
@@ -2380,10 +2412,10 @@ class TaggerInterface:
             )
             freq += freq_tick
 
-        # Time (X) ticks - pick a step that keeps the tick count readable
-        # regardless of how long the analyzed segment turns out to be.
-        time_tick = 60
-        for step in (1, 2, 5, 10, 15, 20, 30, 60):
+        # Time (X) ticks, mm:ss - pick a step that keeps the tick count
+        # readable regardless of how long the track turns out to be.
+        time_tick = 600
+        for step in (5, 10, 15, 30, 60, 120, 300, 600):
             if duration / step <= 8:
                 time_tick = step
                 break
@@ -2392,7 +2424,8 @@ class TaggerInterface:
             x = margin_left + plot_w * (t / duration)
             canvas.create_line(x, margin_top + plot_h, x, margin_top + plot_h + 4, fill=axis_color)
             canvas.create_text(
-                x, margin_top + plot_h + 14, text=f"{t:g}s", fill=text_color, font=("TkDefaultFont", 8),
+                x, margin_top + plot_h + 14, text=self._format_mmss(t), fill=text_color,
+                font=("TkDefaultFont", 8),
             )
             t += time_tick
 
@@ -2403,6 +2436,28 @@ class TaggerInterface:
                 margin_left + plot_w - 4, y - 3, text=f"{cutoff / 1000:.1f} kHz cutoff", fill=cutoff_color,
                 font=("TkDefaultFont", 8, "bold"), anchor="se",
             )
+
+        # dB color legend - a vertical gradient bar plus tick labels, same
+        # fixed scale and colormap the plot itself uses.
+        legend_x = margin_left + plot_w + self.QUALITY_SPECTROGRAM_LEGEND_GAP
+        canvas.create_image(legend_x, margin_top, anchor="nw", image=legend_image)
+        canvas.create_rectangle(
+            legend_x, margin_top, legend_x + self.QUALITY_SPECTROGRAM_LEGEND_W, margin_top + plot_h,
+            outline=axis_color,
+        )
+        db_tick = 20
+        db = max_db
+        while db >= min_db:
+            y = margin_top + plot_h * ((max_db - db) / (max_db - min_db))
+            canvas.create_line(
+                legend_x + self.QUALITY_SPECTROGRAM_LEGEND_W, y,
+                legend_x + self.QUALITY_SPECTROGRAM_LEGEND_W + 4, y, fill=axis_color,
+            )
+            canvas.create_text(
+                legend_x + self.QUALITY_SPECTROGRAM_LEGEND_W + 7, y, text=f"{db:.0f} dB", fill=text_color,
+                font=("TkDefaultFont", 8), anchor="w",
+            )
+            db -= db_tick
 
     # --- Folder / mention actions ---
 

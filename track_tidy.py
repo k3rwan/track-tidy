@@ -5497,16 +5497,32 @@ def analyze_track_quality(file_path, log=safe_print):
     return QUALITY_GREEN, f"Cutoff around {cutoff / 1000:.1f} kHz is consistent with the declared quality"
 
 
-QUALITY_SPECTROGRAM_MAX_HZ = 22000
 QUALITY_SPECTROGRAM_TIME_BINS = 300
-QUALITY_SPECTROGRAM_FREQ_BINS = 160
+QUALITY_SPECTROGRAM_FREQ_BINS = 200
 QUALITY_SPECTROGRAM_FFT_SIZE = 2048
-QUALITY_SPECTROGRAM_HOP = 512
+# STFT frame count is kept roughly constant regardless of track length by
+# deriving the hop size from the sample count instead of using a fixed hop
+# (see compute_track_spectrogram) - this is how many frames per output
+# time bin that targets, oversampled for reasonable block-averaging
+# resolution. A fixed hop would make a 7-minute track's raw STFT matrix
+# tens of times bigger (and slower/more memory-hungry) than a 30-second
+# one, for no visual benefit once it's downsampled to
+# QUALITY_SPECTROGRAM_TIME_BINS columns anyway.
+QUALITY_SPECTROGRAM_FRAMES_PER_TIME_BIN = 8
+QUALITY_SPECTROGRAM_MIN_HOP = 64
 
-# Colormap anchor points (roughly matplotlib's "magma") that _spectrogram_
-# colormap() linearly interpolates between - no matplotlib dependency,
-# just a handful of hand-picked RGB stops from near-black (quiet) through
-# purple/magenta/orange up to pale yellow (loud).
+# Fixed dB scale (not per-track normalized) so the color legend means the
+# same thing on every track and tracks are visually comparable - matches
+# Spek's own default range. 0dB = full-scale digital signal; -120dB is
+# below even 16-bit's ~96dB noise floor, so it comfortably covers both
+# 16- and 24-bit content without clipping either end for ordinary audio.
+QUALITY_SPECTROGRAM_MAX_DB = 0.0
+QUALITY_SPECTROGRAM_MIN_DB = -120.0
+
+# Colormap anchor points (roughly matplotlib's "magma"/Spek's own palette)
+# that _spectrogram_colormap() linearly interpolates between - no
+# matplotlib dependency, just a handful of hand-picked RGB stops from
+# near-black (quiet) through purple/red/orange up to pale yellow (loud).
 _SPECTROGRAM_COLORMAP_STOPS = (
     (0.00, (0, 0, 4)),
     (0.25, (81, 18, 124)),
@@ -5544,64 +5560,117 @@ def _block_average(matrix, axis, num_bins):
     return sums / counts.reshape(shape)
 
 
+def _native_sample_rate(file_path, default=QUALITY_ANALYSIS_SAMPLE_RATE):
+    """The file's own sample rate (so the spectrogram's frequency axis goes
+    all the way to its real Nyquist - e.g. 24kHz for a 48kHz source,
+    matching what a dedicated spectrogram viewer like Spek shows - rather
+    than being capped at whatever analyze_track_quality() downsamples to
+    for its own, much narrower, cutoff-detection purposes)."""
+    try:
+        audio = MutagenFile(file_path)
+        if audio is not None and audio.info is not None and getattr(audio.info, "sample_rate", None):
+            return int(audio.info.sample_rate)
+    except Exception:
+        pass
+    return default
+
+
+def describe_audio_stream(file_path):
+    """Short one-line technical summary (format, sample rate, bit depth,
+    channels) for the spectrogram viewer's header - mirrors the info line
+    a dedicated spectrogram viewer like Spek shows above its own plot.
+    Best-effort: any field mutagen doesn't expose for this format is
+    simply left out rather than shown as a placeholder."""
+    extension = os.path.splitext(file_path)[1].lstrip(".").upper()
+    parts = [extension] if extension else []
+    try:
+        audio = MutagenFile(file_path)
+        info = audio.info if audio is not None else None
+    except Exception:
+        info = None
+    if info is not None:
+        if getattr(info, "sample_rate", None):
+            parts.append(f"{info.sample_rate} Hz")
+        bit_depth = getattr(info, "bits_per_sample", None)
+        if bit_depth:
+            parts.append(f"{bit_depth} bits")
+        channels = getattr(info, "channels", None)
+        if channels == 1:
+            parts.append("mono")
+        elif channels == 2:
+            parts.append("stereo")
+        elif channels:
+            parts.append(f"{channels} channels")
+        bitrate = getattr(info, "bitrate", None)
+        if bitrate and not bit_depth:  # lossy formats: bitrate instead of bit depth
+            parts.append(f"{bitrate // 1000} kbps")
+    return ", ".join(parts)
+
+
 def compute_track_spectrogram(file_path, log=safe_print):
     """
-    Decodes the same analysis segment analyze_track_quality() uses and
-    computes a short-time Fourier transform (STFT) spectrogram for the
-    Quality tab's double-click viewer: horizontal axis = time, vertical
-    axis = frequency, color = magnitude in dB. Read-only, independent of
-    analyze_track_quality() (no verdict/tag side effects).
+    Decodes the WHOLE track (not just analyze_track_quality()'s short
+    analysis segment) at its own native sample rate and computes a
+    short-time Fourier transform (STFT) spectrogram for the Quality tab's
+    double-click viewer: horizontal axis = time, vertical axis =
+    frequency, color = magnitude in dB on a fixed scale - the same shape
+    of visual a dedicated spectrogram viewer like Spek shows. Read-only,
+    independent of analyze_track_quality() (no verdict/tag side effects).
 
     Returns a dict with:
     - "image": a PIL.Image (RGB), one column per time bin and one row per
       frequency bin, already colormapped and oriented with the highest
       frequency at the top row - ready to be scaled up and shown as-is
-    - "duration_seconds": length of the analyzed audio segment
-    - "max_freq_hz": the frequency the image's top row represents
+    - "duration_seconds": the full track's length
+    - "max_freq_hz": the frequency the image's top row represents (the
+      file's own Nyquist frequency)
     - "cutoff_hz": the same cutoff analyze_track_quality() would report
-      (None if none detected), for an overlay reference line
+      (None if none detected), for an overlay reference line - still
+      computed from that function's own short analysis segment, so the
+      marked line always matches the verdict that produced it
+    - "min_db"/"max_db": the fixed dB range the color legend represents
     Returns None if the file couldn't be decoded at all.
     """
-    samples = _decode_pcm_segment(file_path)
-    if len(samples) < QUALITY_ANALYSIS_SAMPLE_RATE:
+    sample_rate = _native_sample_rate(file_path)
+    raw = subprocess.run(
+        [
+            find_ffmpeg(), "-y", "-nostdin", "-i", file_path,
+            "-ac", "1", "-ar", str(sample_rate), "-f", "f32le", "pipe:1",
+        ],
+        capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    samples = np.frombuffer(raw.stdout, dtype=np.float32) if raw.returncode == 0 else np.array([], dtype=np.float32)
+    if len(samples) < sample_rate:
         log(f"  Could not decode '{file_path}' for spectrogram display.")
         return None
 
-    sample_rate = QUALITY_ANALYSIS_SAMPLE_RATE
     fft_size = QUALITY_SPECTROGRAM_FFT_SIZE
-    hop = QUALITY_SPECTROGRAM_HOP
-    window = np.hanning(fft_size)
+    target_frames = QUALITY_SPECTROGRAM_TIME_BINS * QUALITY_SPECTROGRAM_FRAMES_PER_TIME_BIN
+    hop = max(QUALITY_SPECTROGRAM_MIN_HOP, len(samples) // target_frames)
+    window = np.hanning(fft_size).astype(np.float32)
 
     num_frames = max(1, (len(samples) - fft_size) // hop + 1)
+    padded = samples if len(samples) >= fft_size else np.pad(samples, (0, fft_size - len(samples)))
+    # A strided (zero-copy) view of overlapping frames, so the STFT below
+    # runs as one vectorized batch FFT (np.fft.rfft over axis=1) instead of
+    # a Python loop calling rfft thousands of times for a long track.
+    frames = np.lib.stride_tricks.as_strided(
+        padded, shape=(num_frames, fft_size),
+        strides=(padded.strides[0] * hop, padded.strides[0]), writeable=False,
+    )
+    spectrum_db = 20 * np.log10(np.abs(np.fft.rfft(frames * window, axis=1)) + 1e-12).astype(np.float32)
+
     freqs = np.fft.rfftfreq(fft_size, d=1.0 / sample_rate)
-    max_freq_hz = min(QUALITY_SPECTROGRAM_MAX_HZ, float(freqs[-1]))
-    freq_mask = freqs <= max_freq_hz
+    max_freq_hz = float(freqs[-1])
 
-    frames_db = np.empty((num_frames, int(freq_mask.sum())), dtype=np.float64)
-    for i in range(num_frames):
-        start = i * hop
-        chunk = samples[start:start + fft_size]
-        if len(chunk) < fft_size:
-            chunk = np.pad(chunk, (0, fft_size - len(chunk)))
-        spectrum_db = 20 * np.log10(np.abs(np.fft.rfft(chunk * window)) + 1e-12)
-        frames_db[i] = spectrum_db[freq_mask]
-
-    # frames_db is (time, freq) - downsample both axes to a manageable grid
-    # for a canvas-sized image (the raw STFT can be thousands of frames by
-    # a thousand-plus bins - far more detail than a few hundred pixels can
-    # show, and far too slow to hand to Tk pixel-by-pixel).
-    grid = _block_average(frames_db, axis=0, num_bins=QUALITY_SPECTROGRAM_TIME_BINS)
+    # spectrum_db is (time, freq) - downsample both axes to a manageable
+    # grid for a canvas-sized image.
+    grid = _block_average(spectrum_db, axis=0, num_bins=QUALITY_SPECTROGRAM_TIME_BINS)
     grid = _block_average(grid, axis=1, num_bins=QUALITY_SPECTROGRAM_FREQ_BINS)
 
-    # Normalize against this track's own dynamic range (2nd/99th percentile,
-    # not the true min/max, so a couple of outlier bins don't wash out the
-    # whole image) rather than a fixed dB scale - tracks vary a lot in
-    # overall loudness and a fixed scale would leave quiet ones looking
-    # almost entirely black.
-    floor_db, ceiling_db = np.percentile(grid, [2, 99])
-    if ceiling_db - floor_db < 1:
-        ceiling_db = floor_db + 1
-    normalized = np.clip((grid - floor_db) / (ceiling_db - floor_db), 0, 1)
+    normalized = np.clip(
+        (grid - QUALITY_SPECTROGRAM_MIN_DB) / (QUALITY_SPECTROGRAM_MAX_DB - QUALITY_SPECTROGRAM_MIN_DB), 0, 1,
+    )
 
     rgb = _spectrogram_colormap(normalized)  # (time, freq, 3)
     # Image arrays are indexed [row=y][col=x] - transpose to (freq, time, 3)
@@ -5610,14 +5679,37 @@ def compute_track_spectrogram(file_path, log=safe_print):
     rgb = np.transpose(rgb, (1, 0, 2))[::-1, :, :]
     image = Image.fromarray(np.ascontiguousarray(rgb), mode="RGB")
 
-    cutoff = _detect_spectral_cutoff_hz(samples)
+    # Deliberately re-decodes a short segment rather than reusing the
+    # full-track `samples` above - keeps the marked cutoff identical to
+    # whatever analyze_track_quality() itself would report (same segment,
+    # same sample rate), not a value that happens to differ because this
+    # function decoded the whole file at a different sample rate.
+    cutoff_samples = _decode_pcm_segment(file_path)
+    cutoff = (
+        _detect_spectral_cutoff_hz(cutoff_samples)
+        if len(cutoff_samples) >= QUALITY_ANALYSIS_SAMPLE_RATE else None
+    )
 
     return {
         "image": image,
         "duration_seconds": len(samples) / sample_rate,
         "max_freq_hz": max_freq_hz,
         "cutoff_hz": cutoff,
+        "min_db": QUALITY_SPECTROGRAM_MIN_DB,
+        "max_db": QUALITY_SPECTROGRAM_MAX_DB,
     }
+
+
+def spectrogram_legend_image(width, height):
+    """A vertical color gradient PIL.Image - top = QUALITY_SPECTROGRAM_MAX_DB
+    (loudest), bottom = QUALITY_SPECTROGRAM_MIN_DB (quietest) - using the
+    exact same colormap compute_track_spectrogram() colors its image with,
+    for the Quality tab's spectrogram viewer to draw as a dB color legend
+    (like a dedicated spectrogram viewer's own dB scale bar)."""
+    column = np.linspace(1, 0, height).reshape(height, 1)
+    normalized = np.repeat(column, width, axis=1)
+    rgb = _spectrogram_colormap(normalized)
+    return Image.fromarray(np.ascontiguousarray(rgb), mode="RGB")
 
 
 def analyze_folder_quality(folder, log=safe_print, on_progress=None, should_cancel=None):
