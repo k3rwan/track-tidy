@@ -1748,6 +1748,37 @@ def _move_bare_feature_credit_to_artist(artist, title):
     return new_artist, new_title
 
 
+def strip_self_credited_qualifier(artist, title):
+    """
+    Collapses a title's own parenthetical qualifier when it redundantly
+    repeats the track's own artist name inside it, e.g. title
+    "Que Rico (Juno (DE) (Extended Mix))" with artist "Juno (DE)" becomes
+    "Que Rico (Extended Mix)" - some sources credit a self-remix by
+    wrapping the qualifier with the artist's own name (as if crediting a
+    different remixer), which otherwise leaves the artist name uselessly
+    duplicated inside the title too. Real report: exactly this filename.
+    Only fires when the artist string actually appears, wrapped in its
+    own parentheses, inside the title - never touches a title that
+    merely happens to mention the artist's name in passing.
+    """
+    if not artist or not title:
+        return title
+
+    escaped_artist = re.escape(artist)
+
+    # "(Artist (Qualifier))" -> "(Qualifier)" - the self-credit wraps an
+    # inner qualifier group (remix/mix type, key, etc.).
+    nested = re.sub(
+        rf"\({escaped_artist}\s+(\([^()]*\))\)", r"\1", title, flags=re.IGNORECASE,
+    )
+    if nested != title:
+        return re.sub(r"\s{2,}", " ", nested).strip()
+
+    # "(Artist)" alone (nothing else inside) -> dropped entirely.
+    bare = re.sub(rf"\s*\({escaped_artist}\)", "", title, flags=re.IGNORECASE)
+    return re.sub(r"\s{2,}", " ", bare).strip()
+
+
 def parse_filename(file_name):
     base_name = os.path.basename(file_name)
     name_no_ext = os.path.splitext(base_name)[0]
@@ -1827,7 +1858,9 @@ def parse_filename(file_name):
     if artist is None:
         return None, None
 
-    return _move_bare_feature_credit_to_artist(artist, title)
+    artist, title = _move_bare_feature_credit_to_artist(artist, title)
+    title = strip_self_credited_qualifier(artist, title)
+    return artist, title
 
 
 def resolve_artist_title(file_name, current_artist, current_title):

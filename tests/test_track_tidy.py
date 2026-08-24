@@ -62,6 +62,12 @@ class ParseFilenameTests(unittest.TestCase):
         artist, title = tagger.parse_filename("daft_punk - one_more_time.mp3")
         self.assertEqual((artist, title), ("Daft Punk", "One More Time"))
 
+    def test_self_credited_qualifier_collapsed(self):
+        self.assertEqual(
+            tagger.parse_filename("Juno (DE) - Que Rico (Juno (DE) (Extended Mix)).flac"),
+            ("Juno (DE)", "Que Rico (Extended Mix)"),
+        )
+
     def test_mixed_case_left_alone(self):
         # Has an uppercase letter already -> not touched, to protect stylized names.
         artist, title = tagger.parse_filename("SCH - Otto.mp3")
@@ -196,6 +202,47 @@ class StripHelpersTests(unittest.TestCase):
             tagger.strip_parentheses("Water (Dj Nasty Remix) [AMAPIANO]"),
             "Water",
         )
+
+
+class StripSelfCreditedQualifierTests(unittest.TestCase):
+    """Reported bug: 'Juno (DE) - Que Rico (Juno (DE) (Extended Mix)).flac' -
+    the title wraps its qualifier with the artist's own name (as if
+    crediting a different remixer for a self-remix), leaving the artist
+    uselessly duplicated inside the title too."""
+
+    def test_collapses_nested_self_credit_to_its_qualifier(self):
+        self.assertEqual(
+            tagger.strip_self_credited_qualifier("Juno (DE)", "Que Rico (Juno (DE) (Extended Mix))"),
+            "Que Rico (Extended Mix)",
+        )
+
+    def test_drops_a_bare_self_credit_with_no_qualifier(self):
+        self.assertEqual(
+            tagger.strip_self_credited_qualifier("Juno (DE)", "Que Rico (Juno (DE))"),
+            "Que Rico",
+        )
+
+    def test_matches_case_insensitively(self):
+        self.assertEqual(
+            tagger.strip_self_credited_qualifier("juno (de)", "Que Rico (Juno (DE) (Extended Mix))"),
+            "Que Rico (Extended Mix)",
+        )
+
+    def test_leaves_title_alone_when_artist_not_wrapped_in_parens(self):
+        self.assertEqual(
+            tagger.strip_self_credited_qualifier("Juno (DE)", "Que Rico (Extended Mix)"),
+            "Que Rico (Extended Mix)",
+        )
+
+    def test_leaves_a_different_remixer_credit_alone(self):
+        self.assertEqual(
+            tagger.strip_self_credited_qualifier("Juno (DE)", "Que Rico (DJ Snake Remix)"),
+            "Que Rico (DJ Snake Remix)",
+        )
+
+    def test_empty_artist_or_title_is_a_noop(self):
+        self.assertEqual(tagger.strip_self_credited_qualifier("", "Que Rico"), "Que Rico")
+        self.assertEqual(tagger.strip_self_credited_qualifier("Juno (DE)", ""), "")
 
 
 class ComputeSearchTitlesTests(unittest.TestCase):
