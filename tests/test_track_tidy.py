@@ -10,6 +10,7 @@ import os
 import sys
 import json
 import shutil
+import subprocess
 import time
 import threading
 import unittest
@@ -2416,6 +2417,61 @@ class DetectSpectralCutoffTests(unittest.TestCase):
         self.assertIsNone(tagger._detect_spectral_cutoff_hz(samples))
 
 
+class CheckTrackLevelTests(unittest.TestCase):
+    """Pure-numpy tests for the RMS-level check - synthetic noise scaled to
+    an exactly known RMS in dBFS, so the green/orange/red boundaries can be
+    tested precisely without decoding a real file."""
+
+    def _samples_at_rms_db(self, target_db, seed=0):
+        rng = np.random.default_rng(seed)
+        noise = rng.standard_normal(44100).astype(np.float64)
+        noise /= np.sqrt(np.mean(noise ** 2))  # normalize to RMS == 1 (0 dBFS)
+        target_rms = 10 ** (target_db / 20)
+        return (noise * target_rms).astype(np.float32)
+
+    def test_normal_level_is_green_with_no_detail(self):
+        verdict, detail = tagger._check_track_level(self._samples_at_rms_db(-6))
+        self.assertEqual(verdict, tagger.QUALITY_GREEN)
+        self.assertIsNone(detail)
+
+    def test_moderately_quiet_level_is_orange(self):
+        verdict, detail = tagger._check_track_level(self._samples_at_rms_db(-24))
+        self.assertEqual(verdict, tagger.QUALITY_ORANGE)
+        self.assertIn("dB", detail)
+
+    def test_very_quiet_level_is_red(self):
+        verdict, detail = tagger._check_track_level(self._samples_at_rms_db(-35))
+        self.assertEqual(verdict, tagger.QUALITY_RED)
+        self.assertIn("dB", detail)
+
+    def test_empty_samples_is_green_with_no_detail(self):
+        verdict, detail = tagger._check_track_level(np.array([], dtype=np.float32))
+        self.assertEqual(verdict, tagger.QUALITY_GREEN)
+        self.assertIsNone(detail)
+
+
+class WorseQualityResultTests(unittest.TestCase):
+    def test_returns_the_only_result_when_nothing_flagged(self):
+        result = tagger._worse_quality_result(
+            (tagger.QUALITY_GREEN, "spectral fine"), (tagger.QUALITY_GREEN, None),
+        )
+        self.assertEqual(result, (tagger.QUALITY_GREEN, "spectral fine"))
+
+    def test_worse_verdict_wins(self):
+        verdict, _detail = tagger._worse_quality_result(
+            (tagger.QUALITY_ORANGE, "spectral issue"), (tagger.QUALITY_RED, "level issue"),
+        )
+        self.assertEqual(verdict, tagger.QUALITY_RED)
+
+    def test_combines_details_when_both_flagged(self):
+        verdict, detail = tagger._worse_quality_result(
+            (tagger.QUALITY_RED, "level issue"), (tagger.QUALITY_ORANGE, "spectral issue"),
+        )
+        self.assertEqual(verdict, tagger.QUALITY_RED)
+        self.assertIn("level issue", detail)
+        self.assertIn("spectral issue", detail)
+
+
 class AnalyzeTrackQualityTests(unittest.TestCase):
     """Uses committed audio fixtures (assets/) - real ffmpeg decode, real
     verdict logic end to end."""
@@ -2445,6 +2501,21 @@ class AnalyzeTrackQualityTests(unittest.TestCase):
         verdict, detail = tagger.analyze_track_quality(self._asset("fart.flac"))
         self.assertIn(verdict, (tagger.QUALITY_GREEN, tagger.QUALITY_ORANGE, tagger.QUALITY_RED))
         self.assertTrue(detail)
+
+    def test_very_quiet_lossless_file_is_flagged_red_for_level(self):
+        # A lossless format skips the declared-bitrate shortcut entirely,
+        # so this confirms the RMS-level check on its own can still push
+        # an otherwise-fine file to red - real ffmpeg attenuation, not a
+        # synthetic sample array (see CheckTrackLevelTests for that).
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            quiet_path = os.path.join(tmp_dir, "quiet.flac")
+            subprocess.run(
+                [tagger.find_ffmpeg(), "-y", "-i", self._asset("fart.flac"), "-af", "volume=-40dB", quiet_path],
+                capture_output=True,
+            )
+            verdict, detail = tagger.analyze_track_quality(quiet_path)
+            self.assertEqual(verdict, tagger.QUALITY_RED)
+            self.assertIn("dB", detail)
 
 
 class ComputeTrackSpectrogramTests(unittest.TestCase):

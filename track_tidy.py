@@ -5347,6 +5347,24 @@ QUALITY_CUTOFF_ORANGE_HZ = 18000
 # through the same spectral-cutoff check as everything else below.
 QUALITY_BITRATE_LOW_KBPS = 160
 
+# Average (RMS) level thresholds, in dBFS, of the analyzed segment - a
+# track mastered much quieter than typical won't clip or sound distorted
+# on its own, but DJ software like Rekordbox raises its gain to match the
+# rest of a set, and that gain boost raises the noise floor and any
+# encoding artifacts right along with the music. NOT a judgment that a
+# quiet track is "wrong" - a deliberately dynamic/quiet master is a
+# legitimate mastering choice, especially outside loudness-war genres -
+# just a flag that Rekordbox will likely need a noticeably bigger boost
+# than most tracks, worth being aware of before it's dropped into a mix.
+# Calibrated against exactly one real reference (a loud, modern EDM
+# master at ~-6dB RMS) plus synthetic attenuated copies of it - like the
+# spectral-cutoff thresholds above, deliberately conservative (a wide
+# gap below a "normal" loud master) rather than precisely tuned, since
+# there isn't a broad enough real-world dataset here to calibrate this
+# more tightly without risking false positives on quieter genres.
+QUALITY_LOW_LEVEL_ORANGE_DB = -20.0
+QUALITY_LOW_LEVEL_RED_DB = -30.0
+
 QUALITY_ANALYSIS_SAMPLE_RATE = 44100
 QUALITY_ANALYSIS_SEGMENT_SECONDS = 25
 QUALITY_ANALYSIS_SKIP_SECONDS = 20  # skip likely intro silence/fade-in
@@ -5443,11 +5461,49 @@ def _detect_spectral_cutoff_hz(samples, sample_rate=QUALITY_ANALYSIS_SAMPLE_RATE
     return None
 
 
+def _check_track_level(samples):
+    """Average (RMS) level of the analyzed segment, in dBFS - see
+    QUALITY_LOW_LEVEL_ORANGE_DB/_RED_DB above for the reasoning and the
+    calibration caveat. Returns (verdict, detail) - verdict is always
+    QUALITY_GREEN when the level is unremarkable, with detail=None (there's
+    nothing worth surfacing about a normal level)."""
+    if len(samples) == 0:
+        return QUALITY_GREEN, None
+    rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
+    rms_db = 20 * np.log10(rms + 1e-12)
+    if rms_db < QUALITY_LOW_LEVEL_RED_DB:
+        return QUALITY_RED, f"Very quiet ({rms_db:.0f} dB average level) - would need a large gain boost in Rekordbox"
+    if rms_db < QUALITY_LOW_LEVEL_ORANGE_DB:
+        return QUALITY_ORANGE, f"Quieter than usual ({rms_db:.0f} dB average level) - may need a noticeable gain boost"
+    return QUALITY_GREEN, None
+
+
+_QUALITY_SEVERITY = {QUALITY_GREEN: 0, QUALITY_ORANGE: 1, QUALITY_RED: 2}
+
+
+def _worse_quality_result(*results):
+    """Combines independent (verdict, detail) checks (e.g. spectral cutoff
+    and average level) into a single result - the worst verdict wins, and
+    if more than one check actually flagged something, their reasons are
+    both kept rather than one silently overwriting the other."""
+    flagged = [(verdict, detail) for verdict, detail in results if verdict == QUALITY_ORANGE or verdict == QUALITY_RED]
+    if not flagged:
+        return results[0]
+    flagged.sort(key=lambda pair: _QUALITY_SEVERITY[pair[0]], reverse=True)
+    worst_verdict = flagged[0][0]
+    detail = "; ".join(detail for _, detail in flagged)
+    return worst_verdict, detail
+
+
 def analyze_track_quality(file_path, log=safe_print):
     """
     Best-effort estimate of whether file_path's audio content matches what
-    its format/declared bitrate implies - see the module-level note above
-    for real, confirmed limitations (NOT a certainty either way).
+    its format/declared bitrate implies, AND whether its overall level is
+    low enough that Rekordbox would need a noticeably large gain boost to
+    match other tracks (which raises the noise floor along with it) - see
+    the module-level note above for real, confirmed limitations of the
+    spectral side (NOT a certainty either way), and QUALITY_LOW_LEVEL_*_DB
+    above for the level side's own calibration caveat.
 
     Returns (verdict, detail):
     - verdict: QUALITY_GREEN / QUALITY_ORANGE / QUALITY_RED, or None if
@@ -5480,21 +5536,24 @@ def analyze_track_quality(file_path, log=safe_print):
 
     if cutoff is None:
         if declared_bitrate_kbps is not None:
-            return QUALITY_GREEN, f"No lossy cutoff detected ({declared_bitrate_kbps:.0f} kbps declared)"
-        return QUALITY_GREEN, "No lossy cutoff detected in the audio content"
+            spectral_result = QUALITY_GREEN, f"No lossy cutoff detected ({declared_bitrate_kbps:.0f} kbps declared)"
+        else:
+            spectral_result = QUALITY_GREEN, "No lossy cutoff detected in the audio content"
+    elif cutoff < QUALITY_CUTOFF_RED_HZ:
+        spectral_result = QUALITY_RED, f"Audio content cuts off around {cutoff / 1000:.1f} kHz - likely a lossy source"
+    elif cutoff < QUALITY_CUTOFF_ORANGE_HZ:
+        spectral_result = QUALITY_ORANGE, f"Audio content cuts off around {cutoff / 1000:.1f} kHz - worth a listen"
+    else:
+        # A cutoff was detected but it's up near ~18-20kHz - well within
+        # the range an ordinary, undamaged MP3 encode lands in on its own
+        # (every CBR bitrate tested showed a cutoff there purely from the
+        # encoder's own filterbank, unrelated to actual quality - see the
+        # module-level note above), so this is NOT treated as suspicious
+        # on its own.
+        spectral_result = QUALITY_GREEN, f"Cutoff around {cutoff / 1000:.1f} kHz is consistent with the declared quality"
 
-    if cutoff < QUALITY_CUTOFF_RED_HZ:
-        return QUALITY_RED, f"Audio content cuts off around {cutoff / 1000:.1f} kHz - likely a lossy source"
-
-    if cutoff < QUALITY_CUTOFF_ORANGE_HZ:
-        return QUALITY_ORANGE, f"Audio content cuts off around {cutoff / 1000:.1f} kHz - worth a listen"
-
-    # A cutoff was detected but it's up near ~18-20kHz - well within the
-    # range an ordinary, undamaged MP3 encode lands in on its own (every
-    # CBR bitrate tested showed a cutoff there purely from the encoder's
-    # own filterbank, unrelated to actual quality - see the module-level
-    # note above), so this is NOT treated as suspicious on its own.
-    return QUALITY_GREEN, f"Cutoff around {cutoff / 1000:.1f} kHz is consistent with the declared quality"
+    level_result = _check_track_level(samples)
+    return _worse_quality_result(spectral_result, level_result)
 
 
 QUALITY_SPECTROGRAM_TIME_BINS = 300
