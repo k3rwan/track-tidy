@@ -1801,39 +1801,52 @@ class TaggerInterface:
 
         # ============================== Quality tab ==============================
 
+        quality_header_frame = ttk.Frame(quality_tab)
+        quality_header_frame.pack(fill="x", padx=10, pady=(15, 8))
+
+        # "ⓘ" = circled "i" - matches the "▸" toggle labels' blue/
+        # hand2 clickable look used elsewhere (advanced_toggle, journal_toggle)
+        # instead of introducing a new affordance style just for this tab.
+        quality_info_icon = ttk.Label(
+            quality_header_frame, text=" ⓘ", foreground="#1a73e8", cursor="hand2",
+        )
+        quality_info_icon.pack(side="right", anchor="n")
+        quality_info_text = (
+            "Best-effort ESTIMATE, not a certainty. A real track can legitimately "
+            "roll off high frequencies (mastering, genre), and some lossy sources "
+            "don't show a detectable trace at all - treat orange/red as \"worth a "
+            "listen\", not proof."
+        )
+        quality_info_icon.bind("<Enter>", lambda e: self._show_tooltip(quality_info_text, e))
+        quality_info_icon.bind("<Leave>", lambda e: self._hide_tooltip())
+
         quality_intro_label = ttk.Label(
-            quality_tab,
-            text=(
-                "Estimates whether a track's actual audio content matches what its "
-                "format/bitrate implies - catches a WAV/FLAC that's secretly an "
-                "upscaled low-bitrate MP3, or an MP3 relabeled at a higher bitrate "
-                "than its content supports.\n"
-                "This is a best-effort ESTIMATE, not a certainty - a real track can "
-                "legitimately roll off high frequencies (mastering, genre), and some "
-                "lossy sources don't show a detectable trace at all. Treat orange/red "
-                "as \"worth a listen\", not proof."
-            ),
+            quality_header_frame,
+            text="Flags tracks whose real audio doesn't match their declared format/bitrate.",
             justify="left",
         )
-        quality_intro_label.pack(anchor="w", fill="x", padx=10, pady=(15, 10))
+        quality_intro_label.pack(side="left", fill="x", expand=True)
         quality_intro_label.bind("<Configure>", lambda e: e.widget.configure(wraplength=e.width))
 
-        ttk.Label(quality_tab, text="Folder to analyze:").pack(anchor="w", padx=10)
+        quality_folder_frame = ttk.LabelFrame(quality_tab, text="Folder:")
+        quality_folder_frame.pack(fill="x", padx=10, pady=(0, 10))
+
         self.quality_folder_var = tk.StringVar(value="")
         quality_folder_entry = ttk.Entry(
-            quality_tab, textvariable=self.quality_folder_var, state="readonly", style="ReadonlyWhite.TEntry"
+            quality_folder_frame, textvariable=self.quality_folder_var, state="readonly",
+            style="ReadonlyWhite.TEntry",
         )
-        quality_folder_entry.pack(fill="x", padx=10, pady=(0, 5))
+        quality_folder_entry.pack(fill="x", padx=10, pady=(10, 5))
         self._bind_entry_context_menu(quality_folder_entry, readonly=True)
 
-        quality_buttons_frame = ttk.Frame(quality_tab)
-        quality_buttons_frame.pack(fill="x", padx=10, pady=(0, 5))
+        quality_buttons_frame = ttk.Frame(quality_folder_frame)
+        quality_buttons_frame.pack(fill="x", padx=10, pady=(0, 10))
         self.quality_browse_button = ttk.Button(
             quality_buttons_frame, text="Browse...", command=self._choose_quality_folder
         )
         self.quality_browse_button.pack(side="left", fill="x", expand=True, padx=(0, 5))
         self.quality_scan_button = ttk.Button(
-            quality_buttons_frame, text="Analyze", command=self._start_quality_scan
+            quality_buttons_frame, text="Scan", command=self._start_quality_scan
         )
         self.quality_scan_button.configure(state="disabled")
         self.quality_scan_button.pack(side="left", fill="x", expand=True)
@@ -1844,9 +1857,29 @@ class TaggerInterface:
         self.quality_progress_bar = ttk.Progressbar(
             self.quality_progress_frame, variable=self.quality_progress_var, maximum=100,
         )
-        self.quality_progress_bar.pack(fill="x", padx=10, pady=(5, 2))
+        self.quality_progress_bar.pack(fill="x", padx=10, pady=(0, 2))
         self.quality_progress_label = ttk.Label(self.quality_progress_frame, text="")
         self.quality_progress_label.pack(anchor="w", padx=10, pady=(0, 5))
+
+        # Colored at-a-glance counts, shown once a scan has produced results -
+        # summarizing many rows as three numbers reads faster than scanning
+        # the table itself. Same flat-UI green/red already used for the
+        # Online/Offline status label, plus a matching orange for "worth
+        # checking" (self.internet_status_label's foreground colors).
+        self.quality_summary_frame = ttk.Frame(quality_tab)
+        # not packed yet - only shown once results exist
+        self.quality_summary_green_var = tk.StringVar(value="")
+        self.quality_summary_orange_var = tk.StringVar(value="")
+        self.quality_summary_red_var = tk.StringVar(value="")
+        for var, color, padx in (
+            (self.quality_summary_green_var, "#2ecc71", (10, 14)),
+            (self.quality_summary_orange_var, "#e67e22", (0, 14)),
+            (self.quality_summary_red_var, "#e74c3c", (0, 14)),
+        ):
+            ttk.Label(
+                self.quality_summary_frame, textvariable=var, foreground=color,
+                font=("TkDefaultFont", 9, "bold"),
+            ).pack(side="left", padx=padx)
 
         self.quality_table_frame = ttk.Frame(quality_tab)
         self.quality_table_frame.pack(fill="both", expand=True, padx=10, pady=(5, 10))
@@ -1864,6 +1897,12 @@ class TaggerInterface:
         self.quality_table.column("verdict", width=140, anchor="w")
         self.quality_table.heading("detail", text="Detail")
         self.quality_table.column("detail", width=320, anchor="w")
+        # Verdict color reinforces the emoji at a glance - kept independent
+        # of light/dark theming (unlike odd_row/even_row) since flat-UI
+        # green/orange/red already read fine on both table backgrounds.
+        self.quality_table.tag_configure("verdict_green", foreground="#2ecc71")
+        self.quality_table.tag_configure("verdict_orange", foreground="#e67e22")
+        self.quality_table.tag_configure("verdict_red", foreground="#e74c3c")
 
         quality_scrollbar = ttk.Scrollbar(
             self.quality_table_frame, orient="vertical", command=self.quality_table.yview,
@@ -2164,6 +2203,7 @@ class TaggerInterface:
 
         for row in self.quality_table.get_children():
             self.quality_table.delete(row)
+        self.quality_summary_frame.pack_forget()
 
         self.quality_browse_button.configure(state="disabled")
         self.quality_cancel_requested.clear()
@@ -2193,16 +2233,32 @@ class TaggerInterface:
         except Exception as error:
             self.message_queue.put(("quality_scan_done", ([], False, str(error))))
 
+    QUALITY_VERDICT_TAG = {
+        tagger.QUALITY_GREEN: "verdict_green",
+        tagger.QUALITY_ORANGE: "verdict_orange",
+        tagger.QUALITY_RED: "verdict_red",
+    }
+
     def _populate_quality_table(self, results):
+        counts = {tagger.QUALITY_GREEN: 0, tagger.QUALITY_ORANGE: 0, tagger.QUALITY_RED: 0}
         for index, result in enumerate(results):
-            tag = "even_row" if index % 2 == 0 else "odd_row"
+            row_tag = "even_row" if index % 2 == 0 else "odd_row"
             verdict = result.get("verdict")
             verdict_display = self.QUALITY_VERDICT_DISPLAY.get(verdict, "❓ Couldn't analyze")
+            tags = (row_tag, self.QUALITY_VERDICT_TAG[verdict]) if verdict in counts else (row_tag,)
+            if verdict in counts:
+                counts[verdict] += 1
             self.quality_table.insert(
                 "", "end", text=result.get("file", ""),
                 values=(result.get("format", ""), verdict_display, result.get("detail", "")),
-                tags=(tag,),
+                tags=tags,
             )
+
+        if results:
+            self.quality_summary_green_var.set(f"\U0001f7e2 {counts[tagger.QUALITY_GREEN]}")
+            self.quality_summary_orange_var.set(f"\U0001f7e0 {counts[tagger.QUALITY_ORANGE]}")
+            self.quality_summary_red_var.set(f"\U0001f534 {counts[tagger.QUALITY_RED]}")
+            self.quality_summary_frame.pack(fill="x", padx=10, pady=(0, 5), before=self.quality_table_frame)
 
     # --- Folder / mention actions ---
 
@@ -4956,7 +5012,7 @@ class TaggerInterface:
                     results, cancelled, error = content
                     self.quality_browse_button.configure(state="normal")
                     self.quality_scan_button.configure(
-                        text="Analyze", command=self._start_quality_scan, state="normal",
+                        text="Scan", command=self._start_quality_scan, state="normal",
                     )
                     self.quality_progress_frame.pack_forget()
 
