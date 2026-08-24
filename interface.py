@@ -1890,7 +1890,7 @@ class TaggerInterface:
         # (\U0001f7e2 etc.) - Tk on Windows doesn't render multi-color emoji
         # glyphs, it falls back to a flat gray outline, which is why an
         # earlier version of this looked gray regardless of verdict.
-        quality_columns = ("file", "format", "detail")
+        quality_columns = ("file", "format")
         self.quality_table = ttk.Treeview(
             self.quality_table_frame, columns=quality_columns, show="tree headings",
             selectmode="browse", style="Table.Treeview",
@@ -1898,11 +1898,12 @@ class TaggerInterface:
         self.quality_table.heading("#0", text="")
         self.quality_table.column("#0", width=36, minwidth=36, stretch=False, anchor="center")
         self.quality_table.heading("file", text="File")
-        self.quality_table.column("file", width=260, anchor="w")
+        # Stretches to soak up all leftover width, which keeps "format" - the
+        # last column - pinned flush against the table's right edge instead
+        # of leaving blank space after it.
+        self.quality_table.column("file", width=400, stretch=True, anchor="w")
         self.quality_table.heading("format", text="Format")
-        self.quality_table.column("format", width=60, anchor="center")
-        self.quality_table.heading("detail", text="Detail")
-        self.quality_table.column("detail", width=320, anchor="w")
+        self.quality_table.column("format", width=70, minwidth=70, stretch=False, anchor="center")
         # Colors the whole row (dot + file/format/detail text) - ttk Treeview
         # tags apply per-item, not per-cell, so there's no way to color only
         # the dot on its own; matches what was asked for anyway ("les lignes
@@ -2254,7 +2255,7 @@ class TaggerInterface:
             tags = (row_tag, verdict_tag) if verdict_tag else (row_tag,)
             self.quality_table.insert(
                 "", "end", text="●" if verdict_tag else "❓",
-                values=(result.get("file", ""), result.get("format", ""), result.get("detail", "")),
+                values=(result.get("file", ""), result.get("format", "")),
                 tags=tags,
             )
 
