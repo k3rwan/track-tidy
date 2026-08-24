@@ -1044,9 +1044,10 @@ class TaggerInterface:
                     bg=colors["listbox_bg"], fg=colors["listbox_fg"],
                     selectbackground=colors["select_bg"], selectforeground=colors["select_fg"],
                 )
-            self.progress_canvas.configure(bg=colors["progress_track"])
-            self.progress_canvas.itemconfig(self.progress_rect, fill=colors["progress_fill"])
-            self.progress_canvas.itemconfig(self.progress_text, fill=colors["progress_text"])
+            for canvas in (self.progress_canvas, self.extract_progress_canvas, self.quality_progress_canvas):
+                canvas.configure(bg=colors["progress_track"])
+                canvas.itemconfig(canvas.progress_rect, fill=colors["progress_fill"])
+                canvas.itemconfig(canvas.progress_text, fill=colors["progress_text"])
             self.table.tag_configure("odd_row", background=colors["tree_odd_row"], foreground=colors["tree_fg"])
             self.table.tag_configure("even_row", background=colors["tree_bg"], foreground=colors["tree_fg"])
             self.quality_table.tag_configure(
@@ -1073,9 +1074,10 @@ class TaggerInterface:
                     bg=self._native_listbox_bg, fg=self._native_listbox_fg,
                     selectbackground="SystemHighlight", selectforeground="SystemHighlightText",
                 )
-            self.progress_canvas.configure(bg="#e2e2e2")
-            self.progress_canvas.itemconfig(self.progress_rect, fill="#4a90d9")
-            self.progress_canvas.itemconfig(self.progress_text, fill="#1a1a1a")
+            for canvas in (self.progress_canvas, self.extract_progress_canvas, self.quality_progress_canvas):
+                canvas.configure(bg="#e2e2e2")
+                canvas.itemconfig(canvas.progress_rect, fill="#4a90d9")
+                canvas.itemconfig(canvas.progress_text, fill="#1a1a1a")
             self.table.tag_configure("odd_row", background="#e9e9e9", foreground="black")
             self.table.tag_configure("even_row", background="white", foreground="black")
             self.quality_table.tag_configure("odd_row", background="#e9e9e9", foreground="black")
@@ -1091,8 +1093,15 @@ class TaggerInterface:
         self.kevz_credit_label.configure(foreground=muted_fg)
         self.legal_text_label.configure(foreground=muted_fg)
 
+        # Separate PhotoImage per label (not one shared image) - each
+        # widget needs its own reference kept alive, and building fresh
+        # ones is cheap (a handful of tiny polygon draws).
         self._folder_icon_photo = self._build_folder_icon_photo(dark)
         self.folder_icon_label.configure(image=self._folder_icon_photo)
+        self._extract_folder_icon_photo = self._build_folder_icon_photo(dark)
+        self.extract_folder_icon_label.configure(image=self._extract_folder_icon_photo)
+        self._quality_folder_icon_photo = self._build_folder_icon_photo(dark)
+        self.quality_folder_icon_label.configure(image=self._quality_folder_icon_photo)
 
         self.theme_colors = colors
         self._set_titlebar_dark(self.window, dark)
@@ -1766,13 +1775,8 @@ class TaggerInterface:
         self.apply_button.configure(state="disabled")
         self.apply_button.pack(side="right")
 
-        self.progress_canvas = tk.Canvas(launch_frame, height=24, bg="#e2e2e2", highlightthickness=0)
         # not packed yet: only shown once a run has actually started (see _start_processing)
-
-        self.progress_rect = self.progress_canvas.create_rectangle(0, 0, 0, 24, fill="#4a90d9", width=0)
-        self.progress_text = self.progress_canvas.create_text(
-            0, 12, text="", fill="#1a1a1a", font=("TkDefaultFont", 9, "bold")
-        )
+        self.progress_canvas = self._build_progress_canvas(launch_frame)
 
         # ============================== Extractor tab ==============================
 
@@ -1793,16 +1797,29 @@ class TaggerInterface:
         # wraplength happened to allow.
         extractor_intro_label.bind("<Configure>", lambda e: e.widget.configure(wraplength=e.width))
 
-        ttk.Label(extractor_tab, text="Folder to flatten:").pack(anchor="w", padx=10)
+        # Same "Parent folder:" LabelFrame + icon + entry-row structure as
+        # the Tagger tab's own folder picker (folder_frame above) - was
+        # previously a bare Label + ungrouped Entry/buttons here.
+        extract_folder_frame = ttk.LabelFrame(extractor_tab, text="Folder to flatten:")
+        extract_folder_frame.pack(fill="x", padx=10, pady=(0, 2))
+
         self.extract_folder_var = tk.StringVar(value="")
+
+        extract_entry_row = ttk.Frame(extract_folder_frame)
+        extract_entry_row.pack(fill="x", padx=10, pady=(10, 5))
+
+        # Image is set in _apply_theme, same as folder_icon_label above.
+        self.extract_folder_icon_label = ttk.Label(extract_entry_row)
+        self.extract_folder_icon_label.pack(side="left", padx=(0, 6))
+
         extract_folder_entry = ttk.Entry(
-            extractor_tab, textvariable=self.extract_folder_var, state="readonly", style="ReadonlyWhite.TEntry"
+            extract_entry_row, textvariable=self.extract_folder_var, state="readonly", style="ReadonlyWhite.TEntry"
         )
-        extract_folder_entry.pack(fill="x", padx=10, pady=(0, 5))
+        extract_folder_entry.pack(side="left", fill="x", expand=True)
         self._bind_entry_context_menu(extract_folder_entry, readonly=True)
 
-        extract_buttons_frame = ttk.Frame(extractor_tab)
-        extract_buttons_frame.pack(fill="x", padx=10, pady=(0, 10))
+        extract_buttons_frame = ttk.Frame(extract_folder_frame)
+        extract_buttons_frame.pack(fill="x", padx=10, pady=(0, 5))
         self.extract_browse_button = ttk.Button(
             extract_buttons_frame, text="Browse...", command=self._choose_extract_folder
         )
@@ -1812,6 +1829,9 @@ class TaggerInterface:
         )
         self.extract_button.configure(state="disabled")
         self.extract_button.pack(side="left", fill="x", expand=True)
+
+        # not packed yet: only shown once an extraction has actually started
+        self.extract_progress_canvas = self._build_progress_canvas(extractor_tab)
 
         # ============================== Quality tab ==============================
 
@@ -1842,19 +1862,29 @@ class TaggerInterface:
         quality_intro_label.pack(side="left", fill="x", expand=True)
         quality_intro_label.bind("<Configure>", lambda e: e.widget.configure(wraplength=e.width))
 
-        quality_folder_frame = ttk.LabelFrame(quality_tab, text="Folder:")
-        quality_folder_frame.pack(fill="x", padx=10, pady=(0, 10))
+        # Same LabelFrame + icon + entry-row structure as Tagger's own
+        # folder_frame (and now Extractor's extract_folder_frame above).
+        quality_folder_frame = ttk.LabelFrame(quality_tab, text="Folder to analyze:")
+        quality_folder_frame.pack(fill="x", padx=10, pady=(0, 2))
 
         self.quality_folder_var = tk.StringVar(value="")
+
+        quality_entry_row = ttk.Frame(quality_folder_frame)
+        quality_entry_row.pack(fill="x", padx=10, pady=(10, 5))
+
+        # Image is set in _apply_theme, same as folder_icon_label above.
+        self.quality_folder_icon_label = ttk.Label(quality_entry_row)
+        self.quality_folder_icon_label.pack(side="left", padx=(0, 6))
+
         quality_folder_entry = ttk.Entry(
-            quality_folder_frame, textvariable=self.quality_folder_var, state="readonly",
+            quality_entry_row, textvariable=self.quality_folder_var, state="readonly",
             style="ReadonlyWhite.TEntry",
         )
-        quality_folder_entry.pack(fill="x", padx=10, pady=(10, 5))
+        quality_folder_entry.pack(side="left", fill="x", expand=True)
         self._bind_entry_context_menu(quality_folder_entry, readonly=True)
 
         quality_buttons_frame = ttk.Frame(quality_folder_frame)
-        quality_buttons_frame.pack(fill="x", padx=10, pady=(0, 10))
+        quality_buttons_frame.pack(fill="x", padx=10, pady=(0, 5))
         self.quality_browse_button = ttk.Button(
             quality_buttons_frame, text="Browse...", command=self._choose_quality_folder
         )
@@ -1865,15 +1895,11 @@ class TaggerInterface:
         self.quality_scan_button.configure(state="disabled")
         self.quality_scan_button.pack(side="left", fill="x", expand=True)
 
-        self.quality_progress_frame = ttk.Frame(quality_tab)
-        # not packed yet - only shown once a scan has actually started
-        self.quality_progress_var = tk.DoubleVar(value=0)
-        self.quality_progress_bar = ttk.Progressbar(
-            self.quality_progress_frame, variable=self.quality_progress_var, maximum=100,
-        )
-        self.quality_progress_bar.pack(fill="x", padx=10, pady=(0, 2))
-        self.quality_progress_label = ttk.Label(self.quality_progress_frame, text="")
-        self.quality_progress_label.pack(anchor="w", padx=10, pady=(0, 5))
+        # not packed yet - only shown once a scan has actually started.
+        # Same Canvas-based animated bar as Tagger/Extractor, not a plain
+        # ttk.Progressbar - was previously the odd one out here, with no
+        # dark-mode theming of its own.
+        self.quality_progress_canvas = self._build_progress_canvas(quality_tab)
 
         # Colored at-a-glance counts, shown once a scan has produced results -
         # summarizing many rows as three numbers reads faster than scanning
@@ -2078,51 +2104,72 @@ class TaggerInterface:
         height = self.window.winfo_reqheight()
         self.window.geometry(f"{WINDOW_WIDTH}x{height}")
 
-    def _update_progress_bar(self, fraction, text):
+    def _build_progress_canvas(self, parent):
+        """Builds one of the app's Canvas-based animated progress bars -
+        Tagger's is the original/reference; Extractor and Quality each get
+        their own independent instance of the exact same widget via this
+        (not shared - the three tabs' runs are all independent and could
+        in principle animate at the same time). Returns the Canvas, not
+        packed yet - only shown once a run actually starts, same as
+        Tagger's own self.progress_canvas."""
+        canvas = tk.Canvas(parent, height=24, bg="#e2e2e2", highlightthickness=0)
+        canvas.progress_rect = canvas.create_rectangle(0, 0, 0, 24, fill="#4a90d9", width=0)
+        canvas.progress_text = canvas.create_text(
+            0, 12, text="", fill="#1a1a1a", font=("TkDefaultFont", 9, "bold")
+        )
+        canvas.progress_target_fraction = 0
+        canvas.progress_current_fraction = 0
+        canvas.progress_animating = False
+        return canvas
+
+    def _update_progress_bar(self, canvas, fraction, text):
         """Redraws the progress bar text immediately, and glides the fill
         rectangle toward the new fraction instead of jumping straight to
         it - a per-file scan/apply update every ~1s otherwise looked like
         the bar was snapping in discrete jumps rather than filling
         smoothly. A reset to 0 (start of a new run) snaps instantly
         instead of animating backwards, which would look like the bar
-        emptying itself out before the next run even starts."""
-        self.progress_canvas.update_idletasks()
-        width = self.progress_canvas.winfo_width() or (WINDOW_WIDTH - 40)
-        height = 24
-        self.progress_canvas.coords(self.progress_text, width / 2, height / 2)
-        self.progress_canvas.itemconfigure(self.progress_text, text=text)
+        emptying itself out before the next run even starts.
 
-        self._progress_target_fraction = fraction
+        The glide state (target/current fraction, whether it's mid-
+        animation) lives on the canvas itself, not on self - each of the
+        app's progress bars (Tagger/Extractor/Quality) is independent."""
+        canvas.update_idletasks()
+        width = canvas.winfo_width() or (WINDOW_WIDTH - 40)
+        height = 24
+        canvas.coords(canvas.progress_text, width / 2, height / 2)
+        canvas.itemconfigure(canvas.progress_text, text=text)
+
+        canvas.progress_target_fraction = fraction
         if fraction == 0:
-            self._progress_current_fraction = 0
-            self.progress_canvas.coords(self.progress_rect, 0, 0, 0, height)
-            self._progress_bar_animating = False
+            canvas.progress_current_fraction = 0
+            canvas.coords(canvas.progress_rect, 0, 0, 0, height)
+            canvas.progress_animating = False
             return
 
-        if not getattr(self, "_progress_bar_animating", False):
-            self._progress_bar_animating = True
-            self._progress_current_fraction = getattr(self, "_progress_current_fraction", 0)
-            self._glide_progress_bar()
+        if not canvas.progress_animating:
+            canvas.progress_animating = True
+            self._glide_progress_bar(canvas)
 
     PROGRESS_GLIDE_STEP_MS = 16
     PROGRESS_GLIDE_EASE = 0.35  # fraction of the remaining gap closed per step
 
-    def _glide_progress_bar(self):
-        width = self.progress_canvas.winfo_width() or (WINDOW_WIDTH - 40)
+    def _glide_progress_bar(self, canvas):
+        width = canvas.winfo_width() or (WINDOW_WIDTH - 40)
         height = 24
-        current = self._progress_current_fraction
-        target = self._progress_target_fraction
+        current = canvas.progress_current_fraction
+        target = canvas.progress_target_fraction
         if abs(target - current) < 0.002:
             current = target
-            self._progress_bar_animating = False
+            canvas.progress_animating = False
         else:
             current += (target - current) * self.PROGRESS_GLIDE_EASE
 
-        self._progress_current_fraction = current
-        self.progress_canvas.coords(self.progress_rect, 0, 0, width * current, height)
+        canvas.progress_current_fraction = current
+        canvas.coords(canvas.progress_rect, 0, 0, width * current, height)
 
-        if self._progress_bar_animating:
-            self.window.after(self.PROGRESS_GLIDE_STEP_MS, self._glide_progress_bar)
+        if canvas.progress_animating:
+            self.window.after(self.PROGRESS_GLIDE_STEP_MS, lambda: self._glide_progress_bar(canvas))
 
     def _toggle_advanced_section(self):
         if self._is_run_active():
@@ -2187,6 +2234,10 @@ class TaggerInterface:
         self.extract_cancel_requested.clear()
         self.extract_button.configure(text="Cancel", command=self._request_extract_cancel, state="normal")
 
+        if not self.extract_progress_canvas.winfo_ismapped():
+            self.extract_progress_canvas.pack(fill="x", padx=10, pady=(0, 10))
+        self._update_progress_bar(self.extract_progress_canvas, 0, "0 %")
+
         self._run_in_background(self._run_extraction, folder)
 
     def _request_extract_cancel(self):
@@ -2200,9 +2251,13 @@ class TaggerInterface:
         except Exception:
             reporter_name = ""
 
+        def on_progress(index, total):
+            self.message_queue.put(("extract_progress", (index, total)))
+
         try:
             moved_count = tagger.extract_audio_files(
-                folder, log=self._append_to_journal, should_cancel=self.extract_cancel_requested.is_set,
+                folder, log=self._append_to_journal, on_progress=on_progress,
+                should_cancel=self.extract_cancel_requested.is_set,
             )
             removed_count = tagger.remove_empty_subfolders(
                 folder, log=self._append_to_journal, should_cancel=self.extract_cancel_requested.is_set,
@@ -2252,9 +2307,9 @@ class TaggerInterface:
         self.quality_cancel_requested.clear()
         self.quality_scan_button.configure(text="Cancel", command=self._request_quality_cancel, state="normal")
 
-        self.quality_progress_var.set(0)
-        self.quality_progress_label.configure(text="Analyzing...")
-        self.quality_progress_frame.pack(fill="x", padx=0, pady=0, before=self.quality_table_frame)
+        if not self.quality_progress_canvas.winfo_ismapped():
+            self.quality_progress_canvas.pack(fill="x", padx=10, pady=(0, 5), before=self.quality_table_frame)
+        self._update_progress_bar(self.quality_progress_canvas, 0, "0 %")
 
         self._run_in_background(self._run_quality_scan, folder)
 
@@ -2347,7 +2402,7 @@ class TaggerInterface:
         self.quality_scan_button.configure(
             text="Scan", command=self._start_quality_scan, state="normal",
         )
-        self.quality_progress_frame.pack_forget()
+        self.quality_progress_canvas.pack_forget()
 
         if error:
             messagebox.showerror("Analysis error", error, parent=self.window)
@@ -2673,7 +2728,7 @@ class TaggerInterface:
         self.table.heading("artist", text="Artist")
 
         self.progress_canvas.pack_forget()
-        self._update_progress_bar(0, "")
+        self._update_progress_bar(self.progress_canvas, 0, "")
 
         self.journal_text.configure(state="normal")
         self.journal_text.delete("1.0", "end")
@@ -2918,11 +2973,11 @@ class TaggerInterface:
         if not self.progress_canvas.winfo_ismapped():
             self.progress_canvas.pack(fill="x")
             self._adjust_window_height()
-        self._update_progress_bar(0, "0 %")
+        self._update_progress_bar(self.progress_canvas, 0, "0 %")
 
     def _update_scan_progress_bar(self, scanned_count, total):
         fraction = scanned_count / total if total else 0
-        self._update_progress_bar(fraction, f"{round(fraction * 100)} %")
+        self._update_progress_bar(self.progress_canvas, fraction, f"{round(fraction * 100)} %")
 
     def _run_scan(self, explicit_files=None):
         number_before = len(self.scanned_plan)
@@ -3345,7 +3400,7 @@ class TaggerInterface:
         # this same bar from 0% anyway.
         if self.progress_canvas.winfo_ismapped():
             self.progress_canvas.pack_forget()
-            self._update_progress_bar(0, "")
+            self._update_progress_bar(self.progress_canvas, 0, "")
             self._adjust_window_height()
 
         # One combined warning for every source that hit its rate limit
@@ -5090,7 +5145,7 @@ class TaggerInterface:
                 # misleading now that there's a new pending change waiting
                 # on the next Apply.
                 self.progress_canvas.pack_forget()
-                self._update_progress_bar(0, "")
+                self._update_progress_bar(self.progress_canvas, 0, "")
 
             self.table.item(item_id, values=self._build_row_values(info))
 
@@ -5138,13 +5193,15 @@ class TaggerInterface:
                 elif message_type == "progress":
                     index, total = content
                     percentage = round((index / total) * 100) if total else 0
-                    self._update_progress_bar(index / total if total else 0, f"{percentage} %")
+                    self._update_progress_bar(self.progress_canvas, index / total if total else 0, f"{percentage} %")
 
                 elif message_type == "done":
                     cancelled = content
                     self.processing_in_progress = False
                     self._set_buttons_enabled(True)
-                    self._update_progress_bar(1.0 if not cancelled else 0, "Cancelled" if cancelled else "Done ✓")
+                    self._update_progress_bar(
+                        self.progress_canvas, 1.0 if not cancelled else 0, "Cancelled" if cancelled else "Done ✓",
+                    )
                     if not cancelled:
                         if self._processing_failures:
                             self._show_processing_failures_dialog()
@@ -5259,10 +5316,16 @@ class TaggerInterface:
                     # trickling into the table.
                     self._pending_scan_done = content
 
+                elif message_type == "extract_progress":
+                    index, total = content
+                    fraction = (index / total) if total else 0
+                    self._update_progress_bar(self.extract_progress_canvas, fraction, f"{round(fraction * 100)} %")
+
                 elif message_type == "extract_done":
                     folder, moved_count, removed_count, cancelled, error = content
                     self.extract_browse_button.configure(state="normal")
                     self.extract_button.configure(text="Extract", command=self._start_extraction, state="normal")
+                    self.extract_progress_canvas.pack_forget()
 
                     if error:
                         messagebox.showerror("Extraction error", error, parent=self.window)
@@ -5286,9 +5349,8 @@ class TaggerInterface:
 
                 elif message_type == "quality_scan_progress":
                     index, total = content
-                    fraction = (index / total * 100) if total else 0
-                    self.quality_progress_var.set(fraction)
-                    self.quality_progress_label.configure(text=f"Analyzing... {index}/{total}")
+                    fraction = (index / total) if total else 0
+                    self._update_progress_bar(self.quality_progress_canvas, fraction, f"{round(fraction * 100)} %")
 
                 elif message_type == "quality_scan_row":
                     # Not displayed the instant it's ready - see
@@ -5492,7 +5554,7 @@ class TaggerInterface:
         self.journal_text.delete("1.0", "end")
         self.journal_text.configure(state="disabled")
 
-        self._update_progress_bar(0, "0 %")
+        self._update_progress_bar(self.progress_canvas, 0, "0 %")
         self.processing_in_progress = True
         self.cancel_requested.clear()
         self._processing_failures = []  # (identifier, reason) pairs - see _show_processing_failures_dialog

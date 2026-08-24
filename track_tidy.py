@@ -2127,7 +2127,7 @@ EXTRACTABLE_AUDIO_EXTENSIONS = SUPPORTED_EXTENSIONS + (".alac",)
 # 4. FOLDER EXTRACTION (FLATTEN)
 # ============================================================================
 
-def extract_audio_files(root_folder, log=safe_print, should_cancel=None):
+def extract_audio_files(root_folder, log=safe_print, on_progress=None, should_cancel=None):
     """
     Recursively finds audio files (mp3, wav, flac, aac, m4a, ogg, wma, aiff,
     alac, opus...) sitting inside subfolders of root_folder and moves them
@@ -2135,14 +2135,28 @@ def extract_audio_files(root_folder, log=safe_print, should_cancel=None):
     directly in root_folder are left untouched. Returns the number of files
     actually moved.
 
+    on_progress(processed_count, total), if given, fires after every
+    candidate file is handled (whether the move succeeded or not) - a
+    quick extra os.walk pass counts `total` upfront, same tradeoff
+    analyze_folder_quality() makes for its own progress reporting.
+
     should_cancel() is checked once per subfolder (not per file - os.walk's
     own per-folder granularity is responsive enough without adding overhead
     to every single move) - if it returns True, stops early and returns
     whatever was moved so far, same "cancel between units of work, not
     mid-write" approach as scan_files()'s should_cancel.
     """
-    moved_count = 0
     root_abspath = os.path.abspath(root_folder)
+
+    total = 0
+    if on_progress:
+        for current_folder, _dirs, files in os.walk(root_folder):
+            if os.path.abspath(current_folder) == root_abspath:
+                continue
+            total += sum(1 for name in files if name.lower().endswith(EXTRACTABLE_AUDIO_EXTENSIONS))
+
+    moved_count = 0
+    processed_count = 0
 
     for current_folder, _dirs, files in os.walk(root_folder):
         if should_cancel and should_cancel():
@@ -2173,6 +2187,10 @@ def extract_audio_files(root_folder, log=safe_print, should_cancel=None):
                 moved_count += 1
             except Exception as error:
                 log(f"  Error moving '{source_path}': {error}")
+
+            processed_count += 1
+            if on_progress:
+                on_progress(processed_count, total)
 
     return moved_count
 
