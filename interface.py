@@ -929,6 +929,86 @@ class TaggerInterface:
 
         return ImageTk.PhotoImage(image)
 
+    @staticmethod
+    def _draw_folder_glyph(draw, cx, cy, w, h, color, width):
+        """Simple manila-folder outline (body + top-left tab), used as the
+        building block for the Extractor tab's before/after preview."""
+        tab_w, tab_h = w * 0.45, h * 0.24
+        left, right = cx - w / 2, cx + w / 2
+        top, bottom = cy - h / 2, cy + h / 2
+        points = [
+            (left, top + tab_h),
+            (left, bottom),
+            (right, bottom),
+            (right, top + tab_h),
+            (left + tab_w + tab_h * 0.5, top + tab_h),
+            (left + tab_w, top),
+            (left, top),
+            (left, top + tab_h),
+        ]
+        draw.line(points, fill=color, width=width, joint="curve")
+
+    @staticmethod
+    def _draw_small_audio_file_glyph(draw, cx, cy, w, h, color, width):
+        """Small rounded document + eighth note - a shrunk-down version of
+        the empty-state icon's file glyph, used inside the Extractor
+        preview's "after" folder."""
+        left, right = cx - w / 2, cx + w / 2
+        top, bottom = cy - h / 2, cy + h / 2
+        fold = h * 0.32
+        draw.line(
+            [
+                (left, top + fold * 0.4), (left, bottom),
+                (right, bottom), (right, top + fold),
+                (right - fold, top), (left + fold * 0.6, top),
+            ],
+            fill=color, width=width, joint="curve",
+        )
+        note_cx, note_cy = (left + right) / 2, (top + bottom) / 2 + h * 0.05
+        head_rx, head_ry = w * 0.11, h * 0.09
+        draw.ellipse(
+            [note_cx - head_rx, note_cy - head_ry, note_cx + head_rx, note_cy + head_ry], fill=color,
+        )
+        draw.line(
+            [(note_cx + head_rx * 0.8, note_cy), (note_cx + head_rx * 0.8, note_cy - h * 0.34)],
+            fill=color, width=max(1, width - 1),
+        )
+
+    def _build_extractor_preview_photos(self, dark, size=130):
+        """"Before" (one folder with several messy subfolders inside) /
+        "after" (the same folder, now holding a flat, neat stack of audio
+        files) illustration for the Extractor tab - drawn by hand, like
+        _build_empty_state_icon_photo, so it recolors correctly per theme
+        and needs no bundled screenshot (which was tried first, but read as
+        illegible noise once shrunk down to fit the tab)."""
+        color = "#9a9a9a" if dark else "#4a4a4a"
+        outer_width = max(2, round(size * 0.022))
+        inner_width = max(1, round(size * 0.014))
+
+        outer_left, outer_right = size * 0.08, size * 0.92
+        outer_top, outer_bottom = size * 0.22, size * 0.86
+        outer_cx = (outer_left + outer_right) / 2
+        outer_cy = (outer_top + outer_bottom) / 2
+        outer_w, outer_h = outer_right - outer_left, outer_bottom - outer_top
+
+        before_image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        before_draw = ImageDraw.Draw(before_image)
+        self._draw_folder_glyph(before_draw, outer_cx, outer_cy, outer_w, outer_h, color, outer_width)
+        for cx, cy, w, h in (
+            (size * 0.30, size * 0.50, size * 0.30, size * 0.22),
+            (size * 0.50, size * 0.62, size * 0.30, size * 0.22),
+            (size * 0.68, size * 0.48, size * 0.28, size * 0.20),
+        ):
+            self._draw_folder_glyph(before_draw, cx, cy, w, h, color, inner_width)
+
+        after_image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        after_draw = ImageDraw.Draw(after_image)
+        self._draw_folder_glyph(after_draw, outer_cx, outer_cy, outer_w, outer_h, color, outer_width)
+        for cy in (size * 0.46, size * 0.60, size * 0.74):
+            self._draw_small_audio_file_glyph(after_draw, outer_cx, cy, size * 0.20, size * 0.15, color, inner_width)
+
+        return ImageTk.PhotoImage(before_image), ImageTk.PhotoImage(after_image)
+
     def _build_gray_dot_photo(self, size=10):
         """Static neutral dot shown in the Quality table's own verdict dot
         column heading (#0) - a plain drawn circle rather than a colored
@@ -1305,6 +1385,11 @@ class TaggerInterface:
         self.quality_folder_icon_label.configure(image=self._quality_folder_icon_photo)
         self._empty_state_icon_photo = self._build_empty_state_icon_photo(dark)
         self.empty_state_icon_label.configure(image=self._empty_state_icon_photo)
+        self._extractor_preview_before_photo, self._extractor_preview_after_photo = (
+            self._build_extractor_preview_photos(dark)
+        )
+        self.extractor_preview_before_label.configure(image=self._extractor_preview_before_photo)
+        self.extractor_preview_after_label.configure(image=self._extractor_preview_after_photo)
 
         self.theme_colors = colors
         self._set_titlebar_dark(self.window, dark)
@@ -2064,36 +2149,21 @@ class TaggerInterface:
 
         # Before/after preview - shows what "Extract" actually does at a
         # glance, since the intro label's text alone wasn't landing (users
-        # kept asking what this tab was for). Static screenshots, not
-        # theme-dependent generated art like the Tagger empty-state icon
-        # (see _build_empty_state_icon_photo), so nothing to rebuild in
-        # _apply_theme - only the surrounding ttk.Label backgrounds need to
-        # track the theme, and those already inherit it automatically.
-        extractor_preview_before_path = resource_path("assets/extractor-before.png")
-        extractor_preview_after_path = resource_path("assets/extractor-after.png")
-        if os.path.exists(extractor_preview_before_path) and os.path.exists(extractor_preview_after_path):
-            extractor_preview_frame = ttk.Frame(extractor_tab)
-            extractor_preview_frame.pack(pady=(10, 5))
-
-            preview_width = 240
-            before_source = Image.open(extractor_preview_before_path)
-            after_source = Image.open(extractor_preview_after_path)
-            before_height = round(preview_width * before_source.height / before_source.width)
-            after_height = round(preview_width * after_source.height / after_source.width)
-            # Keep references - Tk drops a PhotoImage as soon as nothing in
-            # Python still points to it, even while a Label keeps displaying it.
-            self._extractor_preview_before_photo = ImageTk.PhotoImage(
-                before_source.resize((preview_width, before_height), Image.LANCZOS)
-            )
-            self._extractor_preview_after_photo = ImageTk.PhotoImage(
-                after_source.resize((preview_width, after_height), Image.LANCZOS)
-            )
-
-            ttk.Label(extractor_preview_frame, image=self._extractor_preview_before_photo).pack(side="left")
-            ttk.Label(
-                extractor_preview_frame, text="  →  ", font=("Segoe UI", 20, "bold")
-            ).pack(side="left")
-            ttk.Label(extractor_preview_frame, image=self._extractor_preview_after_photo).pack(side="left")
+        # kept asking what this tab was for). Hand-drawn glyphs (like
+        # _build_empty_state_icon_photo) rather than real screenshots - a
+        # screenshot shrunk down to fit this tab was too small to read, and
+        # this way it recolors correctly per theme with zero extra assets.
+        extractor_preview_frame = ttk.Frame(extractor_tab)
+        extractor_preview_frame.pack(pady=(10, 5))
+        self.extractor_preview_before_label = ttk.Label(extractor_preview_frame)
+        self.extractor_preview_before_label.pack(side="left")
+        self.extractor_preview_arrow_label = ttk.Label(
+            extractor_preview_frame, text="  →  ", font=("Segoe UI", 36, "bold")
+        )
+        self.extractor_preview_arrow_label.pack(side="left")
+        self.extractor_preview_after_label = ttk.Label(extractor_preview_frame)
+        self.extractor_preview_after_label.pack(side="left")
+        # Images are set in _apply_theme, same as folder_icon_label above.
 
         # not packed yet: only shown once an extraction has actually started
         self.extract_progress_canvas = self._build_progress_canvas(extractor_tab)
