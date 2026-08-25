@@ -704,9 +704,10 @@ def send_track_report(info, reporter_name=None, timeout=10):
 # the channel the way it used to before that request.
 DISCORD_NOTIFICATION_EXCLUDED_USERS = set() if getattr(sys, "frozen", False) else {"kevin"}
 
-# User-facing opt-out for the automatic pings above (Settings: "Send
-# anonymous usage data to the developer", on by default to match prior
-# behavior - see interface.py's use_telemetry_var). Same "doesn't apply to
+# Opt-out flag for the automatic pings above - no Settings UI currently
+# exposes it (removed - see interface.py history), so this stays True in
+# practice, but interface.py's use_telemetry_var/settings.json plumbing
+# is still there if a toggle gets reintroduced. Same "doesn't apply to
 # send_track_report()" carve-out as DISCORD_NOTIFICATION_EXCLUDED_USERS -
 # that one's an explicit, single-purpose action the user themselves
 # triggered, not passive telemetry.
