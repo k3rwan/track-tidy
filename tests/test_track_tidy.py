@@ -955,6 +955,18 @@ class TokenAuthErrorCallbackTests(unittest.TestCase):
     should trigger it."""
 
     def setUp(self):
+        # invalidate_soundcloud_token()/get_soundcloud_token() now persist
+        # the token via the OS keyring (see _SOUNDCLOUD_TOKEN_KEYRING_KEY)
+        # and do a one-time settings.json cleanup pass - without sandboxing
+        # both here, this test class would touch Kevin's REAL saved
+        # SoundCloud token and settings file on his own machine, same as
+        # CredentialEncryptionTests/SettingsPersistenceTests already guard
+        # against for the client ID/secret and settings respectively.
+        self._original_keyring = keyring.get_keyring()
+        keyring.set_keyring(_FakeKeyringBackend())
+        self._original_settings_file = tagger.SETTINGS_FILE
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        tagger.SETTINGS_FILE = os.path.join(self._tmp_dir.name, "settings.json")
         self._original_sc_id = tagger.SOUNDCLOUD_CLIENT_ID
         self._original_sc_secret = tagger.SOUNDCLOUD_CLIENT_SECRET
         self._original_post = tagger.requests.post
@@ -967,6 +979,9 @@ class TokenAuthErrorCallbackTests(unittest.TestCase):
         tagger.SOUNDCLOUD_CLIENT_SECRET = self._original_sc_secret
         tagger.requests.post = self._original_post
         tagger.invalidate_soundcloud_token()
+        keyring.set_keyring(self._original_keyring)
+        tagger.SETTINGS_FILE = self._original_settings_file
+        self._tmp_dir.cleanup()
 
     class FakeResponse:
         def __init__(self, status_code, text=""):
@@ -997,6 +1012,85 @@ class TokenAuthErrorCallbackTests(unittest.TestCase):
         calls = []
         tagger.get_soundcloud_token(log=lambda *_: None, on_auth_error=lambda s, m: calls.append((s, m)))
         self.assertEqual(calls, [])
+
+
+class SoundcloudTokenPersistenceTests(unittest.TestCase):
+    """get_soundcloud_token() persists the token via the OS keyring (not
+    plaintext settings.json - see the security audit that prompted this),
+    so a fresh process can reuse it instead of burning SoundCloud's tight
+    token quota on every launch."""
+
+    def setUp(self):
+        self._original_keyring = keyring.get_keyring()
+        keyring.set_keyring(_FakeKeyringBackend())
+        self._original_settings_file = tagger.SETTINGS_FILE
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        tagger.SETTINGS_FILE = os.path.join(self._tmp_dir.name, "settings.json")
+        self._original_sc_id = tagger.SOUNDCLOUD_CLIENT_ID
+        self._original_sc_secret = tagger.SOUNDCLOUD_CLIENT_SECRET
+        self._original_post = tagger.requests.post
+        self._original_purged_flag = tagger._soundcloud_legacy_token_setting_purged
+        tagger._soundcloud_legacy_token_setting_purged = False
+        tagger.SOUNDCLOUD_CLIENT_ID = "test-id"
+        tagger.SOUNDCLOUD_CLIENT_SECRET = "test-secret"
+        tagger.invalidate_soundcloud_token()
+
+    def tearDown(self):
+        tagger.SOUNDCLOUD_CLIENT_ID = self._original_sc_id
+        tagger.SOUNDCLOUD_CLIENT_SECRET = self._original_sc_secret
+        tagger.requests.post = self._original_post
+        tagger._soundcloud_legacy_token_setting_purged = self._original_purged_flag
+        tagger.invalidate_soundcloud_token()
+        keyring.set_keyring(self._original_keyring)
+        tagger.SETTINGS_FILE = self._original_settings_file
+        self._tmp_dir.cleanup()
+
+    class FakeTokenResponse:
+        status_code = 200
+
+        def json(self):
+            return {"access_token": "fresh-token", "expires_in": 3600}
+
+    def test_token_persisted_via_keyring_not_settings_file(self):
+        tagger.requests.post = lambda *a, **k: self.FakeTokenResponse()
+        result = tagger.get_soundcloud_token(log=lambda *_: None)
+
+        self.assertEqual(result, "fresh-token")
+        self.assertEqual(
+            keyring.get_password(tagger.KEYRING_SERVICE, tagger._SOUNDCLOUD_TOKEN_KEYRING_KEY), "fresh-token",
+        )
+        self.assertNotIn("soundcloud_token", tagger.load_settings())
+
+    def test_token_survives_in_memory_cache_reset(self):
+        # Simulates a fresh process: the in-memory cache is gone, but the
+        # keyring-persisted token from an earlier call is picked back up.
+        tagger.requests.post = lambda *a, **k: self.FakeTokenResponse()
+        tagger.get_soundcloud_token(log=lambda *_: None)
+        tagger._cached_soundcloud_token = None
+        tagger._cached_token_expiry = 0
+
+        tagger.requests.post = lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not re-authenticate"))
+        result = tagger.get_soundcloud_token(log=lambda *_: None)
+        self.assertEqual(result, "fresh-token")
+
+    def test_legacy_plaintext_setting_is_purged(self):
+        tagger.save_setting("soundcloud_token", "old-plaintext-token")
+        tagger.save_setting("soundcloud_token_expiry", time.time() + 3600)
+
+        tagger.requests.post = lambda *a, **k: self.FakeTokenResponse()
+        tagger.get_soundcloud_token(log=lambda *_: None)
+
+        settings = tagger.load_settings()
+        self.assertNotIn("soundcloud_token", settings)
+        self.assertNotIn("soundcloud_token_expiry", settings)
+
+    def test_invalidate_clears_persisted_token_too(self):
+        tagger.requests.post = lambda *a, **k: self.FakeTokenResponse()
+        tagger.get_soundcloud_token(log=lambda *_: None)
+
+        tagger.invalidate_soundcloud_token()
+
+        self.assertIsNone(tagger.read_credential(tagger._SOUNDCLOUD_TOKEN_KEYRING_KEY))
 
 
 class SearchCoverManualTests(unittest.TestCase):

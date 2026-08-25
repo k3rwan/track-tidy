@@ -1012,6 +1012,23 @@ def save_setting(key, value):
         print(f"  Could not save setting '{key}': {error}")
 
 
+def _purge_setting_keys(keys):
+    """Removes the given keys from settings.json if present - a one-time
+    cleanup for a value that used to be stored here (in plain text) but
+    has since moved somewhere more appropriate (e.g. the OS keyring - see
+    get_soundcloud_token()). A no-op once already cleaned up."""
+    settings = load_settings()
+    if not any(key in settings for key in keys):
+        return
+    for key in keys:
+        settings.pop(key, None)
+    try:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+    except Exception as error:
+        print(f"  Could not remove {keys} from settings.json: {error}")
+
+
 # Single source of truth for what "defaults" means - shared by the Settings
 # tab's manual "Reset all settings to default" button and the automatic
 # reset every update triggers (see check_and_apply_version_reset()).
@@ -3964,12 +3981,15 @@ _cached_token_expiry = 0  # Unix timestamp
 
 def invalidate_soundcloud_token():
     """Forces the next get_soundcloud_token() call to authenticate again
-    instead of reusing the cached token - e.g. after the credentials change."""
+    instead of reusing the cached token - e.g. after the credentials
+    change. Also clears the persisted copy (see get_soundcloud_token) -
+    otherwise a still-time-valid persisted token would silently survive
+    "invalidation" and keep being reused."""
     global _cached_soundcloud_token, _cached_token_expiry
     _cached_soundcloud_token = None
     _cached_token_expiry = 0
-    save_setting("soundcloud_token", None)
-    save_setting("soundcloud_token_expiry", 0)
+    write_credential(_SOUNDCLOUD_TOKEN_KEYRING_KEY, "")
+    write_credential(_SOUNDCLOUD_TOKEN_EXPIRY_KEYRING_KEY, "0")
 
 
 # Unlike iTunes/Spotify, a 429 from SoundCloud's token endpoint carries no
@@ -3985,23 +4005,42 @@ def invalidate_soundcloud_token():
 SOUNDCLOUD_TOKEN_RATE_LIMIT_COOLDOWN_SECONDS = 300
 _soundcloud_token_cooldown = _SourceCooldown()
 
+# Where the persisted token lives now (see get_soundcloud_token) - the OS
+# keyring, same store already used for the SoundCloud/Spotify client
+# credentials, not the plaintext settings.json an earlier version wrote it
+# to.
+_SOUNDCLOUD_TOKEN_KEYRING_KEY = "soundcloud_access_token"
+_SOUNDCLOUD_TOKEN_EXPIRY_KEYRING_KEY = "soundcloud_access_token_expiry"
+_soundcloud_legacy_token_setting_purged = False
+
 
 def get_soundcloud_token(log=safe_print, on_rate_limited=None, on_auth_error=None):
-    global _cached_soundcloud_token, _cached_token_expiry
+    global _cached_soundcloud_token, _cached_token_expiry, _soundcloud_legacy_token_setting_purged
 
     # Reuse the cached token if it's still valid (with a 60s safety margin)
     if _cached_soundcloud_token and time.time() < _cached_token_expiry - 60:
         return _cached_soundcloud_token
 
+    # One-time cleanup: an earlier version persisted the token to
+    # settings.json in PLAIN TEXT - wipes any leftover value on an
+    # existing install now that it's stored via the keyring instead (see
+    # below). Harmless no-op once already cleaned up, and cheap enough to
+    # check unconditionally since this whole branch only runs when the
+    # in-memory cache above has already missed.
+    if not _soundcloud_legacy_token_setting_purged:
+        _purge_setting_keys(("soundcloud_token", "soundcloud_token_expiry"))
+        _soundcloud_legacy_token_setting_purged = True
+
     # The in-memory cache above is lost on every app restart, which used to
     # mean a brand new token (and a bite out of SoundCloud's tight 50/12h
     # per-app, 30/hour per-IP token quota - see SOUNDCLOUD_TOKEN_RATE_LIMIT_COOLDOWN_SECONDS
     # above) was requested every time the app launched, even if the previous
-    # token (usually valid ~1h) hadn't actually expired yet. Persisting it to
-    # settings.json lets a fresh process pick up where the last one left off.
-    persisted_settings = load_settings()
-    persisted_token = persisted_settings.get("soundcloud_token")
-    persisted_expiry = persisted_settings.get("soundcloud_token_expiry", 0)
+    # token (usually valid ~1h) hadn't actually expired yet. Persisting it
+    # via the OS keyring lets a fresh process pick up where the last one
+    # left off, without ever writing it to a plaintext file.
+    persisted_token = read_credential(_SOUNDCLOUD_TOKEN_KEYRING_KEY)
+    persisted_expiry_raw = read_credential(_SOUNDCLOUD_TOKEN_EXPIRY_KEYRING_KEY)
+    persisted_expiry = float(persisted_expiry_raw) if persisted_expiry_raw else 0
     if persisted_token and time.time() < persisted_expiry - 60:
         _cached_soundcloud_token = persisted_token
         _cached_token_expiry = persisted_expiry
@@ -4031,8 +4070,8 @@ def get_soundcloud_token(log=safe_print, on_rate_limited=None, on_auth_error=Non
         payload = response.json()
         _cached_soundcloud_token = payload.get("access_token")
         _cached_token_expiry = time.time() + payload.get("expires_in", 3600)
-        save_setting("soundcloud_token", _cached_soundcloud_token)
-        save_setting("soundcloud_token_expiry", _cached_token_expiry)
+        write_credential(_SOUNDCLOUD_TOKEN_KEYRING_KEY, _cached_soundcloud_token)
+        write_credential(_SOUNDCLOUD_TOKEN_EXPIRY_KEYRING_KEY, str(_cached_token_expiry))
         return _cached_soundcloud_token
 
     if response.status_code == 429:
