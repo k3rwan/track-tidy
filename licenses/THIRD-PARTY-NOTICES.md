@@ -48,3 +48,5 @@ is attached to every GitHub release alongside the installer.
   License
 - **pyacoustid** 1.3.1 - MIT License (AcoustID web service client, used
   by the optional audio-identification fallback)
+- **numpy** 2.5.2 - BSD 3-Clause License (used by the Quality tab's LUFS
+  loudness measurement and spectrogram rendering)

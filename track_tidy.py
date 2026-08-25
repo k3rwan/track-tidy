@@ -704,8 +704,22 @@ def send_track_report(info, reporter_name=None, timeout=10):
 # the channel the way it used to before that request.
 DISCORD_NOTIFICATION_EXCLUDED_USERS = set() if getattr(sys, "frozen", False) else {"kevin"}
 
+# User-facing opt-out for the automatic pings above (Settings: "Send
+# anonymous usage data to the developer", on by default to match prior
+# behavior - see interface.py's use_telemetry_var). Same "doesn't apply to
+# send_track_report()" carve-out as DISCORD_NOTIFICATION_EXCLUDED_USERS -
+# that one's an explicit, single-purpose action the user themselves
+# triggered, not passive telemetry.
+SEND_USAGE_TELEMETRY = True
+
 
 def _is_discord_notification_excluded(reporter_name):
+    """True when an automatic (non-user-initiated) Discord report should be
+    suppressed - either the user turned off usage reporting in Settings
+    (SEND_USAGE_TELEMETRY), or a hardcoded dev-only exclusion
+    (DISCORD_NOTIFICATION_EXCLUDED_USERS)."""
+    if not SEND_USAGE_TELEMETRY:
+        return True
     return (reporter_name or "").strip().lower() in DISCORD_NOTIFICATION_EXCLUDED_USERS
 
 
@@ -1040,6 +1054,7 @@ DEFAULT_SETTINGS = {
     "use_spotify": False,
     "show_log_section": False,
     "music_folder": "",
+    "send_usage_telemetry": True,
 }
 
 

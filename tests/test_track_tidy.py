@@ -2191,6 +2191,111 @@ class NewInstallNotificationTests(unittest.TestCase):
         self.assertEqual(fields[1], {"name": "Previous version", "value": "0.20", "inline": True})
 
 
+class UsageTelemetryOptOutTests(unittest.TestCase):
+    """SEND_USAGE_TELEMETRY (Settings: "Send anonymous usage data to the
+    developer") gates every AUTOMATIC report via
+    _is_discord_notification_excluded() - send_track_report() (the
+    explicit "Report track" button) is deliberately NOT gated by it."""
+
+    def setUp(self):
+        self.original_post = tagger.requests.post
+        self.original_telemetry = tagger.SEND_USAGE_TELEMETRY
+
+    def tearDown(self):
+        tagger.requests.post = self.original_post
+        tagger.SEND_USAGE_TELEMETRY = self.original_telemetry
+
+    def test_opted_out_suppresses_new_install_notification(self):
+        calls = []
+        tagger.requests.post = lambda *a, **k: calls.append(1)
+        tagger.SEND_USAGE_TELEMETRY = False
+
+        result = tagger.send_new_install_notification(reporter_name="someuser")
+
+        self.assertFalse(result)
+        self.assertEqual(calls, [])
+
+    def test_opted_out_suppresses_scan_complete_notification(self):
+        calls = []
+        tagger.requests.post = lambda *a, **k: calls.append(1)
+        tagger.SEND_USAGE_TELEMETRY = False
+
+        result = tagger.send_scan_complete_notification(reporter_name="someuser", total=5)
+
+        self.assertFalse(result)
+        self.assertEqual(calls, [])
+
+    def test_opted_out_suppresses_extraction_report(self):
+        calls = []
+        tagger.requests.post = lambda *a, **k: calls.append(1)
+        tagger.SEND_USAGE_TELEMETRY = False
+
+        result = tagger.send_extraction_report(reporter_name="someuser", moved_count=1)
+
+        self.assertFalse(result)
+        self.assertEqual(calls, [])
+
+    def test_opted_out_suppresses_quality_scan_report(self):
+        calls = []
+        tagger.requests.post = lambda *a, **k: calls.append(1)
+        tagger.SEND_USAGE_TELEMETRY = False
+
+        result = tagger.send_quality_scan_report(reporter_name="someuser", total=1)
+
+        self.assertFalse(result)
+        self.assertEqual(calls, [])
+
+    def test_opted_out_suppresses_rate_limit_report(self):
+        calls = []
+        tagger.requests.post = lambda *a, **k: calls.append(1)
+        tagger.SEND_USAGE_TELEMETRY = False
+
+        result = tagger.send_rate_limit_report("iTunes", reporter_name="someuser")
+
+        self.assertFalse(result)
+        self.assertEqual(calls, [])
+
+    def test_opted_out_suppresses_no_cover_report(self):
+        calls = []
+        tagger.requests.post = lambda *a, **k: calls.append(1)
+        tagger.SEND_USAGE_TELEMETRY = False
+
+        result = tagger.send_no_cover_report([{"file": "a.mp3"}], total=1, reporter_name="someuser")
+
+        self.assertFalse(result)
+        self.assertEqual(calls, [])
+
+    def test_opted_out_does_not_affect_explicit_track_report(self):
+        # send_track_report() is the "Report track" button - an explicit,
+        # single-purpose action, not passive telemetry, so it must keep
+        # working even with the toggle off.
+        calls = []
+
+        def fake_post(url, json=None, data=None, files=None, timeout=None):
+            calls.append(1)
+
+            class FakeResponse:
+                status_code = 204
+            return FakeResponse()
+
+        tagger.requests.post = fake_post
+        tagger.SEND_USAGE_TELEMETRY = False
+
+        result, reason = tagger.send_track_report({"file": "a.mp3"}, reporter_name="someuser")
+
+        self.assertTrue(result)
+        self.assertEqual(calls, [1])
+
+    def test_opted_in_by_default_still_sends(self):
+        calls = []
+        tagger.requests.post = lambda *a, **k: calls.append(1)
+        self.assertTrue(tagger.SEND_USAGE_TELEMETRY, "default should be opted-in, matching prior behavior")
+
+        tagger.send_new_install_notification(reporter_name="someuser")
+
+        self.assertEqual(calls, [1])
+
+
 class ScanCompleteNotificationTests(unittest.TestCase):
     def setUp(self):
         self.original_post = tagger.requests.post
