@@ -139,8 +139,17 @@ _LEGACY_CREDENTIAL_FILES = {
 
 def write_credential(key, value):
     """Saves a credential via the OS's native credential store instead of
-    a file on disk."""
-    keyring.set_password(KEYRING_SERVICE, key, value)
+    a file on disk. Every current caller (legacy-file migration, SoundCloud
+    token caching) treats this as a best-effort cache, not a critical write -
+    a transient OS credential-store failure (e.g. Windows Credential Manager
+    spuriously raising WinError 8 "Not enough memory resources", seen in
+    practice and not actually about real memory) is swallowed here rather
+    than crashing whatever thread called this, same tolerance read_credential
+    already has for read failures."""
+    try:
+        keyring.set_password(KEYRING_SERVICE, key, value)
+    except Exception as error:
+        print(f"  Could not save credential '{key}': {error}")
 
 
 def read_credential(key):
