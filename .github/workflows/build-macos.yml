@@ -144,6 +144,31 @@ jobs:
         # binary genuinely executes, dependencies and all.
         run: dist/Track-Tidy.app/Contents/MacOS/ffmpeg -version
 
+      - name: Verify the app's code signature is actually intact
+        # The launch check below this one runs the .app same-machine and
+        # unquarantined, which can only ever catch a crash, never a broken
+        # code signature (macOS doesn't re-verify a signature just to launch
+        # something locally). "codesign --verify --deep --strict" is the
+        # actual "is this bundle's signature intact and does it match every
+        # file inside it" check Gatekeeper itself runs on a quarantined
+        # download - deliberately NOT "spctl --assess", which would also
+        # (correctly, expectedly) reject this build for lacking a real
+        # Developer ID + notarization (see CLAUDE.md - not done, needs a
+        # paid Apple account) even with a perfectly intact signature, so it
+        # can't distinguish that already-accepted limitation from the actual
+        # bug this guards against. Real report: build_mac.sh's post-
+        # PyInstaller-signing file copies (ffmpeg/fpcalc/credentials)
+        # silently invalidated the ad-hoc signature PyInstaller had already
+        # applied - invisible here before that fix (and before this check
+        # existed), since the app still launched fine unquarantined, ffmpeg
+        # ran, and tests passed right up until a real user's downloaded
+        # .dmg hit Gatekeeper's stricter quarantined check on Apple Silicon
+        # and got "is damaged and can't be opened", with no override option
+        # at all (worse than the expected, documented "unidentified
+        # developer, right-click Open" prompt an intact-but-unnotarized
+        # signature gets).
+        run: codesign --verify --deep --strict --verbose=2 dist/Track-Tidy.app
+
       - name: Launch the app and verify it doesn't crash on startup
         # A local build's .app has no quarantine attribute (that's only
         # set on files that arrive via a browser/AirDrop/etc, not ones
