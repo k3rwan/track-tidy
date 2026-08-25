@@ -164,8 +164,23 @@ AUTO_THEME_RECHECK_INTERVAL_MS = 30 * 60 * 1000
 THUMBNAIL_SIZE = (44, 44)
 TABLE_ROW_HEIGHT = 48
 # Widened from the original 500px so the bigger thumbnails and wider
-# Title/Artist columns actually have room to breathe.
+# Title/Artist columns actually have room to breathe. This is the size at
+# REFERENCE_SCREEN_WIDTH/_HEIGHT - TaggerInterface.__init__ rescales both
+# this and BASE_WINDOW_HEIGHT to the user's actual screen resolution
+# before the window is ever shown, and every other place in this file
+# that sizes something off WINDOW_WIDTH reads the module global at call
+# time, so the rescale (a `global` reassignment) reaches all of them.
 WINDOW_WIDTH = 620
+BASE_WINDOW_HEIGHT = 650
+REFERENCE_SCREEN_WIDTH = 1920
+REFERENCE_SCREEN_HEIGHT = 1080
+# Never shrink below the original hand-tuned size (a smaller window than
+# that has never been tested and could clip something), and never grow
+# past 1.6x it either - a 4K/5K display would otherwise get a window far
+# bigger than the fixed-width table columns and 44px thumbnails actually
+# need.
+MIN_WINDOW_SCALE = 1.0
+MAX_WINDOW_SCALE = 1.6
 
 # Data columns. The cover is shown via the native "#0" column (dedicated, on the left),
 # the "apply" checkbox is a separate column right after it.
@@ -308,7 +323,20 @@ class TaggerInterface:
             self._icon_image_ref = ImageTk.PhotoImage(file=icon_png_path)  # keep a reference
             self.window.iconphoto(True, self._icon_image_ref)
 
-        self.window.geometry(f"{WINDOW_WIDTH}x650")
+        # Scales the window - and the tables' own row counts below, since a
+        # wider/taller window shell alone wouldn't show any more rows: both
+        # ttk.Treeviews below are built with an explicit `height` in ROWS,
+        # which is what actually determines the window's natural height
+        # (see _adjust_window_height) - a plain geometry() bump would just
+        # get overwritten by that recompute right after _build_interface().
+        global WINDOW_WIDTH
+        self.window_scale = min(
+            self.window.winfo_screenwidth() / REFERENCE_SCREEN_WIDTH,
+            self.window.winfo_screenheight() / REFERENCE_SCREEN_HEIGHT,
+        )
+        self.window_scale = max(MIN_WINDOW_SCALE, min(self.window_scale, MAX_WINDOW_SCALE))
+        WINDOW_WIDTH = round(WINDOW_WIDTH * self.window_scale)
+        self.window.geometry(f"{WINDOW_WIDTH}x{round(BASE_WINDOW_HEIGHT * self.window_scale)}")
         self.window.resizable(False, False)  # prevents fullscreen / resizing
 
         self.message_queue = queue.Queue()
@@ -789,10 +817,28 @@ class TaggerInterface:
             )
         return menu
 
-    def _bind_entry_context_menu(self, entry, readonly=False):
+    def _bind_entry_context_menu(self, entry, readonly=False, on_paste_folder=None):
         """Adds a right-click Cut/Copy/Paste/Select All menu to an Entry -
         unlike native Windows edit controls, Tk Entry widgets don't get one
-        for free."""
+        for free. A readonly entry drops Cut/Paste (there's no cursor to
+        type/insert at) - UNLESS on_paste_folder is given: the three
+        folder-path fields are readonly to prevent free-typed garbage
+        paths, but a path copied from Explorer's own address bar is
+        exactly as valid as one picked via Browse..., so "Paste" still
+        appears there, wired to validate the clipboard text as an actual
+        folder and hand it to on_paste_folder instead of inserting text."""
+        def paste_folder():
+            try:
+                clipboard_text = self.window.clipboard_get().strip().strip('"')
+            except tk.TclError:
+                return
+            if os.path.isdir(clipboard_text):
+                on_paste_folder(clipboard_text)
+            else:
+                messagebox.showwarning(
+                    "Not a folder", f"'{clipboard_text}' is not a valid folder.", parent=self.window,
+                )
+
         def show_menu(event):
             menu = self._make_themed_menu(entry)
             if not readonly:
@@ -800,6 +846,8 @@ class TaggerInterface:
             menu.add_command(label="Copy", command=lambda: entry.event_generate("<<Copy>>"))
             if not readonly:
                 menu.add_command(label="Paste", command=lambda: entry.event_generate("<<Paste>>"))
+            elif on_paste_folder:
+                menu.add_command(label="Paste", command=paste_folder)
             menu.add_separator()
             menu.add_command(label="Select All", command=lambda: entry.select_range(0, "end"))
             menu.tk_popup(event.x_root, event.y_root)
@@ -1841,7 +1889,7 @@ class TaggerInterface:
             folder_entry_row, textvariable=self.folder_variable, state="readonly", style="ReadonlyWhite.TEntry"
         )
         folder_entry.pack(side="left", fill="x", expand=True)
-        self._bind_entry_context_menu(folder_entry, readonly=True)
+        self._bind_entry_context_menu(folder_entry, readonly=True, on_paste_folder=self._apply_picked_folder)
 
         folder_buttons_frame = ttk.Frame(folder_frame)
         folder_buttons_frame.pack(fill="x", padx=10, pady=(0, 5))
@@ -1920,7 +1968,9 @@ class TaggerInterface:
         scrollbars_frame.pack(fill="both", expand=True, padx=(10, 0), pady=(2, 10))
 
         # show="tree headings": the native "#0" column (far left) shows ONLY the cover
-        self.table = ttk.Treeview(scrollbars_frame, columns=COLUMNS, show="tree headings", height=8)
+        self.table = ttk.Treeview(
+            scrollbars_frame, columns=COLUMNS, show="tree headings", height=round(8 * self.window_scale),
+        )
         self.table.heading("#0", text="Cover")
         self.table.column("#0", width=72, minwidth=72, anchor="center", stretch=False)
 
@@ -2081,7 +2131,7 @@ class TaggerInterface:
             extract_entry_row, textvariable=self.extract_folder_var, state="readonly", style="ReadonlyWhite.TEntry"
         )
         extract_folder_entry.pack(side="left", fill="x", expand=True)
-        self._bind_entry_context_menu(extract_folder_entry, readonly=True)
+        self._bind_entry_context_menu(extract_folder_entry, readonly=True, on_paste_folder=self._apply_picked_folder)
 
         extract_buttons_frame = ttk.Frame(extract_folder_frame)
         extract_buttons_frame.pack(fill="x", padx=10, pady=(0, 5))
@@ -2093,7 +2143,12 @@ class TaggerInterface:
             extract_buttons_frame, text="Extract", command=self._start_extraction
         )
         self.extract_button.configure(state="disabled")
-        self.extract_button.pack(side="left", fill="x", expand=True)
+        self.extract_button.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        self.extract_reset_button = ttk.Button(
+            extract_buttons_frame, text="Reset", command=self._reset_extract,
+        )
+        self.extract_reset_button.configure(state="disabled")
+        self.extract_reset_button.pack(side="left", fill="x", expand=True)
 
         # Before/after preview - shows what "Extract" actually does at a
         # glance, since the intro label's text alone wasn't landing (users
@@ -2168,7 +2223,7 @@ class TaggerInterface:
             style="ReadonlyWhite.TEntry",
         )
         quality_folder_entry.pack(side="left", fill="x", expand=True)
-        self._bind_entry_context_menu(quality_folder_entry, readonly=True)
+        self._bind_entry_context_menu(quality_folder_entry, readonly=True, on_paste_folder=self._apply_picked_folder)
 
         quality_buttons_frame = ttk.Frame(quality_folder_frame)
         quality_buttons_frame.pack(fill="x", padx=10, pady=(0, 5))
@@ -2180,7 +2235,12 @@ class TaggerInterface:
             quality_buttons_frame, text="Scan", command=self._start_quality_scan
         )
         self.quality_scan_button.configure(state="disabled")
-        self.quality_scan_button.pack(side="left", fill="x", expand=True)
+        self.quality_scan_button.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        self.quality_reset_button = ttk.Button(
+            quality_buttons_frame, text="Reset", command=self._reset_quality,
+        )
+        self.quality_reset_button.configure(state="disabled")
+        self.quality_reset_button.pack(side="left", fill="x", expand=True)
 
         # not packed yet - only shown once a scan has actually started.
         # Same Canvas-based animated bar as Tagger/Extractor, not a plain
@@ -2220,7 +2280,7 @@ class TaggerInterface:
         quality_columns = ("file", "level", "format", "bitrate")
         self.quality_table = ttk.Treeview(
             self.quality_table_frame, columns=quality_columns, show="tree headings",
-            selectmode="browse", style="Table.Treeview",
+            selectmode="browse", style="Table.Treeview", height=round(10 * self.window_scale),
         )
         # Clicking the dot column's heading cycles through sorting by
         # verdict severity: worst-first, then best-first, then back to
@@ -2553,6 +2613,7 @@ class TaggerInterface:
             return
 
         self.extract_browse_button.configure(state="disabled")
+        self.extract_reset_button.configure(state="disabled")
         self.extract_cancel_requested.clear()
         self.extract_button.configure(text="Cancel", command=self._request_extract_cancel, state="normal")
         # Locks every other tab (Tagger/Quality/Settings) so no other
@@ -2633,6 +2694,7 @@ class TaggerInterface:
         self._quality_scan_total = 0  # set once the first "quality_scan_progress" message arrives
 
         self.quality_browse_button.configure(state="disabled")
+        self.quality_reset_button.configure(state="disabled")
         self.quality_cancel_requested.clear()
         self.quality_scan_button.configure(text="Cancel", command=self._request_quality_cancel, state="normal")
         # Locks every other tab (Tagger/Extractor/Settings) so no other
@@ -2800,6 +2862,7 @@ class TaggerInterface:
         self.quality_scan_button.configure(
             text="Scan", command=self._start_quality_scan, state="normal",
         )
+        self.quality_reset_button.configure(state="normal")
         self.quality_progress_canvas.pack_forget()
         self._set_tabs_locked(False)
 
@@ -3015,10 +3078,18 @@ class TaggerInterface:
         instead of only finding out once Scan is clicked."""
         folder = filedialog.askdirectory(title="Choose the audio files folder")
         if folder:
-            self._sync_all_folder_pickers(folder)
-            file_count = len(tagger.list_audio_files())
-            unit = "audio file" if file_count == 1 else "audio files"
-            self._append_to_journal(f"Selected folder contains {file_count} {unit}.")
+            self._apply_picked_folder(folder)
+
+    def _apply_picked_folder(self, folder):
+        """Shared by every way of picking a folder - Browse... on the
+        Tagger tab, and pasting a path into any of the three tabs' folder
+        fields (see _bind_entry_context_menu's on_paste_folder) - so
+        pasting gets the same "here's how many audio files are in there"
+        feedback as browsing does."""
+        self._sync_all_folder_pickers(folder)
+        file_count = len(tagger.list_audio_files())
+        unit = "audio file" if file_count == 1 else "audio files"
+        self._append_to_journal(f"Selected folder contains {file_count} {unit}.")
 
     def _sync_all_folder_pickers(self, folder):
         """Tagger/Extractor/Quality's folder pickers are all linked -
@@ -3030,7 +3101,9 @@ class TaggerInterface:
         self.quality_folder_var.set(folder)
         self._refresh_tagger_buttons_for_connectivity()
         self.extract_button.configure(state="normal")
+        self.extract_reset_button.configure(state="normal")
         self.quality_scan_button.configure(state="normal")
+        self.quality_reset_button.configure(state="normal")
 
         tagger.MUSIC_FOLDER = folder
         tagger.save_setting("music_folder", folder)
@@ -3171,6 +3244,45 @@ class TaggerInterface:
         self.journal_text.configure(state="normal")
         self.journal_text.delete("1.0", "end")
         self.journal_text.configure(state="disabled")
+
+        self._adjust_window_height()
+
+    def _reset_extract(self):
+        """Extractor has no persistent results table like Tagger/Quality -
+        it's fire-and-forget, with the outcome shown in a one-time popup -
+        so there's nothing left to clear except a still-visible progress
+        bar/button state if a previous run somehow left one behind. Mainly
+        here so Extractor isn't the only tab without a Reset, matching
+        what's asked for. Doesn't touch the chosen folder - same as
+        _reset_app not touching folder_variable. No processing_in_progress-
+        style guard needed: that flag only tracks Tagger's own Apply run,
+        and extract_reset_button is already disabled for the whole
+        duration of an extraction (see _start_extraction/"extract_done")."""
+        self.extract_progress_canvas.pack_forget()
+        self._update_progress_bar(self.extract_progress_canvas, 0, "")
+        self.extract_button.configure(text="Extract", command=self._start_extraction)
+
+    def _reset_quality(self):
+        """Same idea as _reset_app, for the Quality tab's own results table
+        and summary strip - doesn't touch the chosen folder, same as
+        _reset_app leaving folder_variable alone. No processing_in_progress-
+        style guard needed: that flag only tracks Tagger's own Apply run,
+        and quality_reset_button is already disabled for the whole
+        duration of a quality scan (see _start_quality_scan/
+        _finalize_quality_scan)."""
+        for row in self.quality_table.get_children():
+            self.quality_table.delete(row)
+        self.quality_summary_frame.pack_forget()
+        self.quality_last_scanned_folder = None
+        self.quality_row_paths = {}
+        self._quality_scan_counts = {tagger.QUALITY_GREEN: 0, tagger.QUALITY_ORANGE: 0, tagger.QUALITY_RED: 0}
+        self._quality_verdict_sort_state = 0
+        self._quality_default_row_order = None
+        self._update_quality_empty_state_hint()
+        self.quality_scan_button.configure(text="Scan")
+
+        self.quality_progress_canvas.pack_forget()
+        self._update_progress_bar(self.quality_progress_canvas, 0, "")
 
         self._adjust_window_height()
 
@@ -5796,6 +5908,7 @@ class TaggerInterface:
                     folder, moved_count, removed_count, cancelled, error = content
                     self.extract_browse_button.configure(state="normal")
                     self.extract_button.configure(text="Extract", command=self._start_extraction, state="normal")
+                    self.extract_reset_button.configure(state="normal")
                     self.extract_progress_canvas.pack_forget()
                     self._set_tabs_locked(False)
 
