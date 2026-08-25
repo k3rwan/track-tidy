@@ -3,6 +3,14 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.26.2]
+
+### Fixed
+- A transient OS credential-store error (seen on Windows: a spurious
+  Credential Manager failure while caching the SoundCloud auth token) could
+  crash a background thread instead of being tolerated as the best-effort
+  cache write it actually is.
+
 ## [0.26]
 
 ### Added
