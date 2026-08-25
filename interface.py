@@ -975,37 +975,42 @@ class TaggerInterface:
         )
 
     def _build_extractor_preview_photos(self, dark, size=130):
-        """"Before" (one folder with several messy subfolders inside) /
-        "after" (the same folder, now holding a flat, neat stack of audio
-        files) illustration for the Extractor tab - drawn by hand, like
-        _build_empty_state_icon_photo, so it recolors correctly per theme
-        and needs no bundled screenshot (which was tried first, but read as
-        illegible noise once shrunk down to fit the tab)."""
+        """"Before" (several separate, scattered folders, each with an audio
+        file peeking out of it) / "after" (one folder holding that same
+        handful of files, now flat and neatly stacked) illustration for the
+        Extractor tab - drawn by hand, like _build_empty_state_icon_photo,
+        so it recolors correctly per theme and needs no bundled screenshot
+        (which was tried first, but read as illegible noise once shrunk
+        down to fit the tab). Deliberately several same-sized folders/files
+        rather than one big folder shape - a single oversized folder read as
+        just "a folder", not "many files buried across many folders".
+        """
         color = "#9a9a9a" if dark else "#4a4a4a"
-        outer_width = max(2, round(size * 0.022))
-        inner_width = max(1, round(size * 0.014))
-
-        outer_left, outer_right = size * 0.08, size * 0.92
-        outer_top, outer_bottom = size * 0.22, size * 0.86
-        outer_cx = (outer_left + outer_right) / 2
-        outer_cy = (outer_top + outer_bottom) / 2
-        outer_w, outer_h = outer_right - outer_left, outer_bottom - outer_top
+        width = max(2, round(size * 0.022))
+        file_width = max(1, round(size * 0.016))
 
         before_image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         before_draw = ImageDraw.Draw(before_image)
-        self._draw_folder_glyph(before_draw, outer_cx, outer_cy, outer_w, outer_h, color, outer_width)
-        for cx, cy, w, h in (
-            (size * 0.30, size * 0.50, size * 0.30, size * 0.22),
-            (size * 0.50, size * 0.62, size * 0.30, size * 0.22),
-            (size * 0.68, size * 0.48, size * 0.28, size * 0.20),
+        folder_w, folder_h = size * 0.46, size * 0.34
+        for cx, cy in (
+            (size * 0.33, size * 0.36),
+            (size * 0.70, size * 0.34),
+            (size * 0.50, size * 0.68),
         ):
-            self._draw_folder_glyph(before_draw, cx, cy, w, h, color, inner_width)
+            # Drawn first, then partly covered by the folder outline on top -
+            # reads as a file corner peeking out of the folder's pocket.
+            self._draw_small_audio_file_glyph(
+                before_draw, cx + folder_w * 0.16, cy - folder_h * 0.30,
+                folder_w * 0.34, folder_h * 0.5, color, file_width,
+            )
+            self._draw_folder_glyph(before_draw, cx, cy, folder_w, folder_h, color, width)
 
         after_image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         after_draw = ImageDraw.Draw(after_image)
-        self._draw_folder_glyph(after_draw, outer_cx, outer_cy, outer_w, outer_h, color, outer_width)
-        for cy in (size * 0.46, size * 0.60, size * 0.74):
-            self._draw_small_audio_file_glyph(after_draw, outer_cx, cy, size * 0.20, size * 0.15, color, inner_width)
+        folder_cx, folder_cy = size * 0.5, size * 0.54
+        self._draw_folder_glyph(after_draw, folder_cx, folder_cy, size * 0.72, size * 0.58, color, width)
+        for cy in (size * 0.44, size * 0.57, size * 0.70):
+            self._draw_small_audio_file_glyph(after_draw, folder_cx, cy, size * 0.20, size * 0.15, color, file_width)
 
         return ImageTk.PhotoImage(before_image), ImageTk.PhotoImage(after_image)
 
