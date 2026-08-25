@@ -131,7 +131,21 @@ mkdir -p installer_output
 APP_VERSION="$(python3 -c "import track_tidy; print(track_tidy.APP_VERSION)")"
 DMG_NAME="installer_output/Track-Tidy-Setup-${APP_VERSION}.dmg"
 rm -f "$DMG_NAME"
-hdiutil create -volname "Track Tidy" -srcfolder "dist/Track-Tidy.app" -ov -format UDZO "$DMG_NAME"
+# hdiutil create can fail with a transient "Resource busy" right after
+# PyInstaller finishes writing the .app (seen in CI - something else, e.g.
+# Spotlight, briefly holding a lock on the freshly-written folder) - retry
+# a few times with a short pause instead of failing the whole build over it.
+for attempt in 1 2 3; do
+    if hdiutil create -volname "Track Tidy" -srcfolder "dist/Track-Tidy.app" -ov -format UDZO "$DMG_NAME"; then
+        break
+    fi
+    if [ "$attempt" = 3 ]; then
+        echo "[ERROR] hdiutil create failed after 3 attempts."
+        exit 1
+    fi
+    echo "hdiutil create failed (attempt $attempt/3) - retrying in 5s..."
+    sleep 5
+done
 
 echo
 echo "==============================================="
