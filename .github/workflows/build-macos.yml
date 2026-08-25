@@ -128,6 +128,29 @@ jobs:
           ls -la ./ffmpeg-libs | wc -l
           du -sh ./ffmpeg ./ffmpeg-libs
 
+      - name: Bundle a macOS fpcalc binary
+        # Same gap as ffmpeg above, never closed for fpcalc: build_mac.sh
+        # only bundles it into the .app if a binary is already sitting at
+        # ./fpcalc before it runs, and nothing ever put one there for a
+        # macOS build - the optional AcoustID audio-identification fallback
+        # has been silently non-functional on every macOS release so far
+        # (find_fpcalc() just finds nothing and skips it, no crash, no
+        # visible error - see USE_ACOUSTID_FALLBACK).
+        #
+        # Unlike Homebrew's ffmpeg, Chromaprint's own official release
+        # build is statically linked - no dylibbundler treatment needed,
+        # confirmed below by otool -L showing no /opt/homebrew or
+        # /usr/local paths to begin with.
+        run: |
+          curl -L -o fpcalc.tar.gz "https://github.com/acoustid/chromaprint/releases/download/v1.6.1/chromaprint-fpcalc-1.6.1-macos-arm64.tar.gz"
+          mkdir fpcalc_extracted
+          tar -xzf fpcalc.tar.gz -C fpcalc_extracted
+          find fpcalc_extracted -type f -name fpcalc -exec cp {} ./fpcalc \;
+          chmod +x ./fpcalc
+          echo "--- fpcalc link dependencies (should show no /opt/homebrew or /usr/local paths) ---"
+          otool -L ./fpcalc
+          ./fpcalc -version
+
       - name: Run the test suite
         run: |
           source venv_build/bin/activate
@@ -143,6 +166,9 @@ jobs:
         # otool -L only proves the link PATHS look right - this proves the
         # binary genuinely executes, dependencies and all.
         run: dist/Track-Tidy.app/Contents/MacOS/ffmpeg -version
+
+      - name: Verify the bundled fpcalc actually runs
+        run: dist/Track-Tidy.app/Contents/MacOS/fpcalc -version
 
       - name: Verify the app's code signature is actually intact
         # The launch check below this one runs the .app same-machine and
