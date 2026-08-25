@@ -2273,6 +2273,28 @@ class TaggerInterface:
         self.quality_table.pack(side="left", fill="both", expand=True)
         quality_scrollbar.pack(side="left", fill="y")
 
+        # Empty-state hint: explains what the dot color means before a scan
+        # has produced any rows to show it on directly - placed (not
+        # packed) so it floats centered over the table regardless of the
+        # scrollbar's own packing, same technique as the Tagger tab's own
+        # empty_state_frame. Shown/hidden by _update_quality_empty_state_hint()
+        # - see its call sites (initial setup below, _start_quality_scan,
+        # and _add_quality_row).
+        self.quality_empty_state_frame = ttk.Frame(self.quality_table_frame, style="EmptyState.TFrame")
+        self.quality_empty_state_widgets = [self.quality_empty_state_frame]
+        for color, text in (
+            ("#2ecc71", "●  Level and encoding look fine"),
+            ("#e67e22", "●  Worth a listen - quiet track, or a borderline cutoff"),
+            ("#e74c3c", "●  Likely re-encoded from a lossy source, or very quiet"),
+        ):
+            line_label = ttk.Label(
+                self.quality_empty_state_frame, style="EmptyState.TLabel",
+                foreground=color, justify="center", text=text,
+            )
+            line_label.pack()
+            self.quality_empty_state_widgets.append(line_label)
+        self._update_quality_empty_state_hint()
+
         # ============================== Settings tab ==============================
 
         appearance_frame = ttk.LabelFrame(soundcloud_tab, text="Appearance")
@@ -2599,6 +2621,7 @@ class TaggerInterface:
 
         for row in self.quality_table.get_children():
             self.quality_table.delete(row)
+        self._update_quality_empty_state_hint()
         self.quality_summary_frame.pack_forget()
         self.quality_last_scanned_folder = folder
         self.quality_row_paths = {}
@@ -2691,6 +2714,7 @@ class TaggerInterface:
             self.quality_row_paths[item_id] = os.path.join(self.quality_last_scanned_folder, relative_file)
         self._restripe_rows(tree=self.quality_table)
         self._flash_new_row(item_id, tree=self.quality_table, final_tags=final_tags)
+        self._update_quality_empty_state_hint()
 
         # Progress bar tracks what's actually on screen, not how far the
         # background analysis has gotten - see the "quality_scan_progress"
@@ -3487,6 +3511,15 @@ class TaggerInterface:
             self.empty_state_frame.place_forget()
         else:
             self.empty_state_frame.place(relx=0.5, rely=0.5, anchor="center")
+
+    def _update_quality_empty_state_hint(self):
+        """Same idea as _update_empty_state_hint, for the Quality tab's own
+        table: explains what the green/orange/red dot means while there's
+        nothing scanned yet to show it on directly."""
+        if self.quality_table.get_children():
+            self.quality_empty_state_frame.place_forget()
+        else:
+            self.quality_empty_state_frame.place(relx=0.5, rely=0.5, anchor="center")
 
     def _add_scan_row(self, info):
         """Immediately adds a row to the table, ABOVE the previous ones, as soon as a file has just been scanned."""
