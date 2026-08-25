@@ -36,10 +36,12 @@ Contents (in the order they appear below):
     11. Format conversion                 - find_ffmpeg, convert_to_mp3
     12. Tag writing                       - open_audio_file, write_tags, fix_title_artist
     13. Processing (Apply)                - process_files, process_folder, main
+    14. Audio quality estimation          - analyze_track_quality, analyze_folder_quality
 """
 
 import os
 import io
+import platform
 import socket
 import hashlib
 import uuid
@@ -57,12 +59,14 @@ from datetime import datetime, timezone
 import requests
 import keyring
 import platformdirs
+import numpy as np
 import acoustid
 from PIL import Image
 from mutagen import File as MutagenFile
 from mutagen.mp3 import MP3
 from mutagen.wave import WAVE
 from mutagen.aiff import AIFF
+from mutagen.flac import FLAC, Picture
 from mutagen.id3 import TIT2, TPE1, APIC
 
 
@@ -624,6 +628,17 @@ def count_unique_discord_users(log=safe_print):
         return None
 
 
+def _os_description():
+    """Short "<System> <release>" string (e.g. "Windows 11", "Darwin 23.5.0")
+    for the reports below that benefit from knowing which OS a user is on -
+    cheap to compute, never raises (falls back to sys.platform if the
+    platform module itself misbehaves on some exotic system)."""
+    try:
+        return f"{platform.system()} {platform.release()}"
+    except Exception:
+        return sys.platform
+
+
 def send_track_report(info, reporter_name=None, timeout=10):
     """
     Posts this track's info to a Discord webhook, so the developer gets a
@@ -701,8 +716,23 @@ def send_track_report(info, reporter_name=None, timeout=10):
 # the channel the way it used to before that request.
 DISCORD_NOTIFICATION_EXCLUDED_USERS = set() if getattr(sys, "frozen", False) else {"kevin"}
 
+# Opt-out flag for the automatic pings above - no Settings UI currently
+# exposes it (removed - see interface.py history), so this stays True in
+# practice, but interface.py's use_telemetry_var/settings.json plumbing
+# is still there if a toggle gets reintroduced. Same "doesn't apply to
+# send_track_report()" carve-out as DISCORD_NOTIFICATION_EXCLUDED_USERS -
+# that one's an explicit, single-purpose action the user themselves
+# triggered, not passive telemetry.
+SEND_USAGE_TELEMETRY = True
+
 
 def _is_discord_notification_excluded(reporter_name):
+    """True when an automatic (non-user-initiated) Discord report should be
+    suppressed - either the user turned off usage reporting in Settings
+    (SEND_USAGE_TELEMETRY), or a hardcoded dev-only exclusion
+    (DISCORD_NOTIFICATION_EXCLUDED_USERS)."""
+    if not SEND_USAGE_TELEMETRY:
+        return True
     return (reporter_name or "").strip().lower() in DISCORD_NOTIFICATION_EXCLUDED_USERS
 
 
@@ -778,7 +808,10 @@ def send_new_install_notification(reporter_name=None, previous_version=None, tim
     """
     if _is_discord_notification_excluded(reporter_name) or not DISCORD_REPORT_WEBHOOK_URL:
         return False
-    fields = [{"name": "User", "value": reporter_name or "(unknown)", "inline": True}]
+    fields = [
+        {"name": "User", "value": reporter_name or "(unknown)", "inline": True},
+        {"name": "OS", "value": _os_description(), "inline": True},
+    ]
     if previous_version:
         fields.append({"name": "Previous version", "value": previous_version, "inline": True})
     else:
@@ -810,7 +843,8 @@ def send_new_install_notification(reporter_name=None, previous_version=None, tim
 
 def send_scan_complete_notification(
     reporter_name=None, number_new=0, number_removed=0, total=0, number_no_cover=0,
-    number_rate_limited_sources=0, auth_error_sources=None, cancelled=False, timeout=10,
+    number_rate_limited_sources=0, auth_error_sources=None, cancelled=False,
+    number_itunes=0, number_spotify=0, number_soundcloud=0, number_acoustid_used=0, timeout=10,
 ):
     """
     Posts a scan-complete ping to the same Discord webhook as
@@ -823,6 +857,17 @@ def send_scan_complete_notification(
     interface.py). Returns True on success, False on any failure (never
     raises) - also False without posting anything for an excluded account
     (see DISCORD_NOTIFICATION_EXCLUDED_USERS).
+
+    number_itunes/_spotify/_soundcloud are how many of this scan's tracks
+    actually got their cover from each source (see each track's own
+    "cover_source" - set in _finish_scan) - lets a source's real-world
+    match rate be watched over time instead of only surfacing as a spike
+    in "No cover match" once a source degrades badly enough to matter.
+    number_acoustid_used is how many tracks needed the AcoustID audio-
+    fingerprint fallback at all (see "acoustid_identified"), regardless of
+    which of the three sources the corrected artist/title then matched
+    against - useful on its own to judge whether the fallback's cost
+    (slow, real audio analysis) is worth keeping on by default.
     """
     if _is_discord_notification_excluded(reporter_name) or not DISCORD_REPORT_WEBHOOK_URL:
         return False
@@ -839,6 +884,10 @@ def send_scan_complete_notification(
                 "value": f"{number_no_cover} ({number_no_cover / total:.0%})" if total else str(number_no_cover),
                 "inline": True,
             },
+            {"name": "iTunes matches", "value": str(number_itunes), "inline": True},
+            {"name": "Spotify matches", "value": str(number_spotify), "inline": True},
+            {"name": "SoundCloud matches", "value": str(number_soundcloud), "inline": True},
+            {"name": "AcoustID fallback used", "value": str(number_acoustid_used), "inline": True},
             {"name": "Rate-limited sources", "value": str(number_rate_limited_sources), "inline": True},
             {"name": "Auth errors", "value": ", ".join(auth_error_sources) if auth_error_sources else "None", "inline": True},
             {"name": "App version", "value": APP_VERSION, "inline": True},
@@ -935,6 +984,93 @@ def send_extraction_report(
         return False
 
 
+def send_quality_scan_report(
+    reporter_name=None, total=0, number_green=0, number_orange=0, number_red=0,
+    cancelled=False, error=None, timeout=10,
+):
+    """
+    Posts a ping to Discord once the Quality tab's scan finishes - whether
+    it ran to completion, was cancelled partway through, or failed
+    outright - the same visibility send_extraction_report/
+    send_scan_complete_notification already give for the other two tabs'
+    own runs. Called once per finished scan (see interface.py's
+    _run_quality_scan). cancelled and error are mutually exclusive in
+    practice but accepted independently, same as send_extraction_report.
+
+    Returns True on success, False on any failure (never raises) - also
+    False without posting anything for an excluded account (see
+    DISCORD_NOTIFICATION_EXCLUDED_USERS).
+    """
+    if _is_discord_notification_excluded(reporter_name) or not DISCORD_REPORT_WEBHOOK_URL:
+        return False
+    if error:
+        title, color = "Quality scan failed", 0xE74C3C
+    elif cancelled:
+        title, color = "Quality scan cancelled", 0xE67E22
+    else:
+        title, color = "Quality scan complete", 0x2ECC71
+    fields = [
+        {"name": "User", "value": reporter_name or "(unknown)", "inline": True},
+        {"name": "Total files", "value": str(total), "inline": True},
+        {"name": "Green", "value": str(number_green), "inline": True},
+        {"name": "Orange", "value": str(number_orange), "inline": True},
+        {"name": "Red", "value": str(number_red), "inline": True},
+    ]
+    if error:
+        fields.append({"name": "Error", "value": str(error)[:1000], "inline": False})
+    fields.append({"name": "App version", "value": APP_VERSION, "inline": True})
+    embed = {"title": title, "color": color, "fields": fields}
+    try:
+        response = requests.post(
+            DISCORD_REPORT_WEBHOOK_URL,
+            json={"embeds": [embed], "allowed_mentions": {"parse": []}},
+            timeout=timeout,
+        )
+        return response.status_code in (200, 204)
+    except Exception:
+        return False
+
+
+def send_crash_report(reporter_name=None, traceback_text="", context="unknown", timeout=10):
+    """
+    Posts an unhandled-exception report to Discord, so a real crash is
+    visible immediately instead of only ever showing up (if at all) as a
+    vague "something went wrong" from whoever hit it - see interface.py's
+    report_callback_exception override (Tk main-thread callbacks) and
+    threading.excepthook override (background scan/extraction/quality
+    threads), both of which funnel into this. context is a short label for
+    where it happened ("ui_callback", "background_thread") - the traceback
+    itself is attached as a .txt file rather than inlined, since it can
+    easily exceed a Discord embed field's length limit.
+
+    Returns True on success, False on any failure (never raises) - also
+    False without posting anything for an excluded account (see
+    DISCORD_NOTIFICATION_EXCLUDED_USERS) - a crash report is automatic
+    telemetry like the others above, not a user-initiated action.
+    """
+    if _is_discord_notification_excluded(reporter_name) or not DISCORD_REPORT_WEBHOOK_URL:
+        return False
+    embed = {
+        "title": "Unhandled exception",
+        "color": 0xE74C3C,
+        "fields": [
+            {"name": "User", "value": reporter_name or "(unknown)", "inline": True},
+            {"name": "Context", "value": context, "inline": True},
+            {"name": "OS", "value": _os_description(), "inline": True},
+            {"name": "App version", "value": APP_VERSION, "inline": True},
+        ],
+    }
+    payload = {"embeds": [embed], "allowed_mentions": {"parse": []}}
+    files = {"files[0]": ("traceback.txt", traceback_text.encode("utf-8"), "text/plain")}
+    try:
+        response = requests.post(
+            DISCORD_REPORT_WEBHOOK_URL, data={"payload_json": json.dumps(payload)}, files=files, timeout=timeout,
+        )
+        return response.status_code in (200, 204)
+    except Exception:
+        return False
+
+
 # --- Saved UI settings (theme choice...) ---
 
 SETTINGS_FILE = os.path.join(user_config_dir(), "settings.json")
@@ -962,6 +1098,23 @@ def save_setting(key, value):
         print(f"  Could not save setting '{key}': {error}")
 
 
+def _purge_setting_keys(keys):
+    """Removes the given keys from settings.json if present - a one-time
+    cleanup for a value that used to be stored here (in plain text) but
+    has since moved somewhere more appropriate (e.g. the OS keyring - see
+    get_soundcloud_token()). A no-op once already cleaned up."""
+    settings = load_settings()
+    if not any(key in settings for key in keys):
+        return
+    for key in keys:
+        settings.pop(key, None)
+    try:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+    except Exception as error:
+        print(f"  Could not remove {keys} from settings.json: {error}")
+
+
 # Single source of truth for what "defaults" means - shared by the Settings
 # tab's manual "Reset all settings to default" button and the automatic
 # reset every update triggers (see check_and_apply_version_reset()).
@@ -973,6 +1126,7 @@ DEFAULT_SETTINGS = {
     "use_spotify": False,
     "show_log_section": False,
     "music_folder": "",
+    "send_usage_telemetry": True,
 }
 
 
@@ -1335,14 +1489,14 @@ USE_SOUNDCLOUD = True
 # ACOUSTID_API_KEY is somehow unavailable.
 USE_ACOUSTID_FALLBACK = True
 
-# Whether non-MP3, non-WAV, non-AIFF files get converted to MP3 (320 kbps)
-# automatically (set by the UI). WAV/AIFF are always tagged directly, on or
-# off - they're the only non-MP3 formats mutagen can write ID3 tags/cover
-# art to without converting first (see open_audio_file/write_tags) - so
-# when this is off, only the other formats (FLAC, M4A, OGG, ...), which
-# truly can't be tagged without converting, are skipped during scanning.
-# Takes priority over AUTO_CONVERT_WAV_TO_AIFF below when both apply to a
-# WAV file (see _resolve_conversion_target).
+# Whether non-MP3, non-WAV, non-AIFF, non-FLAC files get converted to MP3
+# (320 kbps) automatically (set by the UI). WAV/AIFF/FLAC are always tagged
+# directly, on or off - they're the only non-MP3 formats mutagen can write
+# tags/cover art to without converting first (see open_audio_file/
+# write_tags) - so when this is off, only the remaining formats (M4A, OGG,
+# ...), which truly can't be tagged without converting, are skipped during
+# scanning. Takes priority over AUTO_CONVERT_WAV_TO_AIFF below when both
+# apply to a WAV file (see _resolve_conversion_target).
 AUTO_CONVERT_MP3 = False
 
 # Whether WAV files get converted to AIFF instead of being tagged as WAV
@@ -1747,6 +1901,37 @@ def _move_bare_feature_credit_to_artist(artist, title):
     return new_artist, new_title
 
 
+def strip_self_credited_qualifier(artist, title):
+    """
+    Collapses a title's own parenthetical qualifier when it redundantly
+    repeats the track's own artist name inside it, e.g. title
+    "Que Rico (Juno (DE) (Extended Mix))" with artist "Juno (DE)" becomes
+    "Que Rico (Extended Mix)" - some sources credit a self-remix by
+    wrapping the qualifier with the artist's own name (as if crediting a
+    different remixer), which otherwise leaves the artist name uselessly
+    duplicated inside the title too. Real report: exactly this filename.
+    Only fires when the artist string actually appears, wrapped in its
+    own parentheses, inside the title - never touches a title that
+    merely happens to mention the artist's name in passing.
+    """
+    if not artist or not title:
+        return title
+
+    escaped_artist = re.escape(artist)
+
+    # "(Artist (Qualifier))" -> "(Qualifier)" - the self-credit wraps an
+    # inner qualifier group (remix/mix type, key, etc.).
+    nested = re.sub(
+        rf"\({escaped_artist}\s+(\([^()]*\))\)", r"\1", title, flags=re.IGNORECASE,
+    )
+    if nested != title:
+        return re.sub(r"\s{2,}", " ", nested).strip()
+
+    # "(Artist)" alone (nothing else inside) -> dropped entirely.
+    bare = re.sub(rf"\s*\({escaped_artist}\)", "", title, flags=re.IGNORECASE)
+    return re.sub(r"\s{2,}", " ", bare).strip()
+
+
 def parse_filename(file_name):
     base_name = os.path.basename(file_name)
     name_no_ext = os.path.splitext(base_name)[0]
@@ -1826,7 +2011,9 @@ def parse_filename(file_name):
     if artist is None:
         return None, None
 
-    return _move_bare_feature_credit_to_artist(artist, title)
+    artist, title = _move_bare_feature_credit_to_artist(artist, title)
+    title = strip_self_credited_qualifier(artist, title)
+    return artist, title
 
 
 def resolve_artist_title(file_name, current_artist, current_title):
@@ -2016,6 +2203,17 @@ def read_current_info(file_path):
         tags = audio.tags
 
         try:
+            # Vorbis comment dicts (flac/ogg/opus) raise ValueError from
+            # `key in tags` for a key outside their allowed charset, instead
+            # of just returning False like every other tag type here - a
+            # plain "\xa9nam" in tags below would otherwise blow up the
+            # whole read for those formats (caught by the bare except, so
+            # it silently looked like "no tags at all" rather than a bug).
+            try:
+                has_mp4_atoms = "\xa9nam" in tags or "\xa9ART" in tags or "covr" in tags
+            except ValueError:
+                has_mp4_atoms = False
+
             if hasattr(tags, "getall") and ("TIT2" in tags or "TPE1" in tags or "APIC" in tags):
                 # ID3-based: mp3, wav, aiff
                 if "TIT2" in tags:
@@ -2026,7 +2224,7 @@ def read_current_info(file_path):
                 has_cover = bool(covers)
                 cover_bytes = covers[0].data if covers else None
 
-            elif "\xa9nam" in tags or "\xa9ART" in tags or "covr" in tags:
+            elif has_mp4_atoms:
                 # MP4 atoms: m4a, aac, alac
                 if "\xa9nam" in tags:
                     current_title = str(tags["\xa9nam"][0])
@@ -2080,7 +2278,7 @@ EXTRACTABLE_AUDIO_EXTENSIONS = SUPPORTED_EXTENSIONS + (".alac",)
 # 4. FOLDER EXTRACTION (FLATTEN)
 # ============================================================================
 
-def extract_audio_files(root_folder, log=safe_print, should_cancel=None):
+def extract_audio_files(root_folder, log=safe_print, on_progress=None, should_cancel=None):
     """
     Recursively finds audio files (mp3, wav, flac, aac, m4a, ogg, wma, aiff,
     alac, opus...) sitting inside subfolders of root_folder and moves them
@@ -2088,14 +2286,28 @@ def extract_audio_files(root_folder, log=safe_print, should_cancel=None):
     directly in root_folder are left untouched. Returns the number of files
     actually moved.
 
+    on_progress(processed_count, total), if given, fires after every
+    candidate file is handled (whether the move succeeded or not) - a
+    quick extra os.walk pass counts `total` upfront, same tradeoff
+    analyze_folder_quality() makes for its own progress reporting.
+
     should_cancel() is checked once per subfolder (not per file - os.walk's
     own per-folder granularity is responsive enough without adding overhead
     to every single move) - if it returns True, stops early and returns
     whatever was moved so far, same "cancel between units of work, not
     mid-write" approach as scan_files()'s should_cancel.
     """
-    moved_count = 0
     root_abspath = os.path.abspath(root_folder)
+
+    total = 0
+    if on_progress:
+        for current_folder, _dirs, files in os.walk(root_folder):
+            if os.path.abspath(current_folder) == root_abspath:
+                continue
+            total += sum(1 for name in files if name.lower().endswith(EXTRACTABLE_AUDIO_EXTENSIONS))
+
+    moved_count = 0
+    processed_count = 0
 
     for current_folder, _dirs, files in os.walk(root_folder):
         if should_cancel and should_cancel():
@@ -2126,6 +2338,10 @@ def extract_audio_files(root_folder, log=safe_print, should_cancel=None):
                 moved_count += 1
             except Exception as error:
                 log(f"  Error moving '{source_path}': {error}")
+
+            processed_count += 1
+            if on_progress:
+                on_progress(processed_count, total)
 
     return moved_count
 
@@ -2164,15 +2380,16 @@ def list_audio_files():
     of relative paths of the audio files found (without reading any tags).
     Fast: useful for detecting new files without rescanning everything.
 
-    Skips formats other than MP3/WAV/AIFF when AUTO_CONVERT_MP3 is off - those
-    are the only formats mutagen can tag directly (see open_audio_file), so
-    with auto-convert disabled there's nothing usable left to do with the
-    rest. WAV/AIFF themselves are always included either way.
+    Skips formats other than MP3/WAV/AIFF/FLAC when AUTO_CONVERT_MP3 is off -
+    those are the only formats mutagen can tag directly (see
+    open_audio_file), so with auto-convert disabled there's nothing usable
+    left to do with the rest. MP3/WAV/AIFF/FLAC themselves are always
+    included either way.
     """
     if not os.path.isdir(MUSIC_FOLDER):
         return []
 
-    extensions = SUPPORTED_EXTENSIONS if AUTO_CONVERT_MP3 else (".mp3", ".wav", ".aiff")
+    extensions = SUPPORTED_EXTENSIONS if AUTO_CONVERT_MP3 else (".mp3", ".wav", ".aiff", ".flac")
 
     audio_files = []
     for current_folder, _, file_names in os.walk(MUSIC_FOLDER):
@@ -2793,15 +3010,16 @@ def _finish_scan(prepared, match_result, cover_source, log=safe_print):
         "current_title": prepared["current_title"],
         "has_cover": prepared["has_cover"],
         "mention_detected": contains_mention_to_remove(file_name),
-        # WAV can be tagged either way, so its default follows the user's
-        # global choices (see _resolve_conversion_target) - other non-MP3
-        # formats have no such choice (can't be tagged without converting
-        # at all), so they always default on. AIFF is the one exception:
-        # it's already the taggable, lossless format WAV_TO_AIFF converts
-        # WAV *into* - even with "Convert everything to MP3" on, a file
-        # that's already AIFF shouldn't default to being downgraded to
-        # lossy MP3 just because it happens to not be MP3 already. The
-        # user can still check it manually if they really want that.
+        # WAV and FLAC can both be tagged in place, so their default follows
+        # the user's global choices (see _resolve_conversion_target) - the
+        # remaining non-MP3 formats have no such choice (can't be tagged
+        # without converting at all), so they always default on. AIFF is
+        # the one exception: it's already the taggable, lossless format
+        # WAV_TO_AIFF converts WAV *into* - even with "Convert everything
+        # to MP3" on, a file that's already AIFF shouldn't default to being
+        # downgraded to lossy MP3 just because it happens to not be MP3
+        # already. The user can still check it manually if they really
+        # want that.
         "convert": (
             False
             if file_name.lower().endswith(".aiff")
@@ -3850,12 +4068,15 @@ _cached_token_expiry = 0  # Unix timestamp
 
 def invalidate_soundcloud_token():
     """Forces the next get_soundcloud_token() call to authenticate again
-    instead of reusing the cached token - e.g. after the credentials change."""
+    instead of reusing the cached token - e.g. after the credentials
+    change. Also clears the persisted copy (see get_soundcloud_token) -
+    otherwise a still-time-valid persisted token would silently survive
+    "invalidation" and keep being reused."""
     global _cached_soundcloud_token, _cached_token_expiry
     _cached_soundcloud_token = None
     _cached_token_expiry = 0
-    save_setting("soundcloud_token", None)
-    save_setting("soundcloud_token_expiry", 0)
+    write_credential(_SOUNDCLOUD_TOKEN_KEYRING_KEY, "")
+    write_credential(_SOUNDCLOUD_TOKEN_EXPIRY_KEYRING_KEY, "0")
 
 
 # Unlike iTunes/Spotify, a 429 from SoundCloud's token endpoint carries no
@@ -3871,23 +4092,42 @@ def invalidate_soundcloud_token():
 SOUNDCLOUD_TOKEN_RATE_LIMIT_COOLDOWN_SECONDS = 300
 _soundcloud_token_cooldown = _SourceCooldown()
 
+# Where the persisted token lives now (see get_soundcloud_token) - the OS
+# keyring, same store already used for the SoundCloud/Spotify client
+# credentials, not the plaintext settings.json an earlier version wrote it
+# to.
+_SOUNDCLOUD_TOKEN_KEYRING_KEY = "soundcloud_access_token"
+_SOUNDCLOUD_TOKEN_EXPIRY_KEYRING_KEY = "soundcloud_access_token_expiry"
+_soundcloud_legacy_token_setting_purged = False
+
 
 def get_soundcloud_token(log=safe_print, on_rate_limited=None, on_auth_error=None):
-    global _cached_soundcloud_token, _cached_token_expiry
+    global _cached_soundcloud_token, _cached_token_expiry, _soundcloud_legacy_token_setting_purged
 
     # Reuse the cached token if it's still valid (with a 60s safety margin)
     if _cached_soundcloud_token and time.time() < _cached_token_expiry - 60:
         return _cached_soundcloud_token
 
+    # One-time cleanup: an earlier version persisted the token to
+    # settings.json in PLAIN TEXT - wipes any leftover value on an
+    # existing install now that it's stored via the keyring instead (see
+    # below). Harmless no-op once already cleaned up, and cheap enough to
+    # check unconditionally since this whole branch only runs when the
+    # in-memory cache above has already missed.
+    if not _soundcloud_legacy_token_setting_purged:
+        _purge_setting_keys(("soundcloud_token", "soundcloud_token_expiry"))
+        _soundcloud_legacy_token_setting_purged = True
+
     # The in-memory cache above is lost on every app restart, which used to
     # mean a brand new token (and a bite out of SoundCloud's tight 50/12h
     # per-app, 30/hour per-IP token quota - see SOUNDCLOUD_TOKEN_RATE_LIMIT_COOLDOWN_SECONDS
     # above) was requested every time the app launched, even if the previous
-    # token (usually valid ~1h) hadn't actually expired yet. Persisting it to
-    # settings.json lets a fresh process pick up where the last one left off.
-    persisted_settings = load_settings()
-    persisted_token = persisted_settings.get("soundcloud_token")
-    persisted_expiry = persisted_settings.get("soundcloud_token_expiry", 0)
+    # token (usually valid ~1h) hadn't actually expired yet. Persisting it
+    # via the OS keyring lets a fresh process pick up where the last one
+    # left off, without ever writing it to a plaintext file.
+    persisted_token = read_credential(_SOUNDCLOUD_TOKEN_KEYRING_KEY)
+    persisted_expiry_raw = read_credential(_SOUNDCLOUD_TOKEN_EXPIRY_KEYRING_KEY)
+    persisted_expiry = float(persisted_expiry_raw) if persisted_expiry_raw else 0
     if persisted_token and time.time() < persisted_expiry - 60:
         _cached_soundcloud_token = persisted_token
         _cached_token_expiry = persisted_expiry
@@ -3917,8 +4157,8 @@ def get_soundcloud_token(log=safe_print, on_rate_limited=None, on_auth_error=Non
         payload = response.json()
         _cached_soundcloud_token = payload.get("access_token")
         _cached_token_expiry = time.time() + payload.get("expires_in", 3600)
-        save_setting("soundcloud_token", _cached_soundcloud_token)
-        save_setting("soundcloud_token_expiry", _cached_token_expiry)
+        write_credential(_SOUNDCLOUD_TOKEN_KEYRING_KEY, _cached_soundcloud_token)
+        write_credential(_SOUNDCLOUD_TOKEN_EXPIRY_KEYRING_KEY, str(_cached_token_expiry))
         return _cached_soundcloud_token
 
     if response.status_code == 429:
@@ -4849,7 +5089,7 @@ def _resolve_conversion_target(file_name):
     settings - shared by _finish_scan() (the per-row "convert" default) and
     process_files() (which converter to actually run). Returns "mp3",
     "aiff", or None (stays in its current format, tagged directly - only
-    possible for WAV/AIFF, the two formats open_audio_file/write_tags
+    possible for WAV/AIFF/FLAC, the formats open_audio_file/write_tags
     support without converting first).
 
     AUTO_CONVERT_MP3 always wins when it's on, for any format, including
@@ -4877,6 +5117,8 @@ def open_audio_file(file_path):
         audio = WAVE(file_path)
     elif file_path.lower().endswith((".aiff", ".aif")):
         audio = AIFF(file_path)
+    elif file_path.lower().endswith(".flac"):
+        audio = FLAC(file_path)
     else:
         raise ValueError("Unsupported file format")
 
@@ -4997,26 +5239,63 @@ def write_tags(file_path, artist, title, cover_image, force_remove_if_missing,
         _write_wav_riff_info(file_path, artist, title, update_artist, update_title, log=log)
 
     audio = open_audio_file(file_path)
-    tags = audio.tags
 
-    if update_title:
-        if title:
-            tags.setall("TIT2", [TIT2(encoding=3, text=[title])])
-        else:
-            tags.delall("TIT2")
-    if update_artist:
-        if artist:
-            tags.setall("TPE1", [TPE1(encoding=3, text=[artist])])
-        else:
-            tags.delall("TPE1")
+    if isinstance(audio, FLAC):
+        # FLAC has no ID3 support - title/artist are plain Vorbis comment
+        # fields, and cover art is a separate list of Picture blocks
+        # (audio.pictures), not a tag frame - so this can't share the
+        # ID3-based branch below.
+        tags = audio.tags
+        if update_title:
+            if title:
+                tags["title"] = [title]
+            else:
+                tags.pop("title", None)
+        if update_artist:
+            if artist:
+                tags["artist"] = [artist]
+            else:
+                tags.pop("artist", None)
 
-    if update_cover:
-        if cover_image:
-            tags.delall("APIC")
-            tags.add(APIC(encoding=3, mime="image/jpeg", type=3, desc="Cover", data=cover_image))
-        elif force_remove_if_missing:
-            tags.delall("APIC")
-        # otherwise: leave the existing cover untouched
+        if update_cover:
+            if cover_image:
+                audio.clear_pictures()
+                picture = Picture()
+                picture.type = 3  # "Cover (front)"
+                picture.mime = "image/jpeg"
+                picture.desc = "Cover"
+                picture.data = cover_image
+                try:
+                    with Image.open(io.BytesIO(cover_image)) as decoded:
+                        picture.width, picture.height = decoded.size
+                        picture.depth = 24
+                except Exception:
+                    pass  # width/height/depth are informational - a bad read just leaves them at 0
+                audio.add_picture(picture)
+            elif force_remove_if_missing:
+                audio.clear_pictures()
+            # otherwise: leave the existing cover untouched
+    else:
+        tags = audio.tags
+
+        if update_title:
+            if title:
+                tags.setall("TIT2", [TIT2(encoding=3, text=[title])])
+            else:
+                tags.delall("TIT2")
+        if update_artist:
+            if artist:
+                tags.setall("TPE1", [TPE1(encoding=3, text=[artist])])
+            else:
+                tags.delall("TPE1")
+
+        if update_cover:
+            if cover_image:
+                tags.delall("APIC")
+                tags.add(APIC(encoding=3, mime="image/jpeg", type=3, desc="Cover", data=cover_image))
+            elif force_remove_if_missing:
+                tags.delall("APIC")
+            # otherwise: leave the existing cover untouched
 
     save_audio(audio)
 
@@ -5206,6 +5485,650 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
             on_progress(index, total)
 
     log("Processing complete.")
+
+
+# ============================================================================
+# 14. AUDIO QUALITY ESTIMATION
+# ============================================================================
+
+# Best-effort detector for a track whose actual audio content doesn't match
+# what its format/bitrate implies - most commonly a WAV/FLAC that's secretly
+# an upscaled low-bitrate MP3 (or an MP3 mislabeled at a higher bitrate than
+# its content actually supports). Surfaced in the Quality tab as a green/
+# orange/red marker - explicitly presented there as an ESTIMATE to verify,
+# not a certainty, same spirit as the AcoustID "🎧" marker in the main
+# Tagger table.
+#
+# Why this is inherently approximate - two real limitations confirmed
+# empirically while calibrating this, not just theoretical caveats:
+# - A CBR-encoded lossy source (a very common real-world case) doesn't
+#   reliably show a detectable spectral cutoff at all: a 128kbps CBR MP3
+#   and a 320kbps CBR MP3 encoded through the SAME ffmpeg/libmp3lame build
+#   showed an IDENTICAL ~19-20kHz cutoff in testing - only VBR-mode
+#   encoding produced a genuinely bitrate-dependent cutoff. A "green"
+#   verdict is therefore NOT proof of a genuine lossless source.
+# - A real, legitimately mastered track can naturally roll off high
+#   frequencies (mastering choice, genre, source recording) with no
+#   transcoding involved at all - confirmed on a real track while testing
+#   this, which showed an ~18.75kHz "cutoff" that's most likely just its
+#   own mastering, not evidence of a fake. A "red"/"orange" verdict is a
+#   prompt to listen for yourself, not a verdict of fraud.
+QUALITY_GREEN = "green"
+QUALITY_ORANGE = "orange"
+QUALITY_RED = "red"
+
+LOSSLESS_QUALITY_EXTENSIONS = (".wav", ".flac", ".aiff", ".aif")
+
+# Spectral-cutoff thresholds (Hz) - a lower cutoff means an encoder's
+# bandpass filter cut more of the audio away, implying a lower-quality
+# source. Calibrated against real MP3 VBR-quality encodes (see the note
+# above for why CBR-mode encodes don't reliably trigger this at all) -
+# NOT a precise science. Deliberately set BELOW ~19kHz: real CBR-encoded
+# MP3s at every bitrate tested (128/192/320) all showed a ~19-20kHz
+# cutoff from the encoder's own filterbank, unrelated to actual quality -
+# a higher threshold here would flag essentially every ordinary MP3.
+QUALITY_CUTOFF_RED_HZ = 15500
+QUALITY_CUTOFF_ORANGE_HZ = 18000
+
+# Declared-bitrate threshold (kbps) for lossy formats (MP3/AAC/OGG/WMA/
+# Opus), read straight from the file's own tags - trusted at face value:
+# a file admitting a low bitrate needs no spectral analysis, since nobody
+# mislabels a file to look WORSE than it is. A declared bitrate at or
+# above this is NOT treated as trustworthy on its own - it still goes
+# through the same spectral-cutoff check as everything else below.
+QUALITY_BITRATE_LOW_KBPS = 160
+
+# Integrated loudness (LUFS, ITU-R BS.1770-4) thresholds for the analyzed
+# segment - a track mastered much quieter than typical won't clip or sound
+# distorted on its own, but DJ software like Rekordbox raises its gain to
+# match the rest of a set, and that gain boost raises the noise floor and
+# any encoding artifacts right along with the music. NOT a judgment that a
+# quiet track is "wrong" - a deliberately dynamic/quiet master is a
+# legitimate mastering choice, especially outside loudness-war genres -
+# just a flag that Rekordbox will likely need a noticeably bigger boost
+# than most tracks, worth being aware of before it's dropped into a mix.
+# Calibrated against exactly one real reference (a loud, modern EDM
+# master at ~-10.2 LUFS integrated, cross-checked against ffmpeg's own
+# ebur128 filter to within 0.1 LUFS) plus synthetic attenuated copies of
+# it - like the spectral-cutoff thresholds above, deliberately
+# conservative (a wide gap below a "normal" loud master) rather than
+# precisely tuned, since there isn't a broad enough real-world dataset
+# here to calibrate this more tightly without risking false positives on
+# quieter genres. For reference, streaming platforms typically normalize
+# to around -14 LUFS (Spotify) to -16 LUFS (Apple Music/YouTube).
+QUALITY_LOW_LEVEL_ORANGE_LUFS = -20.0
+QUALITY_LOW_LEVEL_RED_LUFS = -28.0
+
+QUALITY_ANALYSIS_SAMPLE_RATE = 44100
+QUALITY_ANALYSIS_SEGMENT_SECONDS = 25
+QUALITY_ANALYSIS_SKIP_SECONDS = 20  # skip likely intro silence/fade-in
+
+
+def _decode_pcm_segment(file_path, duration=QUALITY_ANALYSIS_SEGMENT_SECONDS,
+                         skip=QUALITY_ANALYSIS_SKIP_SECONDS, sample_rate=QUALITY_ANALYSIS_SAMPLE_RATE):
+    """
+    Decodes a mono PCM segment of file_path via the bundled FFmpeg, for
+    spectral analysis - not the whole file (unnecessary and slow for a
+    library scan). Retries once from the very start if skipping ahead
+    landed past the end of a short file. Returns a numpy float32 array,
+    empty on any failure (missing ffmpeg, corrupted file...).
+    """
+    def _run(start):
+        command = [
+            find_ffmpeg(), "-y", "-nostdin", "-ss", str(start), "-i", file_path,
+            "-t", str(duration), "-ac", "1", "-ar", str(sample_rate), "-f", "f32le", "pipe:1",
+        ]
+        try:
+            result = subprocess.run(
+                command, capture_output=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception:
+            return b""
+        return result.stdout if result.returncode == 0 else b""
+
+    raw = _run(skip)
+    if len(raw) < sample_rate * 2 * 2:  # under ~1s of audio (2 bytes/sample, sanity margin)
+        raw = _run(0)
+    return np.frombuffer(raw, dtype=np.float32)
+
+
+def _compute_smoothed_spectrum_db(samples, sample_rate=QUALITY_ANALYSIS_SAMPLE_RATE):
+    """
+    Single-FFT-over-the-whole-segment groundwork for
+    _detect_spectral_cutoff_hz() - windowed magnitude spectrum in dB,
+    smoothed with a ~50Hz moving average to suppress bin-to-bin noise.
+    (compute_track_spectrogram() does its own separate short-time FFT,
+    since a spectrogram needs many FFTs over short time windows rather
+    than one FFT over the whole segment.) Returns (freqs_hz, smoothed_db),
+    both numpy arrays.
+    """
+    windowed = samples * np.hanning(len(samples))
+    spectrum_db = 20 * np.log10(np.abs(np.fft.rfft(windowed)) + 1e-12)
+    freqs = np.fft.rfftfreq(len(samples), d=1.0 / sample_rate)
+
+    kernel = max(3, int(len(freqs) * 50 / (sample_rate / 2)))
+    if kernel % 2 == 0:
+        kernel += 1
+    smoothed = np.convolve(spectrum_db, np.ones(kernel) / kernel, mode="same")
+    return freqs, smoothed
+
+
+def _detect_spectral_cutoff_hz(samples, sample_rate=QUALITY_ANALYSIS_SAMPLE_RATE,
+                                search_lo=8000, search_hi=21500,
+                                drop_db=12, drop_span_hz=1500, confirm_span_hz=2000):
+    """
+    Looks for a sharp, SUSTAINED drop in spectral energy within
+    [search_lo, search_hi] - the brick-wall signature of a lossy encoder's
+    bandpass filter - as opposed to a real full-bandwidth signal's
+    gradual, natural high-frequency rolloff (an earlier, naive "energy
+    relative to the global peak" approach false-triggered on that instead
+    - see the module-level note above).
+
+    For each candidate frequency, compares average smoothed energy just
+    BEFORE it to just AFTER it; a genuine cutoff drops sharply and stays
+    down over a further stretch past that point (confirmed separately, to
+    rule out a brief notch/dip in otherwise-normal content).
+
+    Returns the cutoff frequency in Hz, or None if no such drop is found
+    (full-bandwidth content, or too little audio to analyze).
+    """
+    if len(samples) < sample_rate:
+        return None
+
+    freqs, smoothed = _compute_smoothed_spectrum_db(samples, sample_rate)
+
+    def band_avg(f_lo, f_hi):
+        mask = (freqs >= f_lo) & (freqs < f_hi)
+        return np.mean(smoothed[mask]) if np.any(mask) else None
+
+    for f in np.arange(search_lo, search_hi, 250):
+        before = band_avg(f - drop_span_hz, f)
+        after = band_avg(f, f + drop_span_hz)
+        if before is None or after is None or (before - after) < drop_db:
+            continue
+        confirm = band_avg(f, min(f + confirm_span_hz, search_hi))
+        if confirm is None or (before - confirm) < drop_db * 0.7:
+            continue
+        return float(f)
+
+    return None
+
+
+# ITU-R BS.1770-4 K-weighting filter design parameters (stage 1: a high
+# shelf simulating head diffraction; stage 2: a high-pass simulating the
+# outer/middle ear's reduced sensitivity to low frequencies) - these are
+# the standard's own analog-domain filter specs, turned into digital
+# biquad coefficients for a given sample rate via the standard "Audio EQ
+# Cookbook" bilinear-transform formulas below. This reproduces the
+# officially published 48kHz coefficient table exactly when sample_rate
+# is 48000, but works for any rate - confirmed against ffmpeg's own
+# ebur128 filter (to within 0.1 LUFS on real files) at 44100Hz, which is
+# what this app actually decodes at.
+_K_WEIGHTING_STAGE1 = {"f0": 1681.9744509555319, "gain_db": 3.99984385397, "q": 0.7071752369554193}
+_K_WEIGHTING_STAGE2 = {"f0": 38.13547087613982, "q": 0.5003270373238773}
+
+
+def _k_weighting_coeffs(sample_rate):
+    """Returns (stage1_b, stage1_a, stage2_b, stage2_a) - each a 3-tuple
+    of normalized biquad coefficients (a[0] == 1.0)."""
+    f0, gain_db, q = _K_WEIGHTING_STAGE1["f0"], _K_WEIGHTING_STAGE1["gain_db"], _K_WEIGHTING_STAGE1["q"]
+    w0 = 2 * np.pi * f0 / sample_rate
+    cos_w0, alpha = np.cos(w0), np.sin(w0) / (2 * q)
+    a_gain = 10 ** (gain_db / 40)
+    sqrt_a = np.sqrt(a_gain)
+    b0 = a_gain * ((a_gain + 1) + (a_gain - 1) * cos_w0 + 2 * sqrt_a * alpha)
+    b1 = -2 * a_gain * ((a_gain - 1) + (a_gain + 1) * cos_w0)
+    b2 = a_gain * ((a_gain + 1) + (a_gain - 1) * cos_w0 - 2 * sqrt_a * alpha)
+    a0 = (a_gain + 1) - (a_gain - 1) * cos_w0 + 2 * sqrt_a * alpha
+    a1 = 2 * ((a_gain - 1) - (a_gain + 1) * cos_w0)
+    a2 = (a_gain + 1) - (a_gain - 1) * cos_w0 - 2 * sqrt_a * alpha
+    stage1_b, stage1_a = (b0 / a0, b1 / a0, b2 / a0), (1.0, a1 / a0, a2 / a0)
+
+    f0, q = _K_WEIGHTING_STAGE2["f0"], _K_WEIGHTING_STAGE2["q"]
+    w0 = 2 * np.pi * f0 / sample_rate
+    cos_w0, alpha = np.cos(w0), np.sin(w0) / (2 * q)
+    b0 = (1 + cos_w0) / 2
+    b1 = -(1 + cos_w0)
+    b2 = (1 + cos_w0) / 2
+    a0 = 1 + alpha
+    a1 = -2 * cos_w0
+    a2 = 1 - alpha
+    stage2_b, stage2_a = (b0 / a0, b1 / a0, b2 / a0), (1.0, a1 / a0, a2 / a0)
+
+    return stage1_b, stage1_a, stage2_b, stage2_a
+
+
+def _apply_biquad(samples, b, a):
+    """Direct-Form-I biquad filter. A genuine IIR recursive filter (each
+    output sample depends on the previous two outputs), so this can't be
+    vectorized with numpy the way an FFT or a block-average can - a plain
+    Python loop over a list is actually faster here than indexing a numpy
+    array element-by-element in the same loop (numpy's per-element access
+    overhead dominates at this scale). ~0.6s for a 25-second segment in
+    testing - acceptable for a per-file quality check, not fast enough to
+    consider for every sample of a full library scan's every file without
+    the existing short analysis-segment cap."""
+    b0, b1, b2 = b
+    _, a1, a2 = a
+    out = [0.0] * len(samples)
+    x1 = x2 = y1 = y2 = 0.0
+    for i in range(len(samples)):
+        x0 = samples[i]
+        y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+        out[i] = y0
+        x2, x1 = x1, x0
+        y2, y1 = y1, y0
+    return out
+
+
+def _measure_lufs(samples, sample_rate=QUALITY_ANALYSIS_SAMPLE_RATE):
+    """
+    Integrated loudness (LUFS/LKFS) of `samples`, per ITU-R BS.1770-4: the
+    K-weighting filter above, then 400ms block energy measurement at 75%
+    overlap (100ms hop), then the standard's two-stage gating - first
+    discarding blocks below an absolute -70 LUFS floor, then discarding
+    blocks below a threshold set 10dB under the (still-ungated-among-
+    survivors) average. This is a real loudness measurement, not a plain
+    RMS - verified to match ffmpeg's own `ebur128` filter to within 0.1
+    LUFS on real files. Returns None if there isn't even one full 400ms
+    block to measure.
+    """
+    block_size = int(0.4 * sample_rate)
+    if len(samples) < block_size:
+        return None
+
+    stage1_b, stage1_a, stage2_b, stage2_a = _k_weighting_coeffs(sample_rate)
+    weighted = _apply_biquad(samples.astype(np.float64).tolist(), stage1_b, stage1_a)
+    weighted = np.array(_apply_biquad(weighted, stage2_b, stage2_a))
+
+    hop_size = int(0.1 * sample_rate)
+    num_blocks = (len(weighted) - block_size) // hop_size + 1
+    block_energies = np.array([
+        np.mean(weighted[i * hop_size: i * hop_size + block_size] ** 2) for i in range(num_blocks)
+    ])
+    block_energies = block_energies[block_energies > 0]
+    if len(block_energies) == 0:
+        return None
+
+    absolute_gated = block_energies[-0.691 + 10 * np.log10(block_energies) > -70.0]
+    if len(absolute_gated) == 0:
+        return None
+
+    relative_threshold = -0.691 + 10 * np.log10(np.mean(absolute_gated)) - 10.0
+    relative_gated = absolute_gated[-0.691 + 10 * np.log10(absolute_gated) > relative_threshold]
+    if len(relative_gated) == 0:
+        relative_gated = absolute_gated
+
+    return float(-0.691 + 10 * np.log10(np.mean(relative_gated)))
+
+
+def _level_verdict_from_lufs(lufs):
+    """See QUALITY_LOW_LEVEL_ORANGE_LUFS/_RED_LUFS above for the reasoning
+    and the calibration caveat. Returns (verdict, detail) - verdict is
+    always QUALITY_GREEN when the level is unremarkable (or unknown), with
+    detail=None (there's nothing worth surfacing about a normal level)."""
+    if lufs is None:
+        return QUALITY_GREEN, None
+    if lufs < QUALITY_LOW_LEVEL_RED_LUFS:
+        return QUALITY_RED, f"Very quiet ({lufs:.1f} LUFS) - would need a large gain boost in Rekordbox"
+    if lufs < QUALITY_LOW_LEVEL_ORANGE_LUFS:
+        return QUALITY_ORANGE, f"Quieter than usual ({lufs:.1f} LUFS) - may need a noticeable gain boost"
+    return QUALITY_GREEN, None
+
+
+_QUALITY_SEVERITY = {QUALITY_GREEN: 0, QUALITY_ORANGE: 1, QUALITY_RED: 2}
+
+
+def _worse_quality_result(*results):
+    """Combines independent (verdict, detail) checks (e.g. spectral cutoff
+    and average level) into a single result - the worst verdict wins, and
+    if more than one check actually flagged something, their reasons are
+    both kept rather than one silently overwriting the other."""
+    flagged = [(verdict, detail) for verdict, detail in results if verdict == QUALITY_ORANGE or verdict == QUALITY_RED]
+    if not flagged:
+        return results[0]
+    flagged.sort(key=lambda pair: _QUALITY_SEVERITY[pair[0]], reverse=True)
+    worst_verdict = flagged[0][0]
+    detail = "; ".join(detail for _, detail in flagged)
+    return worst_verdict, detail
+
+
+def analyze_track_quality(file_path, log=safe_print):
+    """
+    Best-effort estimate of whether file_path's audio content matches what
+    its format/declared bitrate implies, AND whether its overall level is
+    low enough that Rekordbox would need a noticeably large gain boost to
+    match other tracks (which raises the noise floor along with it) - see
+    the module-level note above for real, confirmed limitations of the
+    spectral side (NOT a certainty either way), and
+    QUALITY_LOW_LEVEL_*_LUFS above for the level side's own calibration
+    caveat.
+
+    Returns (verdict, detail, metrics):
+    - verdict: QUALITY_GREEN / QUALITY_ORANGE / QUALITY_RED, or None if
+      the file couldn't be analyzed at all (decode failure, too short).
+    - detail: a short human-readable reason for the verdict.
+    - metrics: {"bitrate_kbps": ..., "lufs": ...} - the raw numbers behind
+      the verdict, for display (e.g. the Quality tab's Bitrate/LUFS
+      columns) independent of whatever the verdict ends up being. Either
+      value may be None (bitrate_kbps for a lossless format or an
+      unreadable tag; lufs when the file couldn't be decoded at all).
+    """
+    extension = os.path.splitext(file_path)[1].lower()
+
+    declared_bitrate_kbps = None
+    if extension not in LOSSLESS_QUALITY_EXTENSIONS:
+        try:
+            audio = MutagenFile(file_path)
+            if audio is not None and audio.info is not None and getattr(audio.info, "bitrate", None):
+                declared_bitrate_kbps = audio.info.bitrate / 1000
+        except Exception:
+            pass
+
+    samples = _decode_pcm_segment(file_path)
+    if len(samples) < QUALITY_ANALYSIS_SAMPLE_RATE:
+        log(f"  Could not analyze '{file_path}' for quality (decode failed or file too short).")
+        metrics = {"bitrate_kbps": declared_bitrate_kbps, "lufs": None}
+        return None, "Could not analyze this file (decode failed or too short)", metrics
+
+    lufs = _measure_lufs(samples)
+    level_result = _level_verdict_from_lufs(lufs)
+    metrics = {"bitrate_kbps": declared_bitrate_kbps, "lufs": lufs}
+
+    # A file that already admits a low bitrate needs no spectral analysis
+    # - it's not hiding anything, the number is trustworthy at the low end
+    # (nobody mislabels a file to look WORSE) - but the level check above
+    # still runs regardless, so the Level column stays populated even for
+    # a file that's red for bitrate reasons alone.
+    if declared_bitrate_kbps is not None and declared_bitrate_kbps < QUALITY_BITRATE_LOW_KBPS:
+        spectral_result = QUALITY_RED, f"Declared bitrate is only {declared_bitrate_kbps:.0f} kbps"
+        verdict, detail = _worse_quality_result(spectral_result, level_result)
+        return verdict, detail, metrics
+
+    cutoff = _detect_spectral_cutoff_hz(samples)
+
+    if cutoff is None:
+        if declared_bitrate_kbps is not None:
+            spectral_result = QUALITY_GREEN, f"No lossy cutoff detected ({declared_bitrate_kbps:.0f} kbps declared)"
+        else:
+            spectral_result = QUALITY_GREEN, "No lossy cutoff detected in the audio content"
+    elif cutoff < QUALITY_CUTOFF_RED_HZ:
+        spectral_result = QUALITY_RED, f"Audio content cuts off around {cutoff / 1000:.1f} kHz - likely a lossy source"
+    elif cutoff < QUALITY_CUTOFF_ORANGE_HZ:
+        spectral_result = QUALITY_ORANGE, f"Audio content cuts off around {cutoff / 1000:.1f} kHz - worth a listen"
+    else:
+        # A cutoff was detected but it's up near ~18-20kHz - well within
+        # the range an ordinary, undamaged MP3 encode lands in on its own
+        # (every CBR bitrate tested showed a cutoff there purely from the
+        # encoder's own filterbank, unrelated to actual quality - see the
+        # module-level note above), so this is NOT treated as suspicious
+        # on its own.
+        spectral_result = QUALITY_GREEN, f"Cutoff around {cutoff / 1000:.1f} kHz is consistent with the declared quality"
+
+    verdict, detail = _worse_quality_result(spectral_result, level_result)
+    return verdict, detail, metrics
+
+
+QUALITY_SPECTROGRAM_TIME_BINS = 300
+QUALITY_SPECTROGRAM_FREQ_BINS = 200
+QUALITY_SPECTROGRAM_FFT_SIZE = 2048
+# STFT frame count is kept roughly constant regardless of track length by
+# deriving the hop size from the sample count instead of using a fixed hop
+# (see compute_track_spectrogram) - this is how many frames per output
+# time bin that targets, oversampled for reasonable block-averaging
+# resolution. A fixed hop would make a 7-minute track's raw STFT matrix
+# tens of times bigger (and slower/more memory-hungry) than a 30-second
+# one, for no visual benefit once it's downsampled to
+# QUALITY_SPECTROGRAM_TIME_BINS columns anyway.
+QUALITY_SPECTROGRAM_FRAMES_PER_TIME_BIN = 8
+QUALITY_SPECTROGRAM_MIN_HOP = 64
+
+# Fixed dB scale (not per-track normalized) so the color legend means the
+# same thing on every track and tracks are visually comparable - matches
+# Spek's own default range. 0dB = full-scale digital signal; -120dB is
+# below even 16-bit's ~96dB noise floor, so it comfortably covers both
+# 16- and 24-bit content without clipping either end for ordinary audio.
+QUALITY_SPECTROGRAM_MAX_DB = 0.0
+QUALITY_SPECTROGRAM_MIN_DB = -120.0
+
+# Colormap anchor points (roughly matplotlib's "magma"/Spek's own palette)
+# that _spectrogram_colormap() linearly interpolates between - no
+# matplotlib dependency, just a handful of hand-picked RGB stops from
+# near-black (quiet) through purple/red/orange up to pale yellow (loud).
+_SPECTROGRAM_COLORMAP_STOPS = (
+    (0.00, (0, 0, 4)),
+    (0.25, (81, 18, 124)),
+    (0.50, (183, 55, 121)),
+    (0.75, (252, 137, 97)),
+    (1.00, (252, 253, 191)),
+)
+
+
+def _spectrogram_colormap(normalized):
+    """normalized: numpy array of values in [0, 1], any shape -> an array
+    of that shape + (3,), uint8 RGB."""
+    rgb = np.zeros(normalized.shape + (3,), dtype=np.float64)
+    stops = _SPECTROGRAM_COLORMAP_STOPS
+    for (t0, c0), (t1, c1) in zip(stops, stops[1:]):
+        mask = (normalized >= t0) & (normalized <= t1)
+        local_t = (normalized[mask] - t0) / ((t1 - t0) or 1.0)
+        for channel in range(3):
+            rgb[..., channel][mask] = c0[channel] + (c1[channel] - c0[channel]) * local_t
+    return rgb.astype(np.uint8)
+
+
+def _block_average(matrix, axis, num_bins):
+    """Downsamples matrix along axis into num_bins contiguous averaged
+    blocks (not a naive every-Nth-sample pick, so brief transients aren't
+    silently skipped over)."""
+    size = matrix.shape[axis]
+    num_bins = max(1, min(num_bins, size))
+    edges = np.linspace(0, size, num_bins + 1).astype(int)
+    sums = np.add.reduceat(matrix, edges[:-1], axis=axis)
+    counts = np.diff(edges)
+    counts[counts == 0] = 1
+    shape = [1] * matrix.ndim
+    shape[axis] = len(counts)
+    return sums / counts.reshape(shape)
+
+
+def _native_sample_rate(file_path, default=QUALITY_ANALYSIS_SAMPLE_RATE):
+    """The file's own sample rate (so the spectrogram's frequency axis goes
+    all the way to its real Nyquist - e.g. 24kHz for a 48kHz source,
+    matching what a dedicated spectrogram viewer like Spek shows - rather
+    than being capped at whatever analyze_track_quality() downsamples to
+    for its own, much narrower, cutoff-detection purposes)."""
+    try:
+        audio = MutagenFile(file_path)
+        if audio is not None and audio.info is not None and getattr(audio.info, "sample_rate", None):
+            return int(audio.info.sample_rate)
+    except Exception:
+        pass
+    return default
+
+
+def describe_audio_stream(file_path):
+    """Short one-line technical summary (format, sample rate, bit depth,
+    channels) for the spectrogram viewer's header - mirrors the info line
+    a dedicated spectrogram viewer like Spek shows above its own plot.
+    Best-effort: any field mutagen doesn't expose for this format is
+    simply left out rather than shown as a placeholder."""
+    extension = os.path.splitext(file_path)[1].lstrip(".").upper()
+    parts = [extension] if extension else []
+    try:
+        audio = MutagenFile(file_path)
+        info = audio.info if audio is not None else None
+    except Exception:
+        info = None
+    if info is not None:
+        if getattr(info, "sample_rate", None):
+            parts.append(f"{info.sample_rate} Hz")
+        bit_depth = getattr(info, "bits_per_sample", None)
+        if bit_depth:
+            parts.append(f"{bit_depth} bits")
+        channels = getattr(info, "channels", None)
+        if channels == 1:
+            parts.append("mono")
+        elif channels == 2:
+            parts.append("stereo")
+        elif channels:
+            parts.append(f"{channels} channels")
+        bitrate = getattr(info, "bitrate", None)
+        if bitrate and not bit_depth:  # lossy formats: bitrate instead of bit depth
+            parts.append(f"{bitrate // 1000} kbps")
+    return ", ".join(parts)
+
+
+def compute_track_spectrogram(file_path, log=safe_print):
+    """
+    Decodes the WHOLE track (not just analyze_track_quality()'s short
+    analysis segment) at its own native sample rate and computes a
+    short-time Fourier transform (STFT) spectrogram for the Quality tab's
+    double-click viewer: horizontal axis = time, vertical axis =
+    frequency, color = magnitude in dB on a fixed scale - the same shape
+    of visual a dedicated spectrogram viewer like Spek shows. Read-only,
+    independent of analyze_track_quality() (no verdict/tag side effects).
+
+    Returns a dict with:
+    - "image": a PIL.Image (RGB), one column per time bin and one row per
+      frequency bin, already colormapped and oriented with the highest
+      frequency at the top row - ready to be scaled up and shown as-is
+    - "duration_seconds": the full track's length
+    - "max_freq_hz": the frequency the image's top row represents (the
+      file's own Nyquist frequency)
+    - "cutoff_hz": the same cutoff analyze_track_quality() would report
+      (None if none detected), for an overlay reference line - still
+      computed from that function's own short analysis segment, so the
+      marked line always matches the verdict that produced it
+    - "min_db"/"max_db": the fixed dB range the color legend represents
+    Returns None if the file couldn't be decoded at all.
+    """
+    sample_rate = _native_sample_rate(file_path)
+    raw = subprocess.run(
+        [
+            find_ffmpeg(), "-y", "-nostdin", "-i", file_path,
+            "-ac", "1", "-ar", str(sample_rate), "-f", "f32le", "pipe:1",
+        ],
+        capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    samples = np.frombuffer(raw.stdout, dtype=np.float32) if raw.returncode == 0 else np.array([], dtype=np.float32)
+    if len(samples) < sample_rate:
+        log(f"  Could not decode '{file_path}' for spectrogram display.")
+        return None
+
+    fft_size = QUALITY_SPECTROGRAM_FFT_SIZE
+    target_frames = QUALITY_SPECTROGRAM_TIME_BINS * QUALITY_SPECTROGRAM_FRAMES_PER_TIME_BIN
+    hop = max(QUALITY_SPECTROGRAM_MIN_HOP, len(samples) // target_frames)
+    window = np.hanning(fft_size).astype(np.float32)
+
+    num_frames = max(1, (len(samples) - fft_size) // hop + 1)
+    padded = samples if len(samples) >= fft_size else np.pad(samples, (0, fft_size - len(samples)))
+    # A strided (zero-copy) view of overlapping frames, so the STFT below
+    # runs as one vectorized batch FFT (np.fft.rfft over axis=1) instead of
+    # a Python loop calling rfft thousands of times for a long track.
+    frames = np.lib.stride_tricks.as_strided(
+        padded, shape=(num_frames, fft_size),
+        strides=(padded.strides[0] * hop, padded.strides[0]), writeable=False,
+    )
+    spectrum_db = 20 * np.log10(np.abs(np.fft.rfft(frames * window, axis=1)) + 1e-12).astype(np.float32)
+
+    freqs = np.fft.rfftfreq(fft_size, d=1.0 / sample_rate)
+    max_freq_hz = float(freqs[-1])
+
+    # spectrum_db is (time, freq) - downsample both axes to a manageable
+    # grid for a canvas-sized image.
+    grid = _block_average(spectrum_db, axis=0, num_bins=QUALITY_SPECTROGRAM_TIME_BINS)
+    grid = _block_average(grid, axis=1, num_bins=QUALITY_SPECTROGRAM_FREQ_BINS)
+
+    normalized = np.clip(
+        (grid - QUALITY_SPECTROGRAM_MIN_DB) / (QUALITY_SPECTROGRAM_MAX_DB - QUALITY_SPECTROGRAM_MIN_DB), 0, 1,
+    )
+
+    rgb = _spectrogram_colormap(normalized)  # (time, freq, 3)
+    # Image arrays are indexed [row=y][col=x] - transpose to (freq, time, 3)
+    # so rows are frequency bins, then flip so row 0 (image top) is the
+    # HIGHEST frequency, matching how a spectrogram is normally drawn.
+    rgb = np.transpose(rgb, (1, 0, 2))[::-1, :, :]
+    image = Image.fromarray(np.ascontiguousarray(rgb), mode="RGB")
+
+    # Deliberately re-decodes a short segment rather than reusing the
+    # full-track `samples` above - keeps the marked cutoff identical to
+    # whatever analyze_track_quality() itself would report (same segment,
+    # same sample rate), not a value that happens to differ because this
+    # function decoded the whole file at a different sample rate.
+    cutoff_samples = _decode_pcm_segment(file_path)
+    cutoff = (
+        _detect_spectral_cutoff_hz(cutoff_samples)
+        if len(cutoff_samples) >= QUALITY_ANALYSIS_SAMPLE_RATE else None
+    )
+
+    return {
+        "image": image,
+        "duration_seconds": len(samples) / sample_rate,
+        "max_freq_hz": max_freq_hz,
+        "cutoff_hz": cutoff,
+        "min_db": QUALITY_SPECTROGRAM_MIN_DB,
+        "max_db": QUALITY_SPECTROGRAM_MAX_DB,
+    }
+
+
+def spectrogram_legend_image(width, height):
+    """A vertical color gradient PIL.Image - top = QUALITY_SPECTROGRAM_MAX_DB
+    (loudest), bottom = QUALITY_SPECTROGRAM_MIN_DB (quietest) - using the
+    exact same colormap compute_track_spectrogram() colors its image with,
+    for the Quality tab's spectrogram viewer to draw as a dB color legend
+    (like a dedicated spectrogram viewer's own dB scale bar)."""
+    column = np.linspace(1, 0, height).reshape(height, 1)
+    normalized = np.repeat(column, width, axis=1)
+    rgb = _spectrogram_colormap(normalized)
+    return Image.fromarray(np.ascontiguousarray(rgb), mode="RGB")
+
+
+def analyze_folder_quality(folder, log=safe_print, on_progress=None, on_result=None, should_cancel=None):
+    """
+    Walks `folder` for every supported audio file and runs
+    analyze_track_quality() over each one - the Quality tab's own scan.
+    Takes an explicit folder rather than depending on the global
+    MUSIC_FOLDER, same as the Extractor tab's own tools - the Quality tab
+    has its own independent folder selection and must never interfere
+    with whatever the Tagger tab currently has scanned. Read-only, never
+    touches tags or covers.
+
+    on_result(result), if given, fires with each file's result dict right
+    as it's produced - lets the caller stream rows into the UI live
+    instead of waiting for the whole folder to finish, the same way the
+    Tagger tab's own scan reveals rows as it goes. The full list is still
+    returned at the end regardless (used for the final "N analyzed"
+    count on cancel).
+    """
+    file_list = []
+    for current_folder, _dirs, file_names in os.walk(folder):
+        for name in file_names:
+            if name.lower().endswith(SUPPORTED_EXTENSIONS):
+                file_list.append(os.path.join(current_folder, name))
+    file_list.sort()
+
+    results = []
+    total = len(file_list)
+    for index, full_path in enumerate(file_list, start=1):
+        if should_cancel and should_cancel():
+            break
+        verdict, detail, metrics = analyze_track_quality(full_path, log=log)
+        result = {
+            "file": os.path.relpath(full_path, folder),
+            "format": os.path.splitext(full_path)[1].lstrip(".").upper(),
+            "verdict": verdict,
+            "detail": detail,
+            "bitrate_kbps": metrics.get("bitrate_kbps"),
+            "lufs": metrics.get("lufs"),
+        }
+        results.append(result)
+        if on_result:
+            on_result(result)
+        if on_progress:
+            on_progress(index, total)
+    return results
 
 
 def process_folder(log=safe_print, on_progress=None):

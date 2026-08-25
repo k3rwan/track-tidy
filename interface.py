@@ -22,6 +22,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import traceback
 import queue
 import webbrowser
 from datetime import datetime
@@ -311,6 +312,19 @@ class TaggerInterface:
         self.window.resizable(False, False)  # prevents fullscreen / resizing
 
         self.message_queue = queue.Queue()
+        # Catches an unhandled exception wherever it happens - a Tk callback
+        # on the main thread (report_callback_exception, Tkinter's own hook)
+        # or a background scan/extraction/quality/update thread
+        # (threading.excepthook, process-wide) - and reports it to Discord
+        # (see _report_crash) instead of it only ever surfacing, if at all,
+        # as a silent failure or a one-line stderr print nobody sees (a
+        # pythonw.exe build has no console at all - see the sys.stdout/
+        # stderr redirect above). Deduped per (context, exception type,
+        # message) so a crash that keeps recurring (e.g. on every redraw)
+        # doesn't flood the channel.
+        self._reported_crash_signatures = set()
+        self.window.report_callback_exception = self._handle_tk_exception
+        threading.excepthook = self._handle_thread_exception
         self._is_online = True  # optimistic default until the first real check lands
         self.processing_in_progress = False
         self._processing_failures = []  # (identifier, reason) pairs - see _show_processing_failures_dialog
@@ -320,6 +334,31 @@ class TaggerInterface:
         # (different tabs, nothing stops both running at once), so sharing
         # one Event would let cancelling one spuriously cancel the other.
         self.extract_cancel_requested = threading.Event()
+        # Same reasoning as extract_cancel_requested above - the Quality
+        # tab's own scan is a third independent background action.
+        self.quality_cancel_requested = threading.Event()
+        # The folder a Quality scan's results are relative to, and a map of
+        # each result row's item id -> its absolute path - both needed to
+        # resolve a double-clicked row back to a real file for the spectrum
+        # viewer (analyze_folder_quality() only returns paths relative to
+        # the scanned folder).
+        self.quality_last_scanned_folder = None
+        self.quality_row_paths = {}
+        self._quality_spectrogram_requests = {}
+        self._quality_scan_counts = {tagger.QUALITY_GREEN: 0, tagger.QUALITY_ORANGE: 0, tagger.QUALITY_RED: 0}
+        # Same paced-reveal pattern as _pending_scan_reveals/_pending_scan_done
+        # below, for the Quality tab's own scan - see _reveal_next_quality_row().
+        self._pending_quality_reveals = []
+        self._pending_quality_scan_done = None
+        # Cycles 0 -> 1 (worst/red on top) -> 2 (best/green on top) -> 0
+        # (back to scan/arrival order) on each click of the verdict dot
+        # column's heading - see _on_quality_verdict_heading_click.
+        self._quality_verdict_sort_state = 0
+        self._quality_default_row_order = None
+        # Total file count for the current scan, used to drive the
+        # progress bar off the paced reveal (see _add_quality_row) rather
+        # than the background analysis, which runs far ahead of it.
+        self._quality_scan_total = 0
         # Remembers the folder the user last manually located a moved
         # history file in (see restore_selected in the History window) -
         # kept at the app level, not just for one Restore call, since a
@@ -374,13 +413,21 @@ class TaggerInterface:
         self.fix_track_file_name_var = tk.BooleanVar(value=saved_settings.get("fix_track_file_name", True))
         self.use_spotify_var = tk.BooleanVar(value=saved_settings.get("use_spotify", False))
         self.show_log_var = tk.BooleanVar(value=saved_settings.get("show_log_section", False))
+        self.use_telemetry_var = tk.BooleanVar(value=saved_settings.get("send_usage_telemetry", True))
         self._tagger_resize_pending = False
         tagger.AUTO_CONVERT_MP3 = self.auto_convert_var.get()
         tagger.AUTO_CONVERT_WAV_TO_AIFF = self.auto_convert_wav_aiff_var.get()
         tagger.FIX_TRACK_FILE_NAME = self.fix_track_file_name_var.get()
         tagger.USE_SPOTIFY = self.use_spotify_var.get()
+        tagger.SEND_USAGE_TELEMETRY = self.use_telemetry_var.get()
 
         self._build_interface()
+        # Tagger's folder may already be pre-filled from a saved setting
+        # (see folder_variable's construction above) - mirror it into
+        # Extractor/Quality right away so they aren't left blank while
+        # Tagger already has one, same as a fresh selection does.
+        if self.folder_variable.get():
+            self._sync_all_folder_pickers(self.folder_variable.get())
         self._setup_drag_and_drop()
         self._adjust_window_height()
         self._apply_theme(self._resolve_theme_choice(self.theme_var.get()))
@@ -392,6 +439,7 @@ class TaggerInterface:
         self.window.after(100, self._rewarm_theme)
         self._start_message_loop()
         self._reveal_next_scan_row()
+        self._reveal_next_quality_row()
         self._check_for_update_on_startup()
         self._check_internet_connection(is_startup_check=True)
         self._notify_new_install_on_startup()
@@ -474,9 +522,10 @@ class TaggerInterface:
             )
             messagebox.showwarning(
                 "Convert to MP3 disabled",
-                f"WAV files will now be {wav_fate}. Other non-MP3 formats "
-                "(FLAC, M4A, OGG...) will be ignored when scanning - they "
-                "can't be tagged without converting to MP3 first.",
+                f"WAV files will now be {wav_fate}. FLAC files will be tagged "
+                "(and get a cover) in place too. Other non-MP3 formats "
+                "(M4A, OGG...) will be ignored when scanning - they can't be "
+                "tagged without converting to MP3 first.",
                 parent=self.window,
             )
         tagger.AUTO_CONVERT_MP3 = enabled
@@ -533,11 +582,13 @@ class TaggerInterface:
         tagger.AUTO_CONVERT_WAV_TO_AIFF = True
         tagger.FIX_TRACK_FILE_NAME = True
         tagger.USE_SPOTIFY = False
+        tagger.SEND_USAGE_TELEMETRY = True
 
         self.auto_convert_var.set(False)
         self.auto_convert_wav_aiff_var.set(True)
         self.fix_track_file_name_var.set(True)
         self.use_spotify_var.set(False)
+        self.use_telemetry_var.set(True)
 
         self.show_log_var.set(False)
         self._on_show_log_changed()
@@ -630,6 +681,42 @@ class TaggerInterface:
         thread = threading.Thread(target=target, args=args, daemon=True)
         thread.start()
         return thread
+
+    def _handle_tk_exception(self, exc_type, exc_value, exc_tb):
+        """Replaces Tkinter's default report_callback_exception (which just
+        prints to stderr - invisible on a console-less pythonw.exe build) -
+        runs on the main thread, since that's what raised a Tk callback
+        (button command, event binding...)."""
+        traceback.print_exception(exc_type, exc_value, exc_tb)  # keep local visibility too
+        self._report_crash(exc_type, exc_value, exc_tb, context="ui_callback")
+
+    def _handle_thread_exception(self, args):
+        """threading.excepthook target - catches an exception that killed a
+        background thread (scan/extraction/quality/update-check...) before
+        it ever reaches a message_queue "done" message, which would
+        otherwise leave the UI stuck (Cancel/progress bar never reset) with
+        no visible explanation why."""
+        traceback.print_exception(args.exc_type, args.exc_value, args.exc_traceback)
+        self._report_crash(args.exc_type, args.exc_value, args.exc_traceback, context="background_thread")
+
+    def _report_crash(self, exc_type, exc_value, exc_tb, context):
+        if exc_type is None:
+            return
+        # Same (context, type, message) signature regardless of how many
+        # times it recurs in this run - a broken binding firing on every
+        # mouse move would otherwise flood Discord with hundreds of
+        # identical reports.
+        signature = (context, exc_type.__name__, str(exc_value))
+        if signature in self._reported_crash_signatures:
+            return
+        self._reported_crash_signatures.add(signature)
+
+        tb_text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        try:
+            reporter_name = getpass.getuser()
+        except Exception:
+            reporter_name = ""
+        self._run_in_background(tagger.send_crash_report, reporter_name, tb_text, context)
 
     def _sync_mentions_to_remove(self):
         """Pushes the current "To remove" listbox contents to the tagger
@@ -738,6 +825,19 @@ class TaggerInterface:
             (size * 0.94, size * 0.34), (size * 0.42, size * 0.34), (size * 0.34, size * 0.25),
         ]
         draw.polygon(points, fill=color)
+        return ImageTk.PhotoImage(image)
+
+    def _build_gray_dot_photo(self, size=10):
+        """Static neutral dot shown in the Quality table's own verdict dot
+        column heading (#0) - a plain drawn circle rather than a colored
+        dot/emoji, since the heading itself has no verdict, just marks
+        which column the per-row colored dots belong to. Same reasoning as
+        the row dots themselves for why this is a real drawn shape and not
+        a Unicode/emoji glyph - stays a flat, correctly-colored gray
+        regardless of theme or platform font rendering."""
+        image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        draw.ellipse([0, 0, size - 1, size - 1], fill="#999999")
         return ImageTk.PhotoImage(image)
 
     def _build_checkbox_indicator_photo(self, box_bg, box_border, checked, size=13):
@@ -1015,6 +1115,13 @@ class TaggerInterface:
                 "ReadonlyWhite.TEntry",
                 fieldbackground=[("readonly", colors["entry_bg"])],
                 foreground=[("readonly", colors["entry_fg"])],
+                # Blends any text selection into the field's own colors -
+                # these entries are readonly folder-path displays, not real
+                # text inputs, so a click-drag selection highlight just
+                # looks like a stray visual glitch rather than anything
+                # meaningful to select.
+                selectbackground=[("readonly", colors["entry_bg"])],
+                selectforeground=[("readonly", colors["entry_fg"])],
             )
 
             self.window.configure(bg=colors["bg"])
@@ -1026,16 +1133,23 @@ class TaggerInterface:
                     bg=colors["listbox_bg"], fg=colors["listbox_fg"],
                     selectbackground=colors["select_bg"], selectforeground=colors["select_fg"],
                 )
-            self.progress_canvas.configure(bg=colors["progress_track"])
-            self.progress_canvas.itemconfig(self.progress_rect, fill=colors["progress_fill"])
-            self.progress_canvas.itemconfig(self.progress_text, fill=colors["progress_text"])
+            for canvas in (self.progress_canvas, self.extract_progress_canvas, self.quality_progress_canvas):
+                canvas.configure(bg=colors["progress_track"])
+                canvas.itemconfig(canvas.progress_rect, fill=colors["progress_fill"])
+                canvas.itemconfig(canvas.progress_text, fill=colors["progress_text"])
             self.table.tag_configure("odd_row", background=colors["tree_odd_row"], foreground=colors["tree_fg"])
             self.table.tag_configure("even_row", background=colors["tree_bg"], foreground=colors["tree_fg"])
+            self.quality_table.tag_configure(
+                "odd_row", background=colors["tree_odd_row"], foreground=colors["tree_fg"],
+            )
+            self.quality_table.tag_configure("even_row", background=colors["tree_bg"], foreground=colors["tree_fg"])
         else:
             style.map(
                 "ReadonlyWhite.TEntry",
                 fieldbackground=[("readonly", "white")],
                 foreground=[("readonly", "black")],
+                selectbackground=[("readonly", "white")],
+                selectforeground=[("readonly", "black")],
             )
             style.map(
                 "Table.Treeview",
@@ -1051,11 +1165,14 @@ class TaggerInterface:
                     bg=self._native_listbox_bg, fg=self._native_listbox_fg,
                     selectbackground="SystemHighlight", selectforeground="SystemHighlightText",
                 )
-            self.progress_canvas.configure(bg="#e2e2e2")
-            self.progress_canvas.itemconfig(self.progress_rect, fill="#4a90d9")
-            self.progress_canvas.itemconfig(self.progress_text, fill="#1a1a1a")
+            for canvas in (self.progress_canvas, self.extract_progress_canvas, self.quality_progress_canvas):
+                canvas.configure(bg="#e2e2e2")
+                canvas.itemconfig(canvas.progress_rect, fill="#4a90d9")
+                canvas.itemconfig(canvas.progress_text, fill="#1a1a1a")
             self.table.tag_configure("odd_row", background="#e9e9e9", foreground="black")
             self.table.tag_configure("even_row", background="white", foreground="black")
+            self.quality_table.tag_configure("odd_row", background="#e9e9e9", foreground="black")
+            self.quality_table.tag_configure("even_row", background="white", foreground="black")
 
         for entry in (self.new_mention_entry, self.table_filter_entry):
             entry.normal_color = colors["entry_fg"] if dark else "black"
@@ -1067,8 +1184,15 @@ class TaggerInterface:
         self.kevz_credit_label.configure(foreground=muted_fg)
         self.legal_text_label.configure(foreground=muted_fg)
 
+        # Separate PhotoImage per label (not one shared image) - each
+        # widget needs its own reference kept alive, and building fresh
+        # ones is cheap (a handful of tiny polygon draws).
         self._folder_icon_photo = self._build_folder_icon_photo(dark)
         self.folder_icon_label.configure(image=self._folder_icon_photo)
+        self._extract_folder_icon_photo = self._build_folder_icon_photo(dark)
+        self.extract_folder_icon_label.configure(image=self._extract_folder_icon_photo)
+        self._quality_folder_icon_photo = self._build_folder_icon_photo(dark)
+        self.quality_folder_icon_label.configure(image=self._quality_folder_icon_photo)
 
         self.theme_colors = colors
         self._set_titlebar_dark(self.window, dark)
@@ -1188,6 +1312,7 @@ class TaggerInterface:
     def _notify_scan_complete(
         self, number_new, number_removed, total, number_no_cover=0,
         number_rate_limited_sources=0, auth_error_sources=None, cancelled=False,
+        number_itunes=0, number_spotify=0, number_soundcloud=0, number_acoustid_used=0,
     ):
         """Pings Discord once per finished scan (including a scan the user
         cancelled partway through - cancelled=True just relabels the
@@ -1207,6 +1332,8 @@ class TaggerInterface:
                 total=total, number_no_cover=number_no_cover,
                 number_rate_limited_sources=number_rate_limited_sources,
                 auth_error_sources=auth_error_sources, cancelled=cancelled,
+                number_itunes=number_itunes, number_spotify=number_spotify,
+                number_soundcloud=number_soundcloud, number_acoustid_used=number_acoustid_used,
             )
 
         self._run_in_background(_send)
@@ -1496,10 +1623,10 @@ class TaggerInterface:
                 continue
             if (
                 not tagger.AUTO_CONVERT_MP3
-                and not path.lower().endswith((".mp3", ".wav", ".aiff", ".aif"))
+                and not path.lower().endswith((".mp3", ".wav", ".aiff", ".aif", ".flac"))
             ):
                 self._append_to_journal(
-                    f"Ignored '{os.path.basename(path)}' - only MP3/WAV/AIFF can be tagged "
+                    f"Ignored '{os.path.basename(path)}' - only MP3/WAV/AIFF/FLAC can be tagged "
                     "without converting (Settings > Convert everything to MP3)."
                 )
                 continue
@@ -1533,10 +1660,12 @@ class TaggerInterface:
 
         tagger_tab = ttk.Frame(self.notebook)
         extractor_tab = ttk.Frame(self.notebook)
+        quality_tab = ttk.Frame(self.notebook)
         soundcloud_tab = ttk.Frame(self.notebook)
         self.tagger_tab = tagger_tab
         self.notebook.add(tagger_tab, text="Tagger")
         self.notebook.add(extractor_tab, text="Extractor")
+        self.notebook.add(quality_tab, text="Quality")
         self.notebook.add(soundcloud_tab, text="Settings")
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
@@ -1740,13 +1869,8 @@ class TaggerInterface:
         self.apply_button.configure(state="disabled")
         self.apply_button.pack(side="right")
 
-        self.progress_canvas = tk.Canvas(launch_frame, height=24, bg="#e2e2e2", highlightthickness=0)
         # not packed yet: only shown once a run has actually started (see _start_processing)
-
-        self.progress_rect = self.progress_canvas.create_rectangle(0, 0, 0, 24, fill="#4a90d9", width=0)
-        self.progress_text = self.progress_canvas.create_text(
-            0, 12, text="", fill="#1a1a1a", font=("TkDefaultFont", 9, "bold")
-        )
+        self.progress_canvas = self._build_progress_canvas(launch_frame)
 
         # ============================== Extractor tab ==============================
 
@@ -1767,16 +1891,29 @@ class TaggerInterface:
         # wraplength happened to allow.
         extractor_intro_label.bind("<Configure>", lambda e: e.widget.configure(wraplength=e.width))
 
-        ttk.Label(extractor_tab, text="Folder to flatten:").pack(anchor="w", padx=10)
+        # Same "Parent folder:" LabelFrame + icon + entry-row structure as
+        # the Tagger tab's own folder picker (folder_frame above) - was
+        # previously a bare Label + ungrouped Entry/buttons here.
+        extract_folder_frame = ttk.LabelFrame(extractor_tab, text="Folder to flatten:")
+        extract_folder_frame.pack(fill="x", padx=10, pady=(0, 2))
+
         self.extract_folder_var = tk.StringVar(value="")
+
+        extract_entry_row = ttk.Frame(extract_folder_frame)
+        extract_entry_row.pack(fill="x", padx=10, pady=(10, 5))
+
+        # Image is set in _apply_theme, same as folder_icon_label above.
+        self.extract_folder_icon_label = ttk.Label(extract_entry_row)
+        self.extract_folder_icon_label.pack(side="left", padx=(0, 6))
+
         extract_folder_entry = ttk.Entry(
-            extractor_tab, textvariable=self.extract_folder_var, state="readonly", style="ReadonlyWhite.TEntry"
+            extract_entry_row, textvariable=self.extract_folder_var, state="readonly", style="ReadonlyWhite.TEntry"
         )
-        extract_folder_entry.pack(fill="x", padx=10, pady=(0, 5))
+        extract_folder_entry.pack(side="left", fill="x", expand=True)
         self._bind_entry_context_menu(extract_folder_entry, readonly=True)
 
-        extract_buttons_frame = ttk.Frame(extractor_tab)
-        extract_buttons_frame.pack(fill="x", padx=10, pady=(0, 10))
+        extract_buttons_frame = ttk.Frame(extract_folder_frame)
+        extract_buttons_frame.pack(fill="x", padx=10, pady=(0, 5))
         self.extract_browse_button = ttk.Button(
             extract_buttons_frame, text="Browse...", command=self._choose_extract_folder
         )
@@ -1786,6 +1923,162 @@ class TaggerInterface:
         )
         self.extract_button.configure(state="disabled")
         self.extract_button.pack(side="left", fill="x", expand=True)
+
+        # not packed yet: only shown once an extraction has actually started
+        self.extract_progress_canvas = self._build_progress_canvas(extractor_tab)
+
+        # ============================== Quality tab ==============================
+
+        quality_header_frame = ttk.Frame(quality_tab)
+        quality_header_frame.pack(fill="x", padx=10, pady=(15, 8))
+
+        # "ⓘ" = circled "i" - matches the "▸" toggle labels' blue/
+        # hand2 clickable look used elsewhere (advanced_toggle, journal_toggle)
+        # instead of introducing a new affordance style just for this tab.
+        quality_info_icon = ttk.Label(
+            quality_header_frame, text=" ⓘ", foreground="#1a73e8", cursor="hand2",
+        )
+        quality_info_icon.pack(side="right", anchor="n")
+        quality_info_text = (
+            "Best-effort ESTIMATE, not a certainty. A real track can legitimately "
+            "roll off high frequencies (mastering, genre), and some lossy sources "
+            "don't show a detectable trace at all - treat orange/red as \"worth a "
+            "listen\", not proof."
+        )
+        quality_info_icon.bind("<Enter>", lambda e: self._show_tooltip(quality_info_text, e))
+        quality_info_icon.bind("<Leave>", lambda e: self._hide_tooltip())
+
+        quality_intro_label = ttk.Label(
+            quality_header_frame,
+            text="Flags tracks whose real audio doesn't match their declared format/bitrate.",
+            justify="left",
+        )
+        quality_intro_label.pack(side="left", fill="x", expand=True)
+        quality_intro_label.bind("<Configure>", lambda e: e.widget.configure(wraplength=e.width))
+
+        # Same LabelFrame + icon + entry-row structure as Tagger's own
+        # folder_frame (and now Extractor's extract_folder_frame above).
+        quality_folder_frame = ttk.LabelFrame(quality_tab, text="Folder to analyze:")
+        quality_folder_frame.pack(fill="x", padx=10, pady=(0, 2))
+
+        self.quality_folder_var = tk.StringVar(value="")
+
+        quality_entry_row = ttk.Frame(quality_folder_frame)
+        quality_entry_row.pack(fill="x", padx=10, pady=(10, 5))
+
+        # Image is set in _apply_theme, same as folder_icon_label above.
+        self.quality_folder_icon_label = ttk.Label(quality_entry_row)
+        self.quality_folder_icon_label.pack(side="left", padx=(0, 6))
+
+        quality_folder_entry = ttk.Entry(
+            quality_entry_row, textvariable=self.quality_folder_var, state="readonly",
+            style="ReadonlyWhite.TEntry",
+        )
+        quality_folder_entry.pack(side="left", fill="x", expand=True)
+        self._bind_entry_context_menu(quality_folder_entry, readonly=True)
+
+        quality_buttons_frame = ttk.Frame(quality_folder_frame)
+        quality_buttons_frame.pack(fill="x", padx=10, pady=(0, 5))
+        self.quality_browse_button = ttk.Button(
+            quality_buttons_frame, text="Browse...", command=self._choose_quality_folder
+        )
+        self.quality_browse_button.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        self.quality_scan_button = ttk.Button(
+            quality_buttons_frame, text="Scan", command=self._start_quality_scan
+        )
+        self.quality_scan_button.configure(state="disabled")
+        self.quality_scan_button.pack(side="left", fill="x", expand=True)
+
+        # not packed yet - only shown once a scan has actually started.
+        # Same Canvas-based animated bar as Tagger/Extractor, not a plain
+        # ttk.Progressbar - was previously the odd one out here, with no
+        # dark-mode theming of its own.
+        self.quality_progress_canvas = self._build_progress_canvas(quality_tab)
+
+        # Colored at-a-glance counts, shown once a scan has produced results -
+        # summarizing many rows as three numbers reads faster than scanning
+        # the table itself. Same flat-UI green/red already used for the
+        # Online/Offline status label, plus a matching orange for "worth
+        # checking" (self.internet_status_label's foreground colors).
+        self.quality_summary_frame = ttk.Frame(quality_tab)
+        # not packed yet - only shown once results exist
+        self.quality_summary_green_var = tk.StringVar(value="")
+        self.quality_summary_orange_var = tk.StringVar(value="")
+        self.quality_summary_red_var = tk.StringVar(value="")
+        for var, color, padx in (
+            (self.quality_summary_green_var, "#2ecc71", (10, 14)),
+            (self.quality_summary_orange_var, "#e67e22", (0, 14)),
+            (self.quality_summary_red_var, "#e74c3c", (0, 14)),
+        ):
+            ttk.Label(
+                self.quality_summary_frame, textvariable=var, foreground=color,
+                font=("TkDefaultFont", 9, "bold"),
+            ).pack(side="left", padx=padx)
+
+        self.quality_table_frame = ttk.Frame(quality_tab)
+        self.quality_table_frame.pack(fill="both", expand=True, padx=10, pady=(5, 10))
+
+        # "#0" (the tree column) is always the leftmost column in a ttk
+        # Treeview, so it's repurposed to hold just the verdict dot. A plain
+        # "●" colored via a tag's foreground, not a colored circle emoji
+        # (\U0001f7e2 etc.) - Tk on Windows doesn't render multi-color emoji
+        # glyphs, it falls back to a flat gray outline, which is why an
+        # earlier version of this looked gray regardless of verdict.
+        quality_columns = ("file", "level", "format", "bitrate")
+        self.quality_table = ttk.Treeview(
+            self.quality_table_frame, columns=quality_columns, show="tree headings",
+            selectmode="browse", style="Table.Treeview",
+        )
+        # Clicking the dot column's heading cycles through sorting by
+        # verdict severity: worst-first, then best-first, then back to
+        # scan/arrival order - see _on_quality_verdict_heading_click. The
+        # gray dot marks the column as such (kept alive via self. - a
+        # PhotoImage with no surviving reference gets garbage-collected
+        # and silently vanishes from the widget).
+        self._quality_verdict_heading_photo = self._build_gray_dot_photo()
+        self.quality_table.heading(
+            "#0", text="", image=self._quality_verdict_heading_photo,
+            command=self._on_quality_verdict_heading_click,
+        )
+        self.quality_table.column("#0", width=36, minwidth=36, stretch=False, anchor="center")
+        self.quality_table.heading("file", text="File")
+        # Stretches to soak up all leftover width, which keeps "bitrate" -
+        # now the last column - pinned flush against the table's right edge
+        # instead of leaving blank space after it. Base width kept modest
+        # (unlike the other, fixed-width columns here, ttk never shrinks a
+        # stretching column below its configured width to make room for
+        # its neighbors - only grows it - so a too-wide base width here
+        # would push "bitrate" off the edge of the app's fixed 620px-wide
+        # window instead of actually stretching).
+        self.quality_table.column("file", width=170, minwidth=100, stretch=True, anchor="w")
+        # Unit isn't repeated in every cell (just "-13", not "-13 LUFS"/
+        # "320 kbps") - the header already says it, and it keeps these
+        # three columns tight instead of each carrying its own padding.
+        self.quality_table.heading("level", text="LUFS")
+        self.quality_table.column("level", width=42, minwidth=42, stretch=False, anchor="center")
+        self.quality_table.heading("format", text="Format")
+        self.quality_table.column("format", width=46, minwidth=46, stretch=False, anchor="center")
+        # "kbps" instead of "Bitrate" - shorter header, and matches the
+        # LUFS/kbps pattern of the unit living in the header, not the cell.
+        self.quality_table.heading("bitrate", text="kbps")
+        self.quality_table.column("bitrate", width=42, minwidth=42, stretch=False, anchor="center")
+        # Colors the whole row (dot + file/format/detail text) - ttk Treeview
+        # tags apply per-item, not per-cell, so there's no way to color only
+        # the dot on its own; matches what was asked for anyway ("les lignes
+        # aussi"). Independent of light/dark theming (unlike odd_row/
+        # even_row) since flat-UI green/orange/red read fine on both.
+        self.quality_table.tag_configure("verdict_green", foreground="#2ecc71")
+        self.quality_table.tag_configure("verdict_orange", foreground="#e67e22")
+        self.quality_table.tag_configure("verdict_red", foreground="#e74c3c")
+        self.quality_table.bind("<Double-1>", self._on_quality_row_double_click)
+        self.quality_table.bind("<Button-3>", self._show_quality_context_menu)
+
+        quality_scrollbar = ttk.Scrollbar(
+            self.quality_table_frame, orient="vertical", command=self.quality_table.yview,
+        )
+        self.quality_table.configure(yscrollcommand=quality_scrollbar.set)
+        self.quality_table.pack(side="left", fill="both", expand=True)
+        quality_scrollbar.pack(side="left", fill="y")
 
         # ============================== Settings tab ==============================
 
@@ -1859,11 +2152,12 @@ class TaggerInterface:
                 "respective owners.\n"
                 "Licensed under the GNU General Public License v2 or later - includes "
                 "mutagen (GPL-2.0-or-later) and FFmpeg (GPLv3).\n"
-                "The first time it's launched on a new Windows account, it sends your "
-                "Windows username to the developer (via Discord) so they know a new "
-                "person is using it - this happens once. It also notifies the developer "
-                "(Windows username + file counts, no track/file names) each time a scan "
-                "finishes."
+                "Track Tidy notifies the developer (via Discord) of your Windows username, "
+                "OS, and basic counts - no track/file names - on install, and after each "
+                "scan, extraction, or quality analysis (including a cancelled one), as well "
+                "as on a crash (with an error traceback). The in-app \"Report track\" button "
+                "additionally sends that one track's info when you press it - see "
+                "PRIVACY.md in the repo for the full breakdown."
             ),
             justify="left",
             foreground=MUTED_TEXT_COLOR,
@@ -1918,51 +2212,72 @@ class TaggerInterface:
         height = self.window.winfo_reqheight()
         self.window.geometry(f"{WINDOW_WIDTH}x{height}")
 
-    def _update_progress_bar(self, fraction, text):
+    def _build_progress_canvas(self, parent):
+        """Builds one of the app's Canvas-based animated progress bars -
+        Tagger's is the original/reference; Extractor and Quality each get
+        their own independent instance of the exact same widget via this
+        (not shared - the three tabs' runs are all independent and could
+        in principle animate at the same time). Returns the Canvas, not
+        packed yet - only shown once a run actually starts, same as
+        Tagger's own self.progress_canvas."""
+        canvas = tk.Canvas(parent, height=24, bg="#e2e2e2", highlightthickness=0)
+        canvas.progress_rect = canvas.create_rectangle(0, 0, 0, 24, fill="#4a90d9", width=0)
+        canvas.progress_text = canvas.create_text(
+            0, 12, text="", fill="#1a1a1a", font=("TkDefaultFont", 9, "bold")
+        )
+        canvas.progress_target_fraction = 0
+        canvas.progress_current_fraction = 0
+        canvas.progress_animating = False
+        return canvas
+
+    def _update_progress_bar(self, canvas, fraction, text):
         """Redraws the progress bar text immediately, and glides the fill
         rectangle toward the new fraction instead of jumping straight to
         it - a per-file scan/apply update every ~1s otherwise looked like
         the bar was snapping in discrete jumps rather than filling
         smoothly. A reset to 0 (start of a new run) snaps instantly
         instead of animating backwards, which would look like the bar
-        emptying itself out before the next run even starts."""
-        self.progress_canvas.update_idletasks()
-        width = self.progress_canvas.winfo_width() or (WINDOW_WIDTH - 40)
-        height = 24
-        self.progress_canvas.coords(self.progress_text, width / 2, height / 2)
-        self.progress_canvas.itemconfigure(self.progress_text, text=text)
+        emptying itself out before the next run even starts.
 
-        self._progress_target_fraction = fraction
+        The glide state (target/current fraction, whether it's mid-
+        animation) lives on the canvas itself, not on self - each of the
+        app's progress bars (Tagger/Extractor/Quality) is independent."""
+        canvas.update_idletasks()
+        width = canvas.winfo_width() or (WINDOW_WIDTH - 40)
+        height = 24
+        canvas.coords(canvas.progress_text, width / 2, height / 2)
+        canvas.itemconfigure(canvas.progress_text, text=text)
+
+        canvas.progress_target_fraction = fraction
         if fraction == 0:
-            self._progress_current_fraction = 0
-            self.progress_canvas.coords(self.progress_rect, 0, 0, 0, height)
-            self._progress_bar_animating = False
+            canvas.progress_current_fraction = 0
+            canvas.coords(canvas.progress_rect, 0, 0, 0, height)
+            canvas.progress_animating = False
             return
 
-        if not getattr(self, "_progress_bar_animating", False):
-            self._progress_bar_animating = True
-            self._progress_current_fraction = getattr(self, "_progress_current_fraction", 0)
-            self._glide_progress_bar()
+        if not canvas.progress_animating:
+            canvas.progress_animating = True
+            self._glide_progress_bar(canvas)
 
     PROGRESS_GLIDE_STEP_MS = 16
     PROGRESS_GLIDE_EASE = 0.35  # fraction of the remaining gap closed per step
 
-    def _glide_progress_bar(self):
-        width = self.progress_canvas.winfo_width() or (WINDOW_WIDTH - 40)
+    def _glide_progress_bar(self, canvas):
+        width = canvas.winfo_width() or (WINDOW_WIDTH - 40)
         height = 24
-        current = self._progress_current_fraction
-        target = self._progress_target_fraction
+        current = canvas.progress_current_fraction
+        target = canvas.progress_target_fraction
         if abs(target - current) < 0.002:
             current = target
-            self._progress_bar_animating = False
+            canvas.progress_animating = False
         else:
             current += (target - current) * self.PROGRESS_GLIDE_EASE
 
-        self._progress_current_fraction = current
-        self.progress_canvas.coords(self.progress_rect, 0, 0, width * current, height)
+        canvas.progress_current_fraction = current
+        canvas.coords(canvas.progress_rect, 0, 0, width * current, height)
 
-        if self._progress_bar_animating:
-            self.window.after(self.PROGRESS_GLIDE_STEP_MS, self._glide_progress_bar)
+        if canvas.progress_animating:
+            self.window.after(self.PROGRESS_GLIDE_STEP_MS, lambda: self._glide_progress_bar(canvas))
 
     def _toggle_advanced_section(self):
         if self._is_run_active():
@@ -2014,8 +2329,7 @@ class TaggerInterface:
     def _choose_extract_folder(self):
         folder = filedialog.askdirectory(title="Choose the folder to flatten")
         if folder:
-            self.extract_folder_var.set(folder)
-            self.extract_button.configure(state="normal")
+            self._sync_all_folder_pickers(folder)
 
     def _start_extraction(self):
         folder = self.extract_folder_var.get().strip()
@@ -2026,6 +2340,14 @@ class TaggerInterface:
         self.extract_browse_button.configure(state="disabled")
         self.extract_cancel_requested.clear()
         self.extract_button.configure(text="Cancel", command=self._request_extract_cancel, state="normal")
+        # Locks every other tab (Tagger/Quality/Settings) so no other
+        # button in the app is reachable while an extraction is running -
+        # same pattern as Tagger's own scan/apply run (_set_buttons_enabled).
+        self._set_tabs_locked(True)
+
+        if not self.extract_progress_canvas.winfo_ismapped():
+            self.extract_progress_canvas.pack(fill="x", padx=10, pady=(0, 10))
+        self._update_progress_bar(self.extract_progress_canvas, 0, "0 %")
 
         self._run_in_background(self._run_extraction, folder)
 
@@ -2040,9 +2362,13 @@ class TaggerInterface:
         except Exception:
             reporter_name = ""
 
+        def on_progress(index, total):
+            self.message_queue.put(("extract_progress", (index, total)))
+
         try:
             moved_count = tagger.extract_audio_files(
-                folder, log=self._append_to_journal, should_cancel=self.extract_cancel_requested.is_set,
+                folder, log=self._append_to_journal, on_progress=on_progress,
+                should_cancel=self.extract_cancel_requested.is_set,
             )
             removed_count = tagger.remove_empty_subfolders(
                 folder, log=self._append_to_journal, should_cancel=self.extract_cancel_requested.is_set,
@@ -2057,6 +2383,411 @@ class TaggerInterface:
             tagger.send_extraction_report(reporter_name=reporter_name, error=str(error))
             self.message_queue.put(("extract_done", (folder, 0, 0, False, str(error))))
 
+    # --- Quality tab actions ---
+
+    # Plain "●" per verdict, colored via the matching Treeview tag - see the
+    # tag_configure comment in _build_interface for why not a colored emoji.
+    QUALITY_VERDICT_TAG = {
+        tagger.QUALITY_GREEN: "verdict_green",
+        tagger.QUALITY_ORANGE: "verdict_orange",
+        tagger.QUALITY_RED: "verdict_red",
+    }
+
+    def _choose_quality_folder(self):
+        folder = filedialog.askdirectory(title="Choose the folder to analyze")
+        if folder:
+            self._sync_all_folder_pickers(folder)
+
+    def _start_quality_scan(self):
+        folder = self.quality_folder_var.get().strip()
+        if not folder or not os.path.isdir(folder):
+            messagebox.showwarning("Missing folder", "Please choose a valid folder first.", parent=self.window)
+            return
+
+        for row in self.quality_table.get_children():
+            self.quality_table.delete(row)
+        self.quality_summary_frame.pack_forget()
+        self.quality_last_scanned_folder = folder
+        self.quality_row_paths = {}
+        self._quality_scan_counts = {tagger.QUALITY_GREEN: 0, tagger.QUALITY_ORANGE: 0, tagger.QUALITY_RED: 0}
+        self._pending_quality_reveals = []  # results queued for _reveal_next_quality_row
+        self._pending_quality_scan_done = None  # held until reveals catch up
+        self._quality_verdict_sort_state = 0  # a fresh scan invalidates any prior sort
+        self._quality_default_row_order = None
+        self._quality_scan_total = 0  # set once the first "quality_scan_progress" message arrives
+
+        self.quality_browse_button.configure(state="disabled")
+        self.quality_cancel_requested.clear()
+        self.quality_scan_button.configure(text="Cancel", command=self._request_quality_cancel, state="normal")
+        # Locks every other tab (Tagger/Extractor/Settings) so no other
+        # button in the app is reachable while a quality scan is running -
+        # same pattern as Tagger's own scan/apply run (_set_buttons_enabled).
+        self._set_tabs_locked(True)
+
+        if not self.quality_progress_canvas.winfo_ismapped():
+            self.quality_progress_canvas.pack(fill="x", padx=10, pady=(0, 5), before=self.quality_table_frame)
+        self._update_progress_bar(self.quality_progress_canvas, 0, "0 %")
+
+        self._run_in_background(self._run_quality_scan, folder)
+
+    def _request_quality_cancel(self):
+        self.quality_cancel_requested.set()
+        self.quality_scan_button.configure(state="disabled")
+
+    def _run_quality_scan(self, folder):
+        try:
+            reporter_name = getpass.getuser()
+        except Exception:
+            reporter_name = ""
+
+        def on_progress(index, total):
+            self.message_queue.put(("quality_scan_progress", (index, total)))
+
+        def on_result(result):
+            # Streamed one at a time as each file finishes analyzing
+            # (rather than only at the very end), so the table fills in
+            # live the same way the Tagger tab's own scan does.
+            self.message_queue.put(("quality_scan_row", result))
+
+        try:
+            results = tagger.analyze_folder_quality(
+                folder, log=self._append_to_journal, on_progress=on_progress, on_result=on_result,
+                should_cancel=self.quality_cancel_requested.is_set,
+            )
+            cancelled = self.quality_cancel_requested.is_set()
+            tagger.send_quality_scan_report(
+                reporter_name=reporter_name, total=len(results),
+                number_green=sum(1 for r in results if r.get("verdict") == tagger.QUALITY_GREEN),
+                number_orange=sum(1 for r in results if r.get("verdict") == tagger.QUALITY_ORANGE),
+                number_red=sum(1 for r in results if r.get("verdict") == tagger.QUALITY_RED),
+                cancelled=cancelled,
+            )
+            self.message_queue.put(("quality_scan_done", (results, cancelled, None)))
+        except Exception as error:
+            tagger.send_quality_scan_report(reporter_name=reporter_name, error=str(error))
+            self.message_queue.put(("quality_scan_done", ([], False, str(error))))
+
+    def _add_quality_row(self, result):
+        """Inserts and flashes a single scan result as soon as it arrives -
+        counterpart to _run_quality_scan's on_result callback. Running
+        counts/the summary strip update live here too, rather than being
+        computed once at the end."""
+        verdict = result.get("verdict")
+        verdict_tag = self.QUALITY_VERDICT_TAG.get(verdict)
+        if verdict in self._quality_scan_counts:
+            self._quality_scan_counts[verdict] += 1
+        # Row is inserted at index 0 (above the previous ones), so the stripe
+        # tag can't be based on the current child count the way a plain
+        # end-appended table would - it's assigned by _restripe_rows() below
+        # instead, same as the Tagger table does for the same reason.
+        final_tags = ("even_row", verdict_tag) if verdict_tag else ("even_row",)
+        bitrate_kbps = result.get("bitrate_kbps")
+        lufs = result.get("lufs")
+        item_id = self.quality_table.insert(
+            "", 0, text="●" if verdict_tag else "❓",
+            values=(
+                result.get("file", ""),
+                f"{lufs:.1f}" if lufs is not None else "—",
+                result.get("format", ""),
+                f"{bitrate_kbps:.0f}" if bitrate_kbps is not None else "—",
+            ),
+            tags=final_tags,
+        )
+        relative_file = result.get("file", "")
+        if self.quality_last_scanned_folder and relative_file:
+            self.quality_row_paths[item_id] = os.path.join(self.quality_last_scanned_folder, relative_file)
+        self._restripe_rows(tree=self.quality_table)
+        self._flash_new_row(item_id, tree=self.quality_table, final_tags=final_tags)
+
+        # Progress bar tracks what's actually on screen, not how far the
+        # background analysis has gotten - see the "quality_scan_progress"
+        # message handler for why.
+        if self._quality_scan_total:
+            fraction = len(self.quality_table.get_children()) / self._quality_scan_total
+            self._update_progress_bar(self.quality_progress_canvas, fraction, f"{round(fraction * 100)} %")
+
+    # Verdict rank per sort state: state 1 puts red on top (worst-first),
+    # state 2 puts green on top (best-first); a row with no recognized
+    # verdict tag (the "❓" rows) always sorts last in either direction.
+    _QUALITY_SORT_RANKS = {
+        1: {"verdict_red": 0, "verdict_orange": 1, "verdict_green": 2},
+        2: {"verdict_red": 2, "verdict_orange": 1, "verdict_green": 0},
+    }
+
+    def _on_quality_verdict_heading_click(self):
+        """Cycles the dot column through: 1st click = worst (red) on top,
+        2nd click = best (green) on top, 3rd click = back to the original
+        scan/arrival order - state tracked in _quality_verdict_sort_state,
+        reset on every new scan since it no longer means anything once the
+        rows themselves are gone."""
+        children = self.quality_table.get_children("")
+        if not children:
+            return
+        if self._quality_default_row_order is None:
+            self._quality_default_row_order = list(children)
+
+        self._quality_verdict_sort_state = (self._quality_verdict_sort_state + 1) % 3
+
+        if self._quality_verdict_sort_state == 0:
+            ordered = [iid for iid in self._quality_default_row_order if self.quality_table.exists(iid)]
+        else:
+            rank_map = self._QUALITY_SORT_RANKS[self._quality_verdict_sort_state]
+
+            def sort_key(iid):
+                tags = self.quality_table.item(iid, "tags")
+                for tag in tags:
+                    if tag in rank_map:
+                        return rank_map[tag]
+                return 3  # no recognized verdict tag - always last
+
+            ordered = sorted(children, key=sort_key)
+
+        for index, iid in enumerate(ordered):
+            self.quality_table.move(iid, "", index)
+        self._restripe_rows(tree=self.quality_table)
+
+        self.quality_summary_green_var.set(f"● {self._quality_scan_counts[tagger.QUALITY_GREEN]}")
+        self.quality_summary_orange_var.set(f"● {self._quality_scan_counts[tagger.QUALITY_ORANGE]}")
+        self.quality_summary_red_var.set(f"● {self._quality_scan_counts[tagger.QUALITY_RED]}")
+        if not self.quality_summary_frame.winfo_ismapped():
+            self.quality_summary_frame.pack(fill="x", padx=10, pady=(0, 5), before=self.quality_table_frame)
+
+    def _reveal_next_quality_row(self):
+        """Ticks every SCAN_REVEAL_INTERVAL_MS, for the app's entire
+        lifetime - same pacing mechanism as the Tagger tab's own
+        _reveal_next_scan_row(), reused here rather than reinvented: pops
+        at most one buffered quality result (see the "quality_scan_row"
+        handler in _start_message_loop) so tracks visibly appear no faster
+        than 1/second, no matter how fast the background analysis itself
+        produces them. Only finalizes the scan (see _finalize_quality_scan)
+        once every buffered result has actually been revealed.
+
+        Cancellation bypasses the pacing entirely, same as the Tagger
+        version - once Cancel is clicked, whatever's left in the buffer is
+        flushed in one go instead of continuing to trickle out."""
+        if self.quality_cancel_requested.is_set():
+            while self._pending_quality_reveals:
+                self._add_quality_row(self._pending_quality_reveals.pop(0))
+        elif self._pending_quality_reveals:
+            self._add_quality_row(self._pending_quality_reveals.pop(0))
+
+        if not self._pending_quality_reveals and self._pending_quality_scan_done is not None:
+            content, self._pending_quality_scan_done = self._pending_quality_scan_done, None
+            self._finalize_quality_scan(content)
+
+        self.window.after(SCAN_REVEAL_INTERVAL_MS, self._reveal_next_quality_row)
+
+    def _finalize_quality_scan(self, content):
+        results, cancelled, error = content
+        self.quality_browse_button.configure(state="normal")
+        self.quality_scan_button.configure(
+            text="Scan", command=self._start_quality_scan, state="normal",
+        )
+        self.quality_progress_canvas.pack_forget()
+        self._set_tabs_locked(False)
+
+        if error:
+            messagebox.showerror("Analysis error", error, parent=self.window)
+        elif cancelled:
+            self._append_to_journal(f"Quality analysis cancelled - {len(results)} track(s) analyzed so far.")
+
+    def _on_quality_row_double_click(self, event):
+        item_id = self.quality_table.identify_row(event.y)
+        if not item_id:
+            return
+        file_path = self.quality_row_paths.get(item_id)
+        if not file_path or not os.path.isfile(file_path):
+            messagebox.showinfo(
+                "Spectrogram unavailable",
+                "This result's file isn't available anymore - run a new scan first.",
+                parent=self.window,
+            )
+            return
+        self._show_quality_spectrogram_dialog(file_path)
+
+    def _show_quality_context_menu(self, event):
+        """Right-click on a Quality row - mirrors the Tagger table's own
+        context menu (_show_context_menu), just with the one action that
+        actually applies here."""
+        item_id = self.quality_table.identify_row(event.y)
+        if not item_id:
+            return
+        self.quality_table.selection_set(item_id)
+
+        file_path = self.quality_row_paths.get(item_id)
+        menu = self._make_themed_menu(self.window)
+        menu.add_command(
+            label="Open file location",
+            command=lambda: self._open_quality_file_location(file_path),
+            state="normal" if file_path and os.path.isfile(file_path) else "disabled",
+        )
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _open_quality_file_location(self, file_path):
+        if not file_path or not os.path.isfile(file_path):
+            self._append_to_journal(f"Can't open location, file not found: '{file_path}'")
+            return
+        try:
+            reveal_in_file_manager(file_path)
+        except Exception as error:
+            self._append_to_journal(f"Error opening file location: {error}")
+
+    # Canvas geometry for the spectrogram dialog - a bit larger than the
+    # single-curve chart it replaced, to fit a real plot plus a dB color
+    # legend bar (like a dedicated spectrogram viewer, e.g. Spek).
+    QUALITY_SPECTROGRAM_CANVAS_W = 780
+    QUALITY_SPECTROGRAM_CANVAS_H = 420
+    QUALITY_SPECTROGRAM_MARGIN = (55, 95, 10, 30)  # left, right, top, bottom
+    QUALITY_SPECTROGRAM_LEGEND_W = 18
+    QUALITY_SPECTROGRAM_LEGEND_GAP = 20
+
+    def _show_quality_spectrogram_dialog(self, file_path):
+        dialog = tk.Toplevel(self.window)
+        self._style_toplevel(dialog)
+        dialog.title(f"Spectrogram - {os.path.basename(file_path)}")
+        dialog.resizable(False, False)
+        dialog.transient(self.window)
+
+        muted_color = DARK_MUTED_TEXT_COLOR if self.theme_colors else MUTED_TEXT_COLOR
+        ttk.Label(dialog, text=file_path, font=("TkDefaultFont", 8)).pack(
+            anchor="w", padx=15, pady=(12, 0),
+        )
+        ttk.Label(
+            dialog, text=tagger.describe_audio_stream(file_path), foreground=muted_color,
+            font=("TkDefaultFont", 8),
+        ).pack(anchor="w", padx=15, pady=(0, 8))
+
+        canvas_bg = self.theme_colors["tree_bg"] if self.theme_colors else "white"
+        canvas = tk.Canvas(
+            dialog, width=self.QUALITY_SPECTROGRAM_CANVAS_W, height=self.QUALITY_SPECTROGRAM_CANVAS_H,
+            highlightthickness=0, bg=canvas_bg,
+        )
+        canvas.pack(padx=15, pady=(0, 5))
+        status_label = ttk.Label(dialog, text="Analyzing spectrogram...")
+        status_label.pack(pady=(0, 5))
+        ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=(0, 15))
+
+        self._center_dialog(dialog)
+
+        request_id = str(id(dialog))
+        self._quality_spectrogram_requests[request_id] = (dialog, canvas, status_label)
+        self._run_in_background(self._compute_quality_spectrogram, file_path, request_id)
+
+    def _compute_quality_spectrogram(self, file_path, request_id):
+        try:
+            data = tagger.compute_track_spectrogram(file_path, log=self._append_to_journal)
+            self.message_queue.put(("quality_spectrogram_ready", (request_id, data, None)))
+        except Exception as error:
+            self.message_queue.put(("quality_spectrogram_ready", (request_id, None, str(error))))
+
+    @staticmethod
+    def _format_mmss(seconds):
+        seconds = max(0, int(round(seconds)))
+        minutes, secs = divmod(seconds, 60)
+        return f"{minutes}:{secs:02d}"
+
+    def _draw_quality_spectrogram(self, canvas, data):
+        """Renders tagger.compute_track_spectrogram()'s colormapped image
+        (time across, frequency up, color = dB) scaled up to fill the plot
+        area, with a dB color legend, real axis ticks/labels (frequency in
+        kHz, time in mm:ss), and a dashed marker at the detected cutoff (if
+        any) - the same cutoff analyze_track_quality() bases its verdict
+        on, made visible instead of just described in the Detail text."""
+        canvas.delete("all")
+        margin_left, margin_right, margin_top, margin_bottom = self.QUALITY_SPECTROGRAM_MARGIN
+        plot_w = self.QUALITY_SPECTROGRAM_CANVAS_W - margin_left - margin_right
+        plot_h = self.QUALITY_SPECTROGRAM_CANVAS_H - margin_top - margin_bottom
+
+        image = data.get("image")
+        duration = data.get("duration_seconds") or 0
+        max_freq = data.get("max_freq_hz") or 1
+        min_db = data.get("min_db", -120.0)
+        max_db = data.get("max_db", 0.0)
+        cutoff = data.get("cutoff_hz")
+        if image is None or duration <= 0:
+            return
+
+        resized = image.resize((plot_w, plot_h), Image.LANCZOS)
+        photo = ImageTk.PhotoImage(resized)
+        legend_image = ImageTk.PhotoImage(
+            tagger.spectrogram_legend_image(self.QUALITY_SPECTROGRAM_LEGEND_W, plot_h)
+        )
+        # Tk drops a PhotoImage as soon as nothing in Python still
+        # references it, even though the Canvas item keeps pointing at it -
+        # stash both on the canvas itself so they survive as long as the
+        # dialog does.
+        canvas.spectrogram_photo_refs = (photo, legend_image)
+        canvas.create_image(margin_left, margin_top, anchor="nw", image=photo)
+
+        is_dark = self.theme_colors is not None
+        axis_color = self.theme_colors["border"] if is_dark else "#999999"
+        text_color = self.theme_colors["tree_fg"] if is_dark else "#333333"
+        cutoff_color = "#ff5555"
+
+        canvas.create_rectangle(
+            margin_left, margin_top, margin_left + plot_w, margin_top + plot_h, outline=axis_color,
+        )
+
+        # Frequency (Y) ticks - every 5kHz, top of the plot = max_freq (the
+        # file's own Nyquist frequency), bottom = 0Hz.
+        freq_tick = 5000
+        freq = 0
+        while freq <= max_freq:
+            y = margin_top + plot_h * (1 - freq / max_freq)
+            canvas.create_line(margin_left - 4, y, margin_left, y, fill=axis_color)
+            canvas.create_text(
+                margin_left - 7, y, text=f"{freq // 1000}k", fill=text_color,
+                font=("TkDefaultFont", 8), anchor="e",
+            )
+            freq += freq_tick
+
+        # Time (X) ticks, mm:ss - pick a step that keeps the tick count
+        # readable regardless of how long the track turns out to be.
+        time_tick = 600
+        for step in (5, 10, 15, 30, 60, 120, 300, 600):
+            if duration / step <= 8:
+                time_tick = step
+                break
+        t = 0
+        while t <= duration:
+            x = margin_left + plot_w * (t / duration)
+            canvas.create_line(x, margin_top + plot_h, x, margin_top + plot_h + 4, fill=axis_color)
+            canvas.create_text(
+                x, margin_top + plot_h + 14, text=self._format_mmss(t), fill=text_color,
+                font=("TkDefaultFont", 8),
+            )
+            t += time_tick
+
+        if cutoff is not None and cutoff <= max_freq:
+            y = margin_top + plot_h * (1 - cutoff / max_freq)
+            canvas.create_line(margin_left, y, margin_left + plot_w, y, fill=cutoff_color, dash=(4, 2))
+            canvas.create_text(
+                margin_left + plot_w - 4, y - 3, text=f"{cutoff / 1000:.1f} kHz cutoff", fill=cutoff_color,
+                font=("TkDefaultFont", 8, "bold"), anchor="se",
+            )
+
+        # dB color legend - a vertical gradient bar plus tick labels, same
+        # fixed scale and colormap the plot itself uses.
+        legend_x = margin_left + plot_w + self.QUALITY_SPECTROGRAM_LEGEND_GAP
+        canvas.create_image(legend_x, margin_top, anchor="nw", image=legend_image)
+        canvas.create_rectangle(
+            legend_x, margin_top, legend_x + self.QUALITY_SPECTROGRAM_LEGEND_W, margin_top + plot_h,
+            outline=axis_color,
+        )
+        db_tick = 20
+        db = max_db
+        while db >= min_db:
+            y = margin_top + plot_h * ((max_db - db) / (max_db - min_db))
+            canvas.create_line(
+                legend_x + self.QUALITY_SPECTROGRAM_LEGEND_W, y,
+                legend_x + self.QUALITY_SPECTROGRAM_LEGEND_W + 4, y, fill=axis_color,
+            )
+            canvas.create_text(
+                legend_x + self.QUALITY_SPECTROGRAM_LEGEND_W + 7, y, text=f"{db:.0f} dB", fill=text_color,
+                font=("TkDefaultFont", 8), anchor="w",
+            )
+            db -= db_tick
+
     # --- Folder / mention actions ---
 
     def _choose_folder(self):
@@ -2067,14 +2798,25 @@ class TaggerInterface:
         instead of only finding out once Scan is clicked."""
         folder = filedialog.askdirectory(title="Choose the audio files folder")
         if folder:
-            self.folder_variable.set(folder)
-            self._refresh_tagger_buttons_for_connectivity()
-
-            tagger.MUSIC_FOLDER = folder
-            tagger.save_setting("music_folder", folder)
+            self._sync_all_folder_pickers(folder)
             file_count = len(tagger.list_audio_files())
             unit = "audio file" if file_count == 1 else "audio files"
             self._append_to_journal(f"Selected folder contains {file_count} {unit}.")
+
+    def _sync_all_folder_pickers(self, folder):
+        """Tagger/Extractor/Quality's folder pickers are all linked -
+        picking a folder in any one of them updates the other two and
+        persists it as the app's remembered music folder, since in
+        practice all three are always meant to point at the same folder."""
+        self.folder_variable.set(folder)
+        self.extract_folder_var.set(folder)
+        self.quality_folder_var.set(folder)
+        self._refresh_tagger_buttons_for_connectivity()
+        self.extract_button.configure(state="normal")
+        self.quality_scan_button.configure(state="normal")
+
+        tagger.MUSIC_FOLDER = folder
+        tagger.save_setting("music_folder", folder)
 
     def _add_mention(self, event=None):
         """Manual entries go straight into the 'To remove' list (press Enter to confirm)."""
@@ -2206,7 +2948,7 @@ class TaggerInterface:
         self.table.heading("artist", text="Artist")
 
         self.progress_canvas.pack_forget()
-        self._update_progress_bar(0, "")
+        self._update_progress_bar(self.progress_canvas, 0, "")
 
         self.journal_text.configure(state="normal")
         self.journal_text.delete("1.0", "end")
@@ -2451,11 +3193,11 @@ class TaggerInterface:
         if not self.progress_canvas.winfo_ismapped():
             self.progress_canvas.pack(fill="x")
             self._adjust_window_height()
-        self._update_progress_bar(0, "0 %")
+        self._update_progress_bar(self.progress_canvas, 0, "0 %")
 
     def _update_scan_progress_bar(self, scanned_count, total):
         fraction = scanned_count / total if total else 0
-        self._update_progress_bar(fraction, f"{round(fraction * 100)} %")
+        self._update_progress_bar(self.progress_canvas, fraction, f"{round(fraction * 100)} %")
 
     def _run_scan(self, explicit_files=None):
         number_before = len(self.scanned_plan)
@@ -2579,10 +3321,21 @@ class TaggerInterface:
     ROW_FLASH_STEPS = 8
     ROW_FLASH_STEP_MS = 25
 
-    def _flash_new_row(self, file_iid):
+    # Verdict-colored tags a settled Quality-tab row can carry - if a flash's
+    # final tags include one, that foreground stays visible through the
+    # flash instead of the plain row color (see _flash_new_row).
+    _VERDICT_TAG_NAMES = ("verdict_green", "verdict_orange", "verdict_red")
+
+    def _flash_new_row(self, file_iid, tree=None, final_tags=None):
+        """Reusable across both the Tagger table and the Quality table
+        (tree=self.quality_table) - same accent-tint-to-normal-color flash,
+        just parameterized over which Treeview and which tags the row
+        should settle back into (defaults match the Tagger table's own
+        original always-plain-striped behavior)."""
+        tree = tree if tree is not None else self.table
         is_dark = self.theme_colors is not None
         start_color = self.theme_colors["select_bg"] if is_dark else "#cfe0f5"
-        is_even = self.table.index(file_iid) % 2 == 0
+        is_even = tree.index(file_iid) % 2 == 0
         if is_dark:
             end_color = self.theme_colors["tree_bg"] if is_even else self.theme_colors["tree_odd_row"]
             fg_color = self.theme_colors["tree_fg"]
@@ -2590,27 +3343,34 @@ class TaggerInterface:
             end_color = "#ffffff" if is_even else "#e9e9e9"
             fg_color = "black"
 
+        if final_tags is None:
+            final_tags = ("even_row" if is_even else "odd_row",)
+        for tag in final_tags:
+            if tag in self._VERDICT_TAG_NAMES:
+                verdict_fg = tree.tag_configure(tag).get("foreground")
+                if verdict_fg:
+                    fg_color = verdict_fg
+
         flash_tag = f"flash_{file_iid}"
 
         def _step(n):
             # The row may have been removed (filtered out, deleted) or
             # restriped since scheduling - bail out rather than resurrect
             # a stale tag/color on a row that's no longer this one.
-            if not self.table.exists(file_iid) or flash_tag not in self.table.item(file_iid, "tags"):
+            if not tree.exists(file_iid) or flash_tag not in tree.item(file_iid, "tags"):
                 return
             if n > self.ROW_FLASH_STEPS:
-                current_tag = "even_row" if is_even else "odd_row"
-                self.table.item(file_iid, tags=(current_tag,))
+                tree.item(file_iid, tags=final_tags)
                 return
             t = n / self.ROW_FLASH_STEPS
-            self.table.tag_configure(
+            tree.tag_configure(
                 flash_tag,
                 background=self._interpolate_color(start_color, end_color, t),
                 foreground=fg_color,
             )
             self.window.after(self.ROW_FLASH_STEP_MS, _step, n + 1)
 
-        self.table.item(file_iid, tags=(flash_tag,))
+        tree.item(file_iid, tags=(flash_tag,))
         _step(0)
 
     @staticmethod
@@ -2621,11 +3381,16 @@ class TaggerInterface:
         mixed = [round(s + (e - s) * t) for s, e in zip(start_rgb, end_rgb)]
         return "#{:02x}{:02x}{:02x}".format(*mixed)
 
-    def _restripe_rows(self):
-        """Re-applies alternating row colors based on each row's current position."""
-        for index, item_id in enumerate(self.table.get_children()):
-            tag = "even_row" if index % 2 == 0 else "odd_row"
-            self.table.item(item_id, tags=(tag,))
+    def _restripe_rows(self, tree=None):
+        """Re-applies alternating row colors based on each row's current
+        position. Reused for the Quality table (tree=self.quality_table)
+        too - there, rows also carry a verdict color tag alongside the
+        stripe tag, so that tag is preserved instead of being dropped."""
+        tree = tree if tree is not None else self.table
+        for index, item_id in enumerate(tree.get_children()):
+            stripe_tag = "even_row" if index % 2 == 0 else "odd_row"
+            other_tags = [t for t in tree.item(item_id, "tags") if t not in ("even_row", "odd_row")]
+            tree.item(item_id, tags=tuple([stripe_tag] + other_tags))
 
     def _fade_out_and_delete_rows(self, item_ids, on_complete=None):
         """Mirror of _flash_new_row for removal: fades each row toward the
@@ -2860,7 +3625,7 @@ class TaggerInterface:
         # this same bar from 0% anyway.
         if self.progress_canvas.winfo_ismapped():
             self.progress_canvas.pack_forget()
-            self._update_progress_bar(0, "")
+            self._update_progress_bar(self.progress_canvas, 0, "")
             self._adjust_window_height()
 
         # One combined warning for every source that hit its rate limit
@@ -2917,11 +3682,15 @@ class TaggerInterface:
             # skipped for all of them) still logged "N track(s) currently
             # have no cover match" for every one of them, which read as
             # "none of these have a cover" even though they all did.
-            no_cover_infos = [
+            # Tracks a search was actually attempted for this scan (as
+            # opposed to a previously-tagged file scan_files skipped
+            # outright) - the basis for both the no-cover count below and
+            # the per-source match breakdown sent to Discord.
+            searched_infos = [
                 info for info in self.scanned_plan
-                if not info.get("processed") and not info.get("found_cover_image")
-                and not info.get("already_applied")
+                if not info.get("processed") and not info.get("already_applied")
             ]
+            no_cover_infos = [info for info in searched_infos if not info.get("found_cover_image")]
             if no_cover_infos:
                 self._append_to_journal(f"{len(no_cover_infos)} track(s) currently have no cover match.")
 
@@ -2947,6 +3716,10 @@ class TaggerInterface:
                     number_rate_limited_sources=len(self._rate_limited_messages_this_scan),
                     auth_error_sources=sorted(self.source_auth_error_warned),
                     cancelled=self.cancel_requested.is_set(),
+                    number_itunes=sum(1 for i in searched_infos if i.get("cover_source") == "iTunes"),
+                    number_spotify=sum(1 for i in searched_infos if i.get("cover_source") == "Spotify"),
+                    number_soundcloud=sum(1 for i in searched_infos if i.get("cover_source") == "SoundCloud"),
+                    number_acoustid_used=sum(1 for i in searched_infos if i.get("acoustid_identified")),
                 )
 
         self._check_for_duplicates()
@@ -3240,7 +4013,15 @@ class TaggerInterface:
         # AIFF is treated like MP3 here - already taggable and lossless, it
         # never defaults to converting (see _finish_scan) and isn't offered
         # a convert checkbox at all, same plain "AIFF" display as "MP3".
-        needs_conversion = info["format"] not in ("MP3", "AIFF")
+        # FLAC gets the same treatment, but only while "Convert everything
+        # to MP3" is off - it's tagged in place then too (see
+        # open_audio_file/write_tags), same as AIFF. Once that setting is
+        # on, FLAC converts to MP3 like every other non-MP3/AIFF/WAV
+        # format (see _resolve_conversion_target), so its checkbox comes
+        # back - forced on, same as the rest, not a per-row choice.
+        needs_conversion = info["format"] not in ("MP3", "AIFF") and not (
+            info["format"] == "FLAC" and not tagger.AUTO_CONVERT_MP3
+        )
         # What "convert" actually resolves to for THIS file - MP3 for most
         # formats, but WAV can go to AIFF instead (see AUTO_CONVERT_WAV_TO_AIFF /
         # _resolve_conversion_target) purely for cover-art compatibility
@@ -4597,7 +5378,7 @@ class TaggerInterface:
                 # misleading now that there's a new pending change waiting
                 # on the next Apply.
                 self.progress_canvas.pack_forget()
-                self._update_progress_bar(0, "")
+                self._update_progress_bar(self.progress_canvas, 0, "")
 
             self.table.item(item_id, values=self._build_row_values(info))
 
@@ -4645,13 +5426,15 @@ class TaggerInterface:
                 elif message_type == "progress":
                     index, total = content
                     percentage = round((index / total) * 100) if total else 0
-                    self._update_progress_bar(index / total if total else 0, f"{percentage} %")
+                    self._update_progress_bar(self.progress_canvas, index / total if total else 0, f"{percentage} %")
 
                 elif message_type == "done":
                     cancelled = content
                     self.processing_in_progress = False
                     self._set_buttons_enabled(True)
-                    self._update_progress_bar(1.0 if not cancelled else 0, "Cancelled" if cancelled else "Done ✓")
+                    self._update_progress_bar(
+                        self.progress_canvas, 1.0 if not cancelled else 0, "Cancelled" if cancelled else "Done ✓",
+                    )
                     if not cancelled:
                         if self._processing_failures:
                             self._show_processing_failures_dialog()
@@ -4766,10 +5549,17 @@ class TaggerInterface:
                     # trickling into the table.
                     self._pending_scan_done = content
 
+                elif message_type == "extract_progress":
+                    index, total = content
+                    fraction = (index / total) if total else 0
+                    self._update_progress_bar(self.extract_progress_canvas, fraction, f"{round(fraction * 100)} %")
+
                 elif message_type == "extract_done":
                     folder, moved_count, removed_count, cancelled, error = content
                     self.extract_browse_button.configure(state="normal")
                     self.extract_button.configure(text="Extract", command=self._start_extraction, state="normal")
+                    self.extract_progress_canvas.pack_forget()
+                    self._set_tabs_locked(False)
 
                     if error:
                         messagebox.showerror("Extraction error", error, parent=self.window)
@@ -4790,6 +5580,42 @@ class TaggerInterface:
                             open_with_default_app(folder)
                         except Exception:
                             pass
+
+                elif message_type == "quality_scan_progress":
+                    # Only the total is kept - the bar itself tracks how
+                    # many rows have actually been REVEALED (see
+                    # _add_quality_row), not how far the background
+                    # analysis has gotten, since that runs far ahead of the
+                    # paced 1/s reveal and would make the bar hit 100%
+                    # while most rows are still trickling into the table.
+                    _index, total = content
+                    self._quality_scan_total = total
+
+                elif message_type == "quality_scan_row":
+                    # Not displayed the instant it's ready - see
+                    # _reveal_next_quality_row(): queued here so the table
+                    # reveals tracks no faster than SCAN_REVEAL_INTERVAL_MS
+                    # apart, while the actual scan keeps running at full
+                    # speed underneath, unaffected.
+                    self._pending_quality_reveals.append(content)
+
+                elif message_type == "quality_scan_done":
+                    self._pending_quality_scan_done = content
+
+                elif message_type == "quality_spectrogram_ready":
+                    request_id, data, error = content
+                    entry = self._quality_spectrogram_requests.pop(request_id, None)
+                    if entry is not None:
+                        dialog, canvas, status_label = entry
+                        # The dialog may have been closed (Close button, or
+                        # the whole app) while the background decode/FFT was
+                        # still running - nothing left to update.
+                        if dialog.winfo_exists():
+                            if error or not data:
+                                status_label.configure(text="Could not analyze this file's spectrogram.")
+                            else:
+                                status_label.pack_forget()
+                                self._draw_quality_spectrogram(canvas, data)
 
                 elif message_type == "internet_status":
                     is_online, is_startup_check = content
@@ -4967,7 +5793,7 @@ class TaggerInterface:
         self.journal_text.delete("1.0", "end")
         self.journal_text.configure(state="disabled")
 
-        self._update_progress_bar(0, "0 %")
+        self._update_progress_bar(self.progress_canvas, 0, "0 %")
         self.processing_in_progress = True
         self.cancel_requested.clear()
         self._processing_failures = []  # (identifier, reason) pairs - see _show_processing_failures_dialog

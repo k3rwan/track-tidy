@@ -5,16 +5,20 @@ Run with: python -m unittest discover -s tests
 """
 
 import hashlib
+import io
 import os
 import sys
 import json
 import shutil
+import subprocess
 import time
 import threading
 import unittest
 import tempfile
 import keyring
 import keyring.backend
+import numpy as np
+from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import track_tidy as tagger
@@ -59,6 +63,12 @@ class ParseFilenameTests(unittest.TestCase):
     def test_entirely_lowercase_gets_titlecased(self):
         artist, title = tagger.parse_filename("daft_punk - one_more_time.mp3")
         self.assertEqual((artist, title), ("Daft Punk", "One More Time"))
+
+    def test_self_credited_qualifier_collapsed(self):
+        self.assertEqual(
+            tagger.parse_filename("Juno (DE) - Que Rico (Juno (DE) (Extended Mix)).flac"),
+            ("Juno (DE)", "Que Rico (Extended Mix)"),
+        )
 
     def test_mixed_case_left_alone(self):
         # Has an uppercase letter already -> not touched, to protect stylized names.
@@ -194,6 +204,47 @@ class StripHelpersTests(unittest.TestCase):
             tagger.strip_parentheses("Water (Dj Nasty Remix) [AMAPIANO]"),
             "Water",
         )
+
+
+class StripSelfCreditedQualifierTests(unittest.TestCase):
+    """Reported bug: 'Juno (DE) - Que Rico (Juno (DE) (Extended Mix)).flac' -
+    the title wraps its qualifier with the artist's own name (as if
+    crediting a different remixer for a self-remix), leaving the artist
+    uselessly duplicated inside the title too."""
+
+    def test_collapses_nested_self_credit_to_its_qualifier(self):
+        self.assertEqual(
+            tagger.strip_self_credited_qualifier("Juno (DE)", "Que Rico (Juno (DE) (Extended Mix))"),
+            "Que Rico (Extended Mix)",
+        )
+
+    def test_drops_a_bare_self_credit_with_no_qualifier(self):
+        self.assertEqual(
+            tagger.strip_self_credited_qualifier("Juno (DE)", "Que Rico (Juno (DE))"),
+            "Que Rico",
+        )
+
+    def test_matches_case_insensitively(self):
+        self.assertEqual(
+            tagger.strip_self_credited_qualifier("juno (de)", "Que Rico (Juno (DE) (Extended Mix))"),
+            "Que Rico (Extended Mix)",
+        )
+
+    def test_leaves_title_alone_when_artist_not_wrapped_in_parens(self):
+        self.assertEqual(
+            tagger.strip_self_credited_qualifier("Juno (DE)", "Que Rico (Extended Mix)"),
+            "Que Rico (Extended Mix)",
+        )
+
+    def test_leaves_a_different_remixer_credit_alone(self):
+        self.assertEqual(
+            tagger.strip_self_credited_qualifier("Juno (DE)", "Que Rico (DJ Snake Remix)"),
+            "Que Rico (DJ Snake Remix)",
+        )
+
+    def test_empty_artist_or_title_is_a_noop(self):
+        self.assertEqual(tagger.strip_self_credited_qualifier("", "Que Rico"), "Que Rico")
+        self.assertEqual(tagger.strip_self_credited_qualifier("Juno (DE)", ""), "")
 
 
 class ComputeSearchTitlesTests(unittest.TestCase):
@@ -904,6 +955,18 @@ class TokenAuthErrorCallbackTests(unittest.TestCase):
     should trigger it."""
 
     def setUp(self):
+        # invalidate_soundcloud_token()/get_soundcloud_token() now persist
+        # the token via the OS keyring (see _SOUNDCLOUD_TOKEN_KEYRING_KEY)
+        # and do a one-time settings.json cleanup pass - without sandboxing
+        # both here, this test class would touch Kevin's REAL saved
+        # SoundCloud token and settings file on his own machine, same as
+        # CredentialEncryptionTests/SettingsPersistenceTests already guard
+        # against for the client ID/secret and settings respectively.
+        self._original_keyring = keyring.get_keyring()
+        keyring.set_keyring(_FakeKeyringBackend())
+        self._original_settings_file = tagger.SETTINGS_FILE
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        tagger.SETTINGS_FILE = os.path.join(self._tmp_dir.name, "settings.json")
         self._original_sc_id = tagger.SOUNDCLOUD_CLIENT_ID
         self._original_sc_secret = tagger.SOUNDCLOUD_CLIENT_SECRET
         self._original_post = tagger.requests.post
@@ -916,6 +979,9 @@ class TokenAuthErrorCallbackTests(unittest.TestCase):
         tagger.SOUNDCLOUD_CLIENT_SECRET = self._original_sc_secret
         tagger.requests.post = self._original_post
         tagger.invalidate_soundcloud_token()
+        keyring.set_keyring(self._original_keyring)
+        tagger.SETTINGS_FILE = self._original_settings_file
+        self._tmp_dir.cleanup()
 
     class FakeResponse:
         def __init__(self, status_code, text=""):
@@ -946,6 +1012,85 @@ class TokenAuthErrorCallbackTests(unittest.TestCase):
         calls = []
         tagger.get_soundcloud_token(log=lambda *_: None, on_auth_error=lambda s, m: calls.append((s, m)))
         self.assertEqual(calls, [])
+
+
+class SoundcloudTokenPersistenceTests(unittest.TestCase):
+    """get_soundcloud_token() persists the token via the OS keyring (not
+    plaintext settings.json - see the security audit that prompted this),
+    so a fresh process can reuse it instead of burning SoundCloud's tight
+    token quota on every launch."""
+
+    def setUp(self):
+        self._original_keyring = keyring.get_keyring()
+        keyring.set_keyring(_FakeKeyringBackend())
+        self._original_settings_file = tagger.SETTINGS_FILE
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        tagger.SETTINGS_FILE = os.path.join(self._tmp_dir.name, "settings.json")
+        self._original_sc_id = tagger.SOUNDCLOUD_CLIENT_ID
+        self._original_sc_secret = tagger.SOUNDCLOUD_CLIENT_SECRET
+        self._original_post = tagger.requests.post
+        self._original_purged_flag = tagger._soundcloud_legacy_token_setting_purged
+        tagger._soundcloud_legacy_token_setting_purged = False
+        tagger.SOUNDCLOUD_CLIENT_ID = "test-id"
+        tagger.SOUNDCLOUD_CLIENT_SECRET = "test-secret"
+        tagger.invalidate_soundcloud_token()
+
+    def tearDown(self):
+        tagger.SOUNDCLOUD_CLIENT_ID = self._original_sc_id
+        tagger.SOUNDCLOUD_CLIENT_SECRET = self._original_sc_secret
+        tagger.requests.post = self._original_post
+        tagger._soundcloud_legacy_token_setting_purged = self._original_purged_flag
+        tagger.invalidate_soundcloud_token()
+        keyring.set_keyring(self._original_keyring)
+        tagger.SETTINGS_FILE = self._original_settings_file
+        self._tmp_dir.cleanup()
+
+    class FakeTokenResponse:
+        status_code = 200
+
+        def json(self):
+            return {"access_token": "fresh-token", "expires_in": 3600}
+
+    def test_token_persisted_via_keyring_not_settings_file(self):
+        tagger.requests.post = lambda *a, **k: self.FakeTokenResponse()
+        result = tagger.get_soundcloud_token(log=lambda *_: None)
+
+        self.assertEqual(result, "fresh-token")
+        self.assertEqual(
+            keyring.get_password(tagger.KEYRING_SERVICE, tagger._SOUNDCLOUD_TOKEN_KEYRING_KEY), "fresh-token",
+        )
+        self.assertNotIn("soundcloud_token", tagger.load_settings())
+
+    def test_token_survives_in_memory_cache_reset(self):
+        # Simulates a fresh process: the in-memory cache is gone, but the
+        # keyring-persisted token from an earlier call is picked back up.
+        tagger.requests.post = lambda *a, **k: self.FakeTokenResponse()
+        tagger.get_soundcloud_token(log=lambda *_: None)
+        tagger._cached_soundcloud_token = None
+        tagger._cached_token_expiry = 0
+
+        tagger.requests.post = lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not re-authenticate"))
+        result = tagger.get_soundcloud_token(log=lambda *_: None)
+        self.assertEqual(result, "fresh-token")
+
+    def test_legacy_plaintext_setting_is_purged(self):
+        tagger.save_setting("soundcloud_token", "old-plaintext-token")
+        tagger.save_setting("soundcloud_token_expiry", time.time() + 3600)
+
+        tagger.requests.post = lambda *a, **k: self.FakeTokenResponse()
+        tagger.get_soundcloud_token(log=lambda *_: None)
+
+        settings = tagger.load_settings()
+        self.assertNotIn("soundcloud_token", settings)
+        self.assertNotIn("soundcloud_token_expiry", settings)
+
+    def test_invalidate_clears_persisted_token_too(self):
+        tagger.requests.post = lambda *a, **k: self.FakeTokenResponse()
+        tagger.get_soundcloud_token(log=lambda *_: None)
+
+        tagger.invalidate_soundcloud_token()
+
+        self.assertIsNone(tagger.read_credential(tagger._SOUNDCLOUD_TOKEN_KEYRING_KEY))
 
 
 class SearchCoverManualTests(unittest.TestCase):
@@ -1138,7 +1283,7 @@ class ListAudioFilesTests(unittest.TestCase):
         self._original_auto_convert = tagger.AUTO_CONVERT_MP3
         self._tmp_dir = tempfile.TemporaryDirectory()
         tagger.MUSIC_FOLDER = self._tmp_dir.name
-        for name in ("Song.mp3", "Track.wav", "Other.flac"):
+        for name in ("Song.mp3", "Track.wav", "Other.flac", "Track.m4a"):
             with open(os.path.join(self._tmp_dir.name, name), "w") as f:
                 f.write("x")
 
@@ -1149,14 +1294,16 @@ class ListAudioFilesTests(unittest.TestCase):
 
     def test_includes_wav_when_auto_convert_enabled(self):
         tagger.AUTO_CONVERT_MP3 = True
-        self.assertEqual(set(tagger.list_audio_files()), {"Song.mp3", "Track.wav", "Other.flac"})
+        self.assertEqual(
+            set(tagger.list_audio_files()), {"Song.mp3", "Track.wav", "Other.flac", "Track.m4a"},
+        )
 
-    def test_excludes_non_wav_non_mp3_when_auto_convert_disabled(self):
-        # WAV can be tagged directly (no conversion needed), so it stays
-        # included either way - only FLAC (needs converting to be taggable
-        # at all) drops out when auto-convert is off.
+    def test_excludes_non_taggable_formats_when_auto_convert_disabled(self):
+        # WAV and FLAC can both be tagged directly (no conversion needed),
+        # so they stay included either way - only M4A (needs converting to
+        # be taggable at all) drops out when auto-convert is off.
         tagger.AUTO_CONVERT_MP3 = False
-        self.assertEqual(set(tagger.list_audio_files()), {"Song.mp3", "Track.wav"})
+        self.assertEqual(set(tagger.list_audio_files()), {"Song.mp3", "Track.wav", "Other.flac"})
 
 
 class ExtractAudioFilesTests(unittest.TestCase):
@@ -1544,6 +1691,83 @@ class WriteTagsWavRiffInfoTests(unittest.TestCase):
         self.assertEqual(title, "New Title")
 
 
+class WriteTagsFlacTests(unittest.TestCase):
+    """FLAC has no ID3 support - write_tags() has to use Vorbis comments
+    (title/artist) and a separate Picture block (cover) instead, unlike
+    the ID3-based path shared by mp3/wav/aiff."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.file_path = os.path.join(self._tmp_dir.name, "song.flac")
+        shutil.copy(os.path.join(project_root, "assets", "fart.flac"), self.file_path)
+
+    def tearDown(self):
+        self._tmp_dir.cleanup()
+
+    def _jpeg_bytes(self, size=(40, 30), color=(200, 50, 50)):
+        buffer = io.BytesIO()
+        Image.new("RGB", size, color).save(buffer, format="JPEG")
+        return buffer.getvalue()
+
+    def test_writes_title_and_artist(self):
+        tagger.write_tags(
+            self.file_path, "New Artist", "New Title", cover_image=None, force_remove_if_missing=False,
+            update_title=True, update_artist=True, update_cover=False, log=lambda *_: None,
+        )
+        _, artist, title, _ = tagger.read_current_info(self.file_path)
+        self.assertEqual(artist, "New Artist")
+        self.assertEqual(title, "New Title")
+
+    def test_writes_and_replaces_cover(self):
+        cover = self._jpeg_bytes(color=(200, 50, 50))
+        tagger.write_tags(
+            self.file_path, "Artist", "Title", cover_image=cover, force_remove_if_missing=False,
+            update_title=False, update_artist=False, update_cover=True, log=lambda *_: None,
+        )
+        has_cover, _, _, cover_bytes = tagger.read_current_info(self.file_path)
+        self.assertTrue(has_cover)
+        self.assertEqual(cover_bytes, cover)
+
+        # Replacing must not leave the old picture behind alongside the new one.
+        new_cover = self._jpeg_bytes(color=(50, 50, 200))
+        tagger.write_tags(
+            self.file_path, "Artist", "Title", cover_image=new_cover, force_remove_if_missing=False,
+            update_title=False, update_artist=False, update_cover=True, log=lambda *_: None,
+        )
+        audio = tagger.FLAC(self.file_path)
+        self.assertEqual(len(audio.pictures), 1)
+        self.assertEqual(audio.pictures[0].data, new_cover)
+
+    def test_force_remove_if_missing_clears_cover(self):
+        cover = self._jpeg_bytes()
+        tagger.write_tags(
+            self.file_path, "Artist", "Title", cover_image=cover, force_remove_if_missing=False,
+            update_title=False, update_artist=False, update_cover=True, log=lambda *_: None,
+        )
+        tagger.write_tags(
+            self.file_path, "Artist", "Title", cover_image=None, force_remove_if_missing=True,
+            update_title=False, update_artist=False, update_cover=True, log=lambda *_: None,
+        )
+        has_cover, _, _, _ = tagger.read_current_info(self.file_path)
+        self.assertFalse(has_cover)
+
+    def test_keeps_existing_cover_when_not_replacing(self):
+        cover = self._jpeg_bytes()
+        tagger.write_tags(
+            self.file_path, "Artist", "Title", cover_image=cover, force_remove_if_missing=False,
+            update_title=False, update_artist=False, update_cover=True, log=lambda *_: None,
+        )
+        # No fresh cover found, and not forced to remove - existing picture untouched.
+        tagger.write_tags(
+            self.file_path, "Artist", "Title", cover_image=None, force_remove_if_missing=False,
+            update_title=False, update_artist=False, update_cover=True, log=lambda *_: None,
+        )
+        has_cover, _, _, cover_bytes = tagger.read_current_info(self.file_path)
+        self.assertTrue(has_cover)
+        self.assertEqual(cover_bytes, cover)
+
+
 class ProcessFilesTests(unittest.TestCase):
     """Reported bug: a corrupted file ("can't sync to MPEG frame", a real
     mutagen error for invalid MP3 audio data) raised uncaught from inside
@@ -1870,6 +2094,24 @@ class NewInstallNotificationTests(unittest.TestCase):
         fields = captured["json"]["embeds"][0]["fields"]
         self.assertEqual(fields[0], {"name": "User", "value": "someuser", "inline": True})
 
+    def test_includes_os_field(self):
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["json"] = json
+
+            class FakeResponse:
+                status_code = 204
+            return FakeResponse()
+
+        tagger.requests.post = fake_post
+        tagger.send_new_install_notification(reporter_name="someuser")
+
+        fields = captured["json"]["embeds"][0]["fields"]
+        os_fields = [f for f in fields if f["name"] == "OS"]
+        self.assertEqual(len(os_fields), 1)
+        self.assertTrue(os_fields[0]["value"])  # non-empty
+
     def test_excluded_user_is_not_notified(self):
         # DISCORD_NOTIFICATION_EXCLUDED_USERS, checked case-insensitively.
         calls = []
@@ -1964,7 +2206,113 @@ class NewInstallNotificationTests(unittest.TestCase):
         embed = captured["json"]["embeds"][0]
         self.assertEqual(embed["title"], "App updated")
         fields = embed["fields"]
-        self.assertEqual(fields[1], {"name": "Previous version", "value": "0.20", "inline": True})
+        self.assertIn({"name": "Previous version", "value": "0.20", "inline": True}, fields)
+
+
+class UsageTelemetryOptOutTests(unittest.TestCase):
+    """SEND_USAGE_TELEMETRY gates every AUTOMATIC report via
+    _is_discord_notification_excluded() - send_track_report() (the
+    explicit "Report track" button) is deliberately NOT gated by it. No
+    Settings UI currently exposes this flag (removed - see interface.py
+    history), but the flag/persisted setting itself still exists."""
+
+    def setUp(self):
+        self.original_post = tagger.requests.post
+        self.original_telemetry = tagger.SEND_USAGE_TELEMETRY
+
+    def tearDown(self):
+        tagger.requests.post = self.original_post
+        tagger.SEND_USAGE_TELEMETRY = self.original_telemetry
+
+    def test_opted_out_suppresses_new_install_notification(self):
+        calls = []
+        tagger.requests.post = lambda *a, **k: calls.append(1)
+        tagger.SEND_USAGE_TELEMETRY = False
+
+        result = tagger.send_new_install_notification(reporter_name="someuser")
+
+        self.assertFalse(result)
+        self.assertEqual(calls, [])
+
+    def test_opted_out_suppresses_scan_complete_notification(self):
+        calls = []
+        tagger.requests.post = lambda *a, **k: calls.append(1)
+        tagger.SEND_USAGE_TELEMETRY = False
+
+        result = tagger.send_scan_complete_notification(reporter_name="someuser", total=5)
+
+        self.assertFalse(result)
+        self.assertEqual(calls, [])
+
+    def test_opted_out_suppresses_extraction_report(self):
+        calls = []
+        tagger.requests.post = lambda *a, **k: calls.append(1)
+        tagger.SEND_USAGE_TELEMETRY = False
+
+        result = tagger.send_extraction_report(reporter_name="someuser", moved_count=1)
+
+        self.assertFalse(result)
+        self.assertEqual(calls, [])
+
+    def test_opted_out_suppresses_quality_scan_report(self):
+        calls = []
+        tagger.requests.post = lambda *a, **k: calls.append(1)
+        tagger.SEND_USAGE_TELEMETRY = False
+
+        result = tagger.send_quality_scan_report(reporter_name="someuser", total=1)
+
+        self.assertFalse(result)
+        self.assertEqual(calls, [])
+
+    def test_opted_out_suppresses_rate_limit_report(self):
+        calls = []
+        tagger.requests.post = lambda *a, **k: calls.append(1)
+        tagger.SEND_USAGE_TELEMETRY = False
+
+        result = tagger.send_rate_limit_report("iTunes", reporter_name="someuser")
+
+        self.assertFalse(result)
+        self.assertEqual(calls, [])
+
+    def test_opted_out_suppresses_no_cover_report(self):
+        calls = []
+        tagger.requests.post = lambda *a, **k: calls.append(1)
+        tagger.SEND_USAGE_TELEMETRY = False
+
+        result = tagger.send_no_cover_report([{"file": "a.mp3"}], total=1, reporter_name="someuser")
+
+        self.assertFalse(result)
+        self.assertEqual(calls, [])
+
+    def test_opted_out_does_not_affect_explicit_track_report(self):
+        # send_track_report() is the "Report track" button - an explicit,
+        # single-purpose action, not passive telemetry, so it must keep
+        # working even with the toggle off.
+        calls = []
+
+        def fake_post(url, json=None, data=None, files=None, timeout=None):
+            calls.append(1)
+
+            class FakeResponse:
+                status_code = 204
+            return FakeResponse()
+
+        tagger.requests.post = fake_post
+        tagger.SEND_USAGE_TELEMETRY = False
+
+        result, reason = tagger.send_track_report({"file": "a.mp3"}, reporter_name="someuser")
+
+        self.assertTrue(result)
+        self.assertEqual(calls, [1])
+
+    def test_opted_in_by_default_still_sends(self):
+        calls = []
+        tagger.requests.post = lambda *a, **k: calls.append(1)
+        self.assertTrue(tagger.SEND_USAGE_TELEMETRY, "default should be opted-in, matching prior behavior")
+
+        tagger.send_new_install_notification(reporter_name="someuser")
+
+        self.assertEqual(calls, [1])
 
 
 class ScanCompleteNotificationTests(unittest.TestCase):
@@ -1994,13 +2342,35 @@ class ScanCompleteNotificationTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(captured["url"], tagger.DISCORD_REPORT_WEBHOOK_URL)
         fields = captured["json"]["embeds"][0]["fields"]
-        self.assertEqual(fields[0], {"name": "User", "value": "someuser", "inline": True})
-        self.assertEqual(fields[1], {"name": "New files", "value": "3", "inline": True})
-        self.assertEqual(fields[2], {"name": "Removed files", "value": "1", "inline": True})
-        self.assertEqual(fields[3], {"name": "Total files", "value": "10", "inline": True})
-        self.assertEqual(fields[4], {"name": "No cover match", "value": "2 (20%)", "inline": True})
-        self.assertEqual(fields[5], {"name": "Rate-limited sources", "value": "1", "inline": True})
-        self.assertEqual(fields[6], {"name": "Auth errors", "value": "SoundCloud", "inline": True})
+        self.assertIn({"name": "User", "value": "someuser", "inline": True}, fields)
+        self.assertIn({"name": "New files", "value": "3", "inline": True}, fields)
+        self.assertIn({"name": "Removed files", "value": "1", "inline": True}, fields)
+        self.assertIn({"name": "Total files", "value": "10", "inline": True}, fields)
+        self.assertIn({"name": "No cover match", "value": "2 (20%)", "inline": True}, fields)
+        self.assertIn({"name": "Rate-limited sources", "value": "1", "inline": True}, fields)
+        self.assertIn({"name": "Auth errors", "value": "SoundCloud", "inline": True}, fields)
+
+    def test_includes_per_source_match_breakdown(self):
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["json"] = json
+
+            class FakeResponse:
+                status_code = 204
+            return FakeResponse()
+
+        tagger.requests.post = fake_post
+        tagger.send_scan_complete_notification(
+            reporter_name="someuser", number_new=5,
+            number_itunes=2, number_spotify=1, number_soundcloud=1, number_acoustid_used=1,
+        )
+
+        fields = captured["json"]["embeds"][0]["fields"]
+        self.assertIn({"name": "iTunes matches", "value": "2", "inline": True}, fields)
+        self.assertIn({"name": "Spotify matches", "value": "1", "inline": True}, fields)
+        self.assertIn({"name": "SoundCloud matches", "value": "1", "inline": True}, fields)
+        self.assertIn({"name": "AcoustID fallback used", "value": "1", "inline": True}, fields)
 
     def test_no_auth_errors_shows_none(self):
         captured = {}
@@ -2016,7 +2386,7 @@ class ScanCompleteNotificationTests(unittest.TestCase):
         tagger.send_scan_complete_notification(reporter_name="someuser", number_new=1)
 
         fields = captured["json"]["embeds"][0]["fields"]
-        self.assertEqual(fields[6], {"name": "Auth errors", "value": "None", "inline": True})
+        self.assertIn({"name": "Auth errors", "value": "None", "inline": True}, fields)
 
     def test_cancelled_scan_still_notifies_with_relabeled_title(self):
         captured = {}
@@ -2101,6 +2471,109 @@ class ExtractionReportTests(unittest.TestCase):
         embed = captured["json"]["embeds"][0]
         self.assertEqual(embed["title"], "Extraction failed")
         self.assertIn({"name": "Error", "value": "Permission denied", "inline": False}, embed["fields"])
+
+
+class QualityScanReportTests(unittest.TestCase):
+    def setUp(self):
+        self.original_post = tagger.requests.post
+
+    def tearDown(self):
+        tagger.requests.post = self.original_post
+
+    def _capture(self):
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["json"] = json
+
+            class FakeResponse:
+                status_code = 204
+            return FakeResponse()
+
+        tagger.requests.post = fake_post
+        return captured
+
+    def test_completed_scan(self):
+        captured = self._capture()
+        result = tagger.send_quality_scan_report(
+            reporter_name="someuser", total=10, number_green=6, number_orange=3, number_red=1,
+        )
+
+        self.assertTrue(result)
+        embed = captured["json"]["embeds"][0]
+        self.assertEqual(embed["title"], "Quality scan complete")
+        fields = embed["fields"]
+        self.assertIn({"name": "Total files", "value": "10", "inline": True}, fields)
+        self.assertIn({"name": "Green", "value": "6", "inline": True}, fields)
+        self.assertIn({"name": "Orange", "value": "3", "inline": True}, fields)
+        self.assertIn({"name": "Red", "value": "1", "inline": True}, fields)
+        self.assertFalse(any(f["name"] == "Error" for f in fields))
+
+    def test_cancelled_scan(self):
+        captured = self._capture()
+        tagger.send_quality_scan_report(reporter_name="someuser", total=4, cancelled=True)
+
+        self.assertEqual(captured["json"]["embeds"][0]["title"], "Quality scan cancelled")
+
+    def test_failed_scan_includes_error_field(self):
+        captured = self._capture()
+        tagger.send_quality_scan_report(reporter_name="someuser", error="Folder not found")
+
+        embed = captured["json"]["embeds"][0]
+        self.assertEqual(embed["title"], "Quality scan failed")
+        self.assertIn({"name": "Error", "value": "Folder not found", "inline": False}, embed["fields"])
+
+
+class CrashReportTests(unittest.TestCase):
+    def setUp(self):
+        self.original_post = tagger.requests.post
+
+    def tearDown(self):
+        tagger.requests.post = self.original_post
+
+    def _capture(self):
+        captured = {}
+
+        def fake_post(url, json=None, data=None, files=None, timeout=None):
+            captured["url"] = url
+            captured["data"] = data
+            captured["files"] = files
+
+            class FakeResponse:
+                status_code = 204
+            return FakeResponse()
+
+        tagger.requests.post = fake_post
+        return captured
+
+    def test_sends_traceback_as_attachment(self):
+        captured = self._capture()
+        result = tagger.send_crash_report(
+            reporter_name="someuser", traceback_text="Traceback...\nValueError: boom", context="ui_callback",
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(captured["url"], tagger.DISCORD_REPORT_WEBHOOK_URL)
+        payload = json.loads(captured["data"]["payload_json"])
+        embed = payload["embeds"][0]
+        self.assertEqual(embed["title"], "Unhandled exception")
+        self.assertIn({"name": "User", "value": "someuser", "inline": True}, embed["fields"])
+        self.assertIn({"name": "Context", "value": "ui_callback", "inline": True}, embed["fields"])
+        self.assertTrue(any(f["name"] == "OS" for f in embed["fields"]))
+        self.assertEqual(captured["files"]["files[0]"][1], b"Traceback...\nValueError: boom")
+
+    def test_opted_out_suppresses_crash_report(self):
+        calls = []
+        tagger.requests.post = lambda *a, **k: calls.append(1)
+        original_telemetry = tagger.SEND_USAGE_TELEMETRY
+        tagger.SEND_USAGE_TELEMETRY = False
+        try:
+            result = tagger.send_crash_report(reporter_name="someuser", traceback_text="boom")
+        finally:
+            tagger.SEND_USAGE_TELEMETRY = original_telemetry
+
+        self.assertFalse(result)
+        self.assertEqual(calls, [])
 
 
 class UpdateChecksumTests(unittest.TestCase):
@@ -2243,6 +2716,212 @@ class SafePrintTests(unittest.TestCase):
             tagger.safe_print("Uploader: \U0001f31e Sun Guy")
         except UnicodeEncodeError:
             self.fail("safe_print() should never raise UnicodeEncodeError")
+
+
+class DetectSpectralCutoffTests(unittest.TestCase):
+    """Pure-numpy tests for the FFT-based cutoff detector - no ffmpeg/real
+    audio file needed, since it operates on an already-decoded sample
+    array. Uses synthetic wideband noise (optionally low-pass filtered in
+    the frequency domain) so the expected cutoff is exactly known,
+    unlike a real music file where the "correct" answer is a judgment
+    call."""
+
+    SAMPLE_RATE = 44100
+
+    def _make_noise(self, seconds=3, seed=0):
+        rng = np.random.default_rng(seed)
+        return rng.normal(0, 0.3, size=int(self.SAMPLE_RATE * seconds)).astype(np.float32)
+
+    def _lowpass_in_frequency_domain(self, samples, cutoff_hz):
+        spectrum = np.fft.rfft(samples)
+        freqs = np.fft.rfftfreq(len(samples), d=1.0 / self.SAMPLE_RATE)
+        spectrum[freqs > cutoff_hz] = 0
+        return np.fft.irfft(spectrum, n=len(samples)).astype(np.float32)
+
+    def test_full_bandwidth_noise_has_no_cutoff(self):
+        samples = self._make_noise()
+        self.assertIsNone(tagger._detect_spectral_cutoff_hz(samples))
+
+    def test_lowpassed_noise_detects_cutoff_near_the_filter_frequency(self):
+        samples = self._lowpass_in_frequency_domain(self._make_noise(), cutoff_hz=12000)
+        cutoff = tagger._detect_spectral_cutoff_hz(samples)
+        self.assertIsNotNone(cutoff)
+        self.assertLess(abs(cutoff - 12000), 1500)
+
+    def test_lower_cutoff_filter_is_detected_lower_than_a_higher_one(self):
+        low = tagger._detect_spectral_cutoff_hz(self._lowpass_in_frequency_domain(self._make_noise(), 10000))
+        high = tagger._detect_spectral_cutoff_hz(self._lowpass_in_frequency_domain(self._make_noise(), 18000))
+        self.assertIsNotNone(low)
+        self.assertIsNotNone(high)
+        self.assertLess(low, high)
+
+    def test_too_short_sample_returns_none(self):
+        samples = self._make_noise(seconds=0.1)
+        self.assertIsNone(tagger._detect_spectral_cutoff_hz(samples))
+
+
+class MeasureLufsTests(unittest.TestCase):
+    """Pure-numpy tests for the ITU-R BS.1770 loudness measurement -
+    verified separately (during development) to match ffmpeg's own
+    `ebur128` filter to within 0.1 LUFS on real files. These tests check
+    internal consistency (a known linear gain shifts the measured LUFS by
+    that same dB amount) rather than any specific absolute value, since
+    K-weighting means a synthetic signal's exact LUFS isn't as simple to
+    predict in advance as plain RMS was."""
+
+    SAMPLE_RATE = 44100
+
+    def _make_noise(self, seconds=2, seed=0, scale=0.1):
+        rng = np.random.default_rng(seed)
+        return (rng.standard_normal(int(self.SAMPLE_RATE * seconds)) * scale).astype(np.float32)
+
+    def test_quieter_signal_measures_lower_lufs_by_the_expected_amount(self):
+        base = self._make_noise()
+        base_lufs = tagger._measure_lufs(base, self.SAMPLE_RATE)
+        quieter = base * (10 ** (-12 / 20))  # exactly -12dB
+        quieter_lufs = tagger._measure_lufs(quieter, self.SAMPLE_RATE)
+        self.assertIsNotNone(base_lufs)
+        self.assertIsNotNone(quieter_lufs)
+        self.assertAlmostEqual(base_lufs - quieter_lufs, 12.0, delta=0.5)
+
+    def test_too_short_sample_returns_none(self):
+        samples = self._make_noise(seconds=0.1)
+        self.assertIsNone(tagger._measure_lufs(samples, self.SAMPLE_RATE))
+
+
+class LevelVerdictFromLufsTests(unittest.TestCase):
+    """Pure numeric tests for the verdict/threshold logic, kept separate
+    from the (much slower, filter-based) LUFS measurement itself."""
+
+    def test_normal_level_is_green_with_no_detail(self):
+        verdict, detail = tagger._level_verdict_from_lufs(-10.0)
+        self.assertEqual(verdict, tagger.QUALITY_GREEN)
+        self.assertIsNone(detail)
+
+    def test_moderately_quiet_level_is_orange(self):
+        verdict, detail = tagger._level_verdict_from_lufs(-24.0)
+        self.assertEqual(verdict, tagger.QUALITY_ORANGE)
+        self.assertIn("LUFS", detail)
+
+    def test_very_quiet_level_is_red(self):
+        verdict, detail = tagger._level_verdict_from_lufs(-35.0)
+        self.assertEqual(verdict, tagger.QUALITY_RED)
+        self.assertIn("LUFS", detail)
+
+    def test_unknown_level_is_green_with_no_detail(self):
+        verdict, detail = tagger._level_verdict_from_lufs(None)
+        self.assertEqual(verdict, tagger.QUALITY_GREEN)
+        self.assertIsNone(detail)
+
+
+class WorseQualityResultTests(unittest.TestCase):
+    def test_returns_the_only_result_when_nothing_flagged(self):
+        result = tagger._worse_quality_result(
+            (tagger.QUALITY_GREEN, "spectral fine"), (tagger.QUALITY_GREEN, None),
+        )
+        self.assertEqual(result, (tagger.QUALITY_GREEN, "spectral fine"))
+
+    def test_worse_verdict_wins(self):
+        verdict, _detail = tagger._worse_quality_result(
+            (tagger.QUALITY_ORANGE, "spectral issue"), (tagger.QUALITY_RED, "level issue"),
+        )
+        self.assertEqual(verdict, tagger.QUALITY_RED)
+
+    def test_combines_details_when_both_flagged(self):
+        verdict, detail = tagger._worse_quality_result(
+            (tagger.QUALITY_RED, "level issue"), (tagger.QUALITY_ORANGE, "spectral issue"),
+        )
+        self.assertEqual(verdict, tagger.QUALITY_RED)
+        self.assertIn("level issue", detail)
+        self.assertIn("spectral issue", detail)
+
+
+class AnalyzeTrackQualityTests(unittest.TestCase):
+    """Uses committed audio fixtures (assets/) - real ffmpeg decode, real
+    verdict logic end to end."""
+
+    def setUp(self):
+        self.project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def _asset(self, name):
+        return os.path.join(self.project_root, "assets", name)
+
+    def test_low_declared_bitrate_is_red_without_needing_a_clean_cutoff(self):
+        # fart_low_bitrate.mp3 is a real ~96kbps encode - this path is
+        # trusted from the tag alone (a file doesn't lie about being LOW
+        # quality), so it must return red even though this specific short
+        # sound effect has too little content for a clean spectral read.
+        verdict, detail, metrics = tagger.analyze_track_quality(self._asset("fart_low_bitrate.mp3"))
+        self.assertEqual(verdict, tagger.QUALITY_RED)
+        self.assertIn("kbps", detail)
+        self.assertAlmostEqual(metrics["bitrate_kbps"], 96, delta=10)
+
+    def test_returns_a_valid_verdict_for_a_lossless_fixture(self):
+        # Real fixture, real ffmpeg decode - just confirms the whole path
+        # runs end to end and returns one of the three real verdicts, not
+        # asserting which one (see the module's own documented caveat:
+        # a short/naturally bass-heavy sound effect like this one isn't
+        # representative of what the heuristic is actually calibrated
+        # for, so a specific color here isn't a meaningful assertion).
+        verdict, detail, metrics = tagger.analyze_track_quality(self._asset("fart.flac"))
+        self.assertIn(verdict, (tagger.QUALITY_GREEN, tagger.QUALITY_ORANGE, tagger.QUALITY_RED))
+        self.assertTrue(detail)
+        # Lossless format - no declared bitrate to speak of, but the level
+        # is always measurable once the file decodes successfully.
+        self.assertIsNone(metrics["bitrate_kbps"])
+        self.assertIsNotNone(metrics["lufs"])
+
+    def test_very_quiet_lossless_file_is_flagged_red_for_level(self):
+        # A lossless format skips the declared-bitrate shortcut entirely,
+        # so this confirms the LUFS-level check on its own can still push
+        # an otherwise-fine file to red - real ffmpeg attenuation, not a
+        # synthetic sample array (see MeasureLufsTests for that).
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            quiet_path = os.path.join(tmp_dir, "quiet.flac")
+            subprocess.run(
+                [tagger.find_ffmpeg(), "-y", "-i", self._asset("fart.flac"), "-af", "volume=-40dB", quiet_path],
+                capture_output=True,
+            )
+            verdict, detail, metrics = tagger.analyze_track_quality(quiet_path)
+            self.assertEqual(verdict, tagger.QUALITY_RED)
+            self.assertIn("LUFS", detail)
+            self.assertLess(metrics["lufs"], tagger.QUALITY_LOW_LEVEL_RED_LUFS)
+
+
+class ComputeTrackSpectrogramTests(unittest.TestCase):
+    """Real ffmpeg decode + real STFT, using a committed fixture - checks
+    the returned image/axis data is well-formed, not any particular
+    visual content."""
+
+    def setUp(self):
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.asset_path = os.path.join(project_root, "assets", "fart.wav")
+
+    def test_returns_a_correctly_shaped_image_and_axis_data(self):
+        result = tagger.compute_track_spectrogram(self.asset_path)
+        self.assertIsNotNone(result)
+        image = result["image"]
+        self.assertEqual(image.mode, "RGB")
+        width, height = image.size
+        # fart.wav is only a second or two long, so the STFT produces far
+        # fewer frames than QUALITY_SPECTROGRAM_TIME_BINS - _block_average()
+        # correctly clamps down to however many frames actually exist
+        # rather than padding, so only an upper bound is meaningful here.
+        self.assertGreater(width, 0)
+        self.assertLessEqual(width, tagger.QUALITY_SPECTROGRAM_TIME_BINS)
+        self.assertGreater(height, 0)
+        self.assertLessEqual(height, tagger.QUALITY_SPECTROGRAM_FREQ_BINS)
+        self.assertGreater(result["duration_seconds"], 0)
+        self.assertGreater(result["max_freq_hz"], 0)
+
+    def test_returns_none_for_a_file_too_short_to_analyze(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tiny_path = os.path.join(tmp_dir, "tiny.wav")
+            with open(self.asset_path, "rb") as source:
+                header = source.read(44)  # just the RIFF/WAVE header, no audio data
+            with open(tiny_path, "wb") as dest:
+                dest.write(header)
+            self.assertIsNone(tagger.compute_track_spectrogram(tiny_path))
 
 
 if __name__ == "__main__":

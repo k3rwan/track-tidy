@@ -47,17 +47,12 @@ understand the hesitation. A few things that should help:
   give enough to search with), and GitHub (checking for updates). It never
   touches files outside the folder you point it at, and never uploads your
   actual audio anywhere.
-- It also sends the developer two small, anonymous-ish pings (your OS
-  username, no other machine info) on install and after each scan (even a
-  cancelled one), just so he knows the app is actually being used - this
-  is disclosed in Settings' "View license & third-party notices" and
-  isn't currently toggleable.
-  Separately, the in-app "Report track" button (only when you press it) sends
-  that one track's info (title/artist/filename + its cover) to help fix
-  mismatches. If a scan comes back with an unusually high share of
-  tracks with no cover match, the same info (filename + current/detected
-  tags) is sent automatically for that whole batch, to help fix matching
-  for cases like that faster.
+- It also sends the developer small usage pings (your OS username, no
+  other machine info) on install and after each scan/extraction/quality
+  analysis. Separately, the in-app "Report track" button (only when you
+  press it) sends that one track's info (title/artist/filename + its
+  cover) to help fix mismatches - see [PRIVACY.md](PRIVACY.md) for the
+  full breakdown of what's sent and when.
 - The source code below is the real thing that gets built into the installer
   - nothing hidden.
 - The Windows installer is scanned with

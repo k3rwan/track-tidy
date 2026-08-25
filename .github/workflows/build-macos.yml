@@ -1,11 +1,11 @@
 name: Build macOS app
 
-# Manual trigger only, on purpose: this is the FIRST time build_mac.sh has
-# ever run on real macOS (it was written on Windows with no Mac available
-# to test it on - see CLAUDE.md's "Cross-platform" section). Run it by hand
-# from the Actions tab (or `gh workflow run build-macos.yml`), inspect the
-# test results and the downloaded .dmg, and only wire this to run
-# automatically on release tags once a build has actually been verified.
+# Manual trigger only: run it by hand from the Actions tab, or
+# `gh workflow run build-macos.yml` for an ad-hoc smoke-test build off a
+# branch, or `gh workflow run build-macos.yml --ref <tag>` for a real
+# release build - see the credentials step below for how the two differ
+# (real secrets + a GitHub Release upload only happen for the latter,
+# detected via github.ref_type == 'tag').
 on:
   workflow_dispatch:
 
@@ -37,17 +37,30 @@ jobs:
           source venv_build/bin/activate
           pip install -r requirements.txt pyinstaller
 
-      - name: Write shared default credentials
+      - name: Write default credentials
         # Same file load_default_credentials() reads on Kevin's own local
-        # build (see track_tidy.py) - the runner has no access to that
-        # local file, so it's reconstructed here from GitHub Actions
-        # secrets instead. A fork's build (no access to these secrets)
-        # just gets an empty file - jq still produces valid (all-empty)
-        # JSON, so the app runs fine, just without shared defaults. Must
-        # run before the test suite: several tests exercise
-        # send_scan_complete_notification/send_new_install_notification,
-        # which no-op unless DISCORD_REPORT_WEBHOOK_URL is populated.
+        # build (see track_tidy.py). Most runs of this workflow are just a
+        # SMOKE TEST (does the cross-platform port compile, launch, and
+        # pass its tests) triggered ad hoc off a branch - those get dummy,
+        # non-secret placeholder values, since bundling the REAL ones would
+        # put them in a downloadable GitHub Actions artifact on every such
+        # run, a needless extra exposure channel for the shared credentials
+        # beyond the already-accepted one (real installers actually shipped
+        # to users). The placeholders are only non-empty, not meaningful -
+        # the test suite only checks THAT the webhook URL etc. is
+        # configured (see send_scan_complete_notification/
+        # send_new_install_notification), never dereferences it for a real
+        # network call (requests.post is mocked in every test that cares).
+        #
+        # The one exception is a run dispatched against an actual release
+        # TAG (github.ref_type == 'tag' - see "gh workflow run
+        # build-macos.yml --ref <tag>" in CLAUDE.md's Build notes): that
+        # produces the real .dmg attached to the GitHub Release itself
+        # (see the upload step at the end of this job), which is the
+        # already-accepted distribution channel for these credentials, so
+        # it uses the real repo secrets like the Windows build does locally.
         env:
+          IS_RELEASE: ${{ github.ref_type == 'tag' }}
           SOUNDCLOUD_CLIENT_ID: ${{ secrets.SOUNDCLOUD_CLIENT_ID }}
           SOUNDCLOUD_CLIENT_SECRET: ${{ secrets.SOUNDCLOUD_CLIENT_SECRET }}
           SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
@@ -56,16 +69,22 @@ jobs:
           ACOUSTID_API_KEY: ${{ secrets.ACOUSTID_API_KEY }}
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
         run: |
-          jq -n \
-            --arg soundcloud_client_id "$SOUNDCLOUD_CLIENT_ID" \
-            --arg soundcloud_client_secret "$SOUNDCLOUD_CLIENT_SECRET" \
-            --arg spotify_client_id "$SPOTIFY_CLIENT_ID" \
-            --arg spotify_client_secret "$SPOTIFY_CLIENT_SECRET" \
-            --arg discord_webhook_url "$DISCORD_WEBHOOK_URL" \
-            --arg acoustid_api_key "$ACOUSTID_API_KEY" \
-            --arg discord_bot_token "$DISCORD_BOT_TOKEN" \
-            '{soundcloud_client_id: $soundcloud_client_id, soundcloud_client_secret: $soundcloud_client_secret, spotify_client_id: $spotify_client_id, spotify_client_secret: $spotify_client_secret, discord_webhook_url: $discord_webhook_url, acoustid_api_key: $acoustid_api_key, discord_bot_token: $discord_bot_token}' \
-            > default_credentials.json
+          if [ "$IS_RELEASE" = "true" ]; then
+            jq -n \
+              --arg soundcloud_client_id "$SOUNDCLOUD_CLIENT_ID" \
+              --arg soundcloud_client_secret "$SOUNDCLOUD_CLIENT_SECRET" \
+              --arg spotify_client_id "$SPOTIFY_CLIENT_ID" \
+              --arg spotify_client_secret "$SPOTIFY_CLIENT_SECRET" \
+              --arg discord_webhook_url "$DISCORD_WEBHOOK_URL" \
+              --arg acoustid_api_key "$ACOUSTID_API_KEY" \
+              --arg discord_bot_token "$DISCORD_BOT_TOKEN" \
+              '{soundcloud_client_id: $soundcloud_client_id, soundcloud_client_secret: $soundcloud_client_secret, spotify_client_id: $spotify_client_id, spotify_client_secret: $spotify_client_secret, discord_webhook_url: $discord_webhook_url, acoustid_api_key: $acoustid_api_key, discord_bot_token: $discord_bot_token}' \
+              > default_credentials.json
+          else
+            jq -n \
+              '{soundcloud_client_id: "ci-placeholder", soundcloud_client_secret: "ci-placeholder", spotify_client_id: "ci-placeholder", spotify_client_secret: "ci-placeholder", discord_webhook_url: "https://discord.com/api/webhooks/0/ci-placeholder", acoustid_api_key: "ci-placeholder", discord_bot_token: "ci-placeholder"}' \
+              > default_credentials.json
+          fi
 
       - name: Bundle a macOS ffmpeg binary
         # build_mac.sh only bundles ffmpeg into the .app if a binary is
@@ -156,3 +175,21 @@ jobs:
           name: Track-Tidy-macOS-${{ matrix.arch }}-v${{ github.run_number }}
           path: installer_output/*.dmg
           if-no-files-found: error
+
+      - name: Attach .dmg + checksum to the GitHub Release
+        # Only for a real release build (see the credentials step above) -
+        # an ad-hoc smoke-test dispatch off a branch has no release to
+        # attach to. GITHUB_TOKEN is the automatic per-run token GitHub
+        # Actions provides, scoped to this repo - no extra secret needed.
+        # Matches the Windows installer's own <name>.sha256 convention
+        # (CLAUDE.md's ".sha256 checksum" note) so check_for_update's
+        # verification works the same way on both platforms.
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd installer_output
+          for dmg in *.dmg; do
+            shasum -a 256 "$dmg" > "$dmg.sha256"
+          done
+          gh release upload "${{ github.ref_name }}" *.dmg *.dmg.sha256 --clobber --repo "${{ github.repository }}"

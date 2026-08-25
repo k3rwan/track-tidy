@@ -45,8 +45,10 @@ ffmpeg.exe
 fpcalc.exe
 
 # Audio test/sample files (but NOT the two app assets used as UI sound
-# effects - see resource_path() in interface.py - and bundled by PyInstaller)
+# effects - see resource_path() in interface.py - and bundled by PyInstaller -
+# or fart_low_bitrate.mp3, a committed fixture for the quality-analysis tests)
 *.mp3
 *.wav
 !fart.wav
 !success.wav
+!fart_low_bitrate.mp3
