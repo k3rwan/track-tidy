@@ -930,18 +930,32 @@ class TaggerInterface:
         return ImageTk.PhotoImage(image)
 
     @staticmethod
-    def _load_extractor_preview_photo(dark, side, preview_width=230):
-        """Loads the Extractor tab's before/after screenshot crop for the
-        current theme (assets/extractor-{side}-{dark,light}.png - see the
-        preview frame's own comment above for why two variants exist),
-        scaled to preview_width. Returns None if the asset is missing."""
-        suffix = "dark" if dark else "light"
-        path = resource_path(f"assets/extractor-{side}-{suffix}.png")
-        if not os.path.exists(path):
-            return None
-        source = Image.open(path)
-        height = round(preview_width * source.height / source.width)
-        return ImageTk.PhotoImage(source.resize((preview_width, height), Image.LANCZOS))
+    def _load_extractor_preview_photos(dark, target_total_width=480):
+        """Loads the Extractor tab's before/after screenshot crops for the
+        current theme (assets/extractor-{before,after}-{dark,light}.png -
+        see the preview frame's own comment for why two theme variants
+        exist). Both crops come from the same source window/DPI, so a
+        folder icon and a file icon are the same number of PIXELS wide in
+        the raw files - scaling each crop to its OWN target width (as this
+        used to do) stretched them by different factors and made the
+        icons look mismatched in size. Scaling both by one shared factor
+        (picked from their combined width) keeps that native ratio intact.
+        Returns (None, None) if either asset is missing."""
+        sources = {}
+        for side in ("before", "after"):
+            suffix = "dark" if dark else "light"
+            path = resource_path(f"assets/extractor-{side}-{suffix}.png")
+            if not os.path.exists(path):
+                return None, None
+            sources[side] = Image.open(path)
+
+        combined_width = sources["before"].width + sources["after"].width
+        scale = target_total_width / combined_width
+        photos = {}
+        for side, source in sources.items():
+            size = (round(source.width * scale), round(source.height * scale))
+            photos[side] = ImageTk.PhotoImage(source.resize(size, Image.LANCZOS))
+        return photos["before"], photos["after"]
 
     def _build_gray_dot_photo(self, size=10):
         """Static neutral dot shown in the Quality table's own verdict dot
@@ -1319,8 +1333,9 @@ class TaggerInterface:
         self.quality_folder_icon_label.configure(image=self._quality_folder_icon_photo)
         self._empty_state_icon_photo = self._build_empty_state_icon_photo(dark)
         self.empty_state_icon_label.configure(image=self._empty_state_icon_photo)
-        self._extractor_preview_before_photo = self._load_extractor_preview_photo(dark, "before")
-        self._extractor_preview_after_photo = self._load_extractor_preview_photo(dark, "after")
+        self._extractor_preview_before_photo, self._extractor_preview_after_photo = (
+            self._load_extractor_preview_photos(dark)
+        )
         self.extractor_preview_before_label.configure(image=self._extractor_preview_before_photo)
         self.extractor_preview_after_label.configure(image=self._extractor_preview_after_photo)
 
