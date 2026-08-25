@@ -769,6 +769,19 @@ class TaggerInterface:
         draw.polygon(points, fill=color)
         return ImageTk.PhotoImage(image)
 
+    def _build_gray_dot_photo(self, size=10):
+        """Static neutral dot shown in the Quality table's own verdict dot
+        column heading (#0) - a plain drawn circle rather than a colored
+        dot/emoji, since the heading itself has no verdict, just marks
+        which column the per-row colored dots belong to. Same reasoning as
+        the row dots themselves for why this is a real drawn shape and not
+        a Unicode/emoji glyph - stays a flat, correctly-colored gray
+        regardless of theme or platform font rendering."""
+        image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        draw.ellipse([0, 0, size - 1, size - 1], fill="#999999")
+        return ImageTk.PhotoImage(image)
+
     def _build_checkbox_indicator_photo(self, box_bg, box_border, checked, size=13):
         """
         Draws one checkbox indicator state (empty box, or filled box with a
@@ -1044,6 +1057,13 @@ class TaggerInterface:
                 "ReadonlyWhite.TEntry",
                 fieldbackground=[("readonly", colors["entry_bg"])],
                 foreground=[("readonly", colors["entry_fg"])],
+                # Blends any text selection into the field's own colors -
+                # these entries are readonly folder-path displays, not real
+                # text inputs, so a click-drag selection highlight just
+                # looks like a stray visual glitch rather than anything
+                # meaningful to select.
+                selectbackground=[("readonly", colors["entry_bg"])],
+                selectforeground=[("readonly", colors["entry_fg"])],
             )
 
             self.window.configure(bg=colors["bg"])
@@ -1070,6 +1090,8 @@ class TaggerInterface:
                 "ReadonlyWhite.TEntry",
                 fieldbackground=[("readonly", "white")],
                 foreground=[("readonly", "black")],
+                selectbackground=[("readonly", "white")],
+                selectforeground=[("readonly", "black")],
             )
             style.map(
                 "Table.Treeview",
@@ -1948,8 +1970,15 @@ class TaggerInterface:
         )
         # Clicking the dot column's heading cycles through sorting by
         # verdict severity: worst-first, then best-first, then back to
-        # scan/arrival order - see _on_quality_verdict_heading_click.
-        self.quality_table.heading("#0", text="", command=self._on_quality_verdict_heading_click)
+        # scan/arrival order - see _on_quality_verdict_heading_click. The
+        # gray dot marks the column as such (kept alive via self. - a
+        # PhotoImage with no surviving reference gets garbage-collected
+        # and silently vanishes from the widget).
+        self._quality_verdict_heading_photo = self._build_gray_dot_photo()
+        self.quality_table.heading(
+            "#0", text="", image=self._quality_verdict_heading_photo,
+            command=self._on_quality_verdict_heading_click,
+        )
         self.quality_table.column("#0", width=36, minwidth=36, stretch=False, anchor="center")
         self.quality_table.heading("file", text="File")
         # Stretches to soak up all leftover width, which keeps "bitrate" -
@@ -1981,6 +2010,7 @@ class TaggerInterface:
         self.quality_table.tag_configure("verdict_orange", foreground="#e67e22")
         self.quality_table.tag_configure("verdict_red", foreground="#e74c3c")
         self.quality_table.bind("<Double-1>", self._on_quality_row_double_click)
+        self.quality_table.bind("<Button-3>", self._show_quality_context_menu)
 
         quality_scrollbar = ttk.Scrollbar(
             self.quality_table_frame, orient="vertical", command=self.quality_table.yview,
@@ -2248,6 +2278,10 @@ class TaggerInterface:
         self.extract_browse_button.configure(state="disabled")
         self.extract_cancel_requested.clear()
         self.extract_button.configure(text="Cancel", command=self._request_extract_cancel, state="normal")
+        # Locks every other tab (Tagger/Quality/Settings) so no other
+        # button in the app is reachable while an extraction is running -
+        # same pattern as Tagger's own scan/apply run (_set_buttons_enabled).
+        self._set_tabs_locked(True)
 
         if not self.extract_progress_canvas.winfo_ismapped():
             self.extract_progress_canvas.pack(fill="x", padx=10, pady=(0, 10))
@@ -2322,6 +2356,10 @@ class TaggerInterface:
         self.quality_browse_button.configure(state="disabled")
         self.quality_cancel_requested.clear()
         self.quality_scan_button.configure(text="Cancel", command=self._request_quality_cancel, state="normal")
+        # Locks every other tab (Tagger/Extractor/Settings) so no other
+        # button in the app is reachable while a quality scan is running -
+        # same pattern as Tagger's own scan/apply run (_set_buttons_enabled).
+        self._set_tabs_locked(True)
 
         if not self.quality_progress_canvas.winfo_ismapped():
             self.quality_progress_canvas.pack(fill="x", padx=10, pady=(0, 5), before=self.quality_table_frame)
@@ -2463,6 +2501,7 @@ class TaggerInterface:
             text="Scan", command=self._start_quality_scan, state="normal",
         )
         self.quality_progress_canvas.pack_forget()
+        self._set_tabs_locked(False)
 
         if error:
             messagebox.showerror("Analysis error", error, parent=self.window)
@@ -2482,6 +2521,33 @@ class TaggerInterface:
             )
             return
         self._show_quality_spectrogram_dialog(file_path)
+
+    def _show_quality_context_menu(self, event):
+        """Right-click on a Quality row - mirrors the Tagger table's own
+        context menu (_show_context_menu), just with the one action that
+        actually applies here."""
+        item_id = self.quality_table.identify_row(event.y)
+        if not item_id:
+            return
+        self.quality_table.selection_set(item_id)
+
+        file_path = self.quality_row_paths.get(item_id)
+        menu = self._make_themed_menu(self.window)
+        menu.add_command(
+            label="Open file location",
+            command=lambda: self._open_quality_file_location(file_path),
+            state="normal" if file_path and os.path.isfile(file_path) else "disabled",
+        )
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _open_quality_file_location(self, file_path):
+        if not file_path or not os.path.isfile(file_path):
+            self._append_to_journal(f"Can't open location, file not found: '{file_path}'")
+            return
+        try:
+            reveal_in_file_manager(file_path)
+        except Exception as error:
+            self._append_to_journal(f"Error opening file location: {error}")
 
     # Canvas geometry for the spectrogram dialog - a bit larger than the
     # single-curve chart it replaced, to fit a real plot plus a dB color
@@ -5402,6 +5468,7 @@ class TaggerInterface:
                     self.extract_browse_button.configure(state="normal")
                     self.extract_button.configure(text="Extract", command=self._start_extraction, state="normal")
                     self.extract_progress_canvas.pack_forget()
+                    self._set_tabs_locked(False)
 
                     if error:
                         messagebox.showerror("Extraction error", error, parent=self.window)
