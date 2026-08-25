@@ -3,6 +3,26 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.26.3]
+
+### Added
+- The Tagger tab's table now shows a drag-and-drop hint (icon + text) when
+  it's empty, instead of a blank table with no clue what to do.
+- **Windows**: uninstalling now sends a usage ping, same as install/scan/
+  extraction/quality notifications - see PRIVACY.md.
+
+### Fixed
+- **macOS**: the app's code signature was getting invalidated by files
+  (ffmpeg, fpcalc, shared credentials) copied into the `.app` after
+  PyInstaller had already signed it - on a real downloaded `.dmg`, this
+  made Gatekeeper reject the app outright ("Track-Tidy is damaged and
+  can't be opened") on Apple Silicon, instead of the milder unidentified-
+  developer prompt. The build now re-signs after bundling everything.
+- A track whose current cover is a banned/generic repost-account image is
+  no longer permanently exempt from ever re-checking it, even if Track
+  Tidy itself applied that cover in the past - it could get stuck that way
+  across every future rescan.
+
 ## [0.26.2]
 
 ### Fixed
