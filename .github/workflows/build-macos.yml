@@ -11,6 +11,12 @@ on:
 
 jobs:
   build:
+    # The GITHUB_TOKEN's default permissions are read-only for this repo -
+    # needed so the "Attach .dmg + checksum to the GitHub Release" step's
+    # `gh release upload` can actually write the asset (otherwise: "HTTP
+    # 403: Resource not accessible by integration").
+    permissions:
+      contents: write
     # macos-13 (Intel) was tried here too, but GitHub's Intel macOS
     # runners are chronically unavailable - every attempt sat queued for
     # 19-24h before being auto-cancelled, never actually running (see run
