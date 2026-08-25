@@ -35,14 +35,30 @@ def load_api_key():
     return api_key
 
 
+# The plain /files endpoint only accepts uploads up to 32MB - anything
+# bigger (like our installer) needs a dedicated upload URL first, good for
+# files up to 650MB.
+DIRECT_UPLOAD_LIMIT_BYTES = 32 * 1024 * 1024
+
+
+def get_upload_url(api_key):
+    headers = {"x-apikey": api_key}
+    response = requests.get(f"{VT_API_BASE}/files/upload_url", headers=headers, timeout=30)
+    response.raise_for_status()
+    return response.json()["data"]
+
+
 def upload_file(file_path, api_key):
     headers = {"x-apikey": api_key}
+    upload_url = f"{VT_API_BASE}/files"
+    if os.path.getsize(file_path) > DIRECT_UPLOAD_LIMIT_BYTES:
+        upload_url = get_upload_url(api_key)
     with open(file_path, "rb") as f:
         response = requests.post(
-            f"{VT_API_BASE}/files",
+            upload_url,
             headers=headers,
             files={"file": (os.path.basename(file_path), f)},
-            timeout=120,
+            timeout=300,
         )
     response.raise_for_status()
     return response.json()["data"]["id"]
