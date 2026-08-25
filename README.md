@@ -48,11 +48,11 @@ understand the hesitation. A few things that should help:
   touches files outside the folder you point it at, and never uploads your
   actual audio anywhere.
 - It also sends the developer small usage pings (your OS username, no
-  other machine info) on install and after each scan/extraction/quality
-  analysis. Separately, the in-app "Report track" button (only when you
-  press it) sends that one track's info (title/artist/filename + its
-  cover) to help fix mismatches - see [PRIVACY.md](PRIVACY.md) for the
-  full breakdown of what's sent and when.
+  other machine info) on install, on uninstall (Windows only), and after
+  each scan/extraction/quality analysis. Separately, the in-app "Report
+  track" button (only when you press it) sends that one track's info
+  (title/artist/filename + its cover) to help fix mismatches - see
+  [PRIVACY.md](PRIVACY.md) for the full breakdown of what's sent and when.
 - The source code below is the real thing that gets built into the installer
   - nothing hidden.
 - The Windows installer is scanned with

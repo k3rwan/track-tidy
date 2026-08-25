@@ -2941,6 +2941,14 @@ def _prepare_scan(file_name, log=safe_print, on_new_mention=None, history_lookup
         "already_applied": (
             bool(has_cover and current_artist and current_title)
             and _is_already_applied(file_name, history_lookup)
+            # A banned/fuviclan cover disqualifies the fast path even with a
+            # history hit - Track Tidy itself may have applied that exact
+            # placeholder in the past (before this hash was blacklisted, or
+            # from a since-corrected bad match), and skipping search here
+            # would leave it stuck that way forever, immune to every future
+            # rescan. Real report: two tracks kept a repost account's
+            # generic branded cover indefinitely across rescans.
+            and not (detect_fuviclan_mention(file_name) or is_banned_cover_image(current_cover_bytes))
         ),
     }
 

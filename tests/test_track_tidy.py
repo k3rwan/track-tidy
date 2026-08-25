@@ -823,6 +823,68 @@ class ContainsUnreleasedMarkerTests(unittest.TestCase):
         self.assertFalse(tagger.contains_unreleased_marker("Artist - Title.mp3"))
 
 
+class PrepareScanAlreadyAppliedTests(unittest.TestCase):
+    """_prepare_scan's "already_applied" flag (which makes scan_files skip
+    the online search entirely, and write_tags skip re-checking the cover -
+    see force_remove_if_missing) must not fire for a file whose current
+    cover is a known banned/fuviclan placeholder, even with a matching
+    history.jsonl entry - Track Tidy may have applied that exact
+    placeholder itself in the past (before the hash was blacklisted, or
+    from a since-corrected bad match), and treating it as "already_applied"
+    would leave it stuck that way forever, immune to every future rescan.
+    Real report: two tracks kept a repost account's generic branded cover
+    indefinitely across rescans."""
+
+    def setUp(self):
+        self._original_music_folder = tagger.MUSIC_FOLDER
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        tagger.MUSIC_FOLDER = self._tmp_dir.name
+
+    def tearDown(self):
+        tagger.MUSIC_FOLDER = self._original_music_folder
+        self._tmp_dir.cleanup()
+
+    def _tagged_file(self, file_name):
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        full_path = os.path.join(self._tmp_dir.name, file_name)
+        shutil.copy(os.path.join(project_root, "assets", "fart.wav"), full_path)
+        tagger.write_tags(
+            full_path, "Some Artist", "Some Title", b"cover-bytes",
+            force_remove_if_missing=False,
+        )
+        history_lookup = {(os.path.abspath(self._tmp_dir.name), file_name)}
+        return history_lookup
+
+    def test_normal_cover_with_history_hit_is_already_applied(self):
+        file_name = "Some Artist - Some Title.wav"
+        history_lookup = self._tagged_file(file_name)
+
+        prepared = tagger._prepare_scan(file_name, history_lookup=history_lookup)
+
+        self.assertTrue(prepared["already_applied"])
+
+    def test_fuviclan_cover_with_history_hit_is_not_already_applied(self):
+        file_name = "Some Artist - Some Title (By Fuvi Clan).wav"
+        history_lookup = self._tagged_file(file_name)
+
+        prepared = tagger._prepare_scan(file_name, history_lookup=history_lookup)
+
+        self.assertFalse(prepared["already_applied"])
+
+    def test_banned_hash_cover_with_history_hit_is_not_already_applied(self):
+        file_name = "Some Artist - Some Title.wav"
+        history_lookup = self._tagged_file(file_name)
+
+        original_is_banned = tagger.is_banned_cover_image
+        tagger.is_banned_cover_image = lambda cover_bytes: True
+        try:
+            prepared = tagger._prepare_scan(file_name, history_lookup=history_lookup)
+        finally:
+            tagger.is_banned_cover_image = original_is_banned
+
+        self.assertFalse(prepared["already_applied"])
+
+
 class FinishScanApplyChangesTests(unittest.TestCase):
     """apply_changes (the Apply column's default checked state) should not
     default to checked for a track flagged as unreleased - there's nothing

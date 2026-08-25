@@ -15,6 +15,7 @@ Track Tidy posts a small notification to a Discord channel the developer
 | When | What's sent |
 |---|---|
 | First launch on a new Windows account, or an update to a new version | Your Windows username, your OS (e.g. "Windows 11"), app version |
+| Uninstalling on Windows | Your Windows username, "Windows", the version being removed |
 | After a scan finishes (including a cancelled one) | Windows username, new/removed/total file counts, no-cover-match count, how many tracks matched via each of iTunes/Spotify/SoundCloud, how many needed the AcoustID audio-fingerprint fallback, app version - no track/file names |
 | After an extraction finishes | Windows username, files-moved/folders-removed counts, app version |
 | After a quality analysis finishes | Windows username, green/orange/red counts, app version |
@@ -34,7 +35,10 @@ history in that channel *is* the record. Messages aren't deleted on any
 schedule, so treat them as kept indefinitely unless removed by hand (see
 "Deletion" below). One of these fields (a running "unique users" count on
 the "new install" ping) is computed by reading back that same channel's
-past messages - see `count_unique_discord_users()` in `track_tidy.py`.
+past messages - see `count_unique_discord_users()` in `track_tidy.py`. The
+uninstall ping is Windows-only - it's sent by the installer itself (see
+`installer.iss`), not the app, since there's no equivalent hook on macOS
+(dragging the app to Trash runs no code at all).
 
 ## "Report track" button
 

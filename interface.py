@@ -827,6 +827,108 @@ class TaggerInterface:
         draw.polygon(points, fill=color)
         return ImageTk.PhotoImage(image)
 
+    def _build_empty_state_icon_photo(self, dark, size=110):
+        """
+        "Drag an audio file here" glyph for the empty Tagger table (see
+        empty_state_frame): a dashed drop-zone square around an audio-file
+        icon (rounded document + eighth note) with a mouse cursor
+        overlapping its corner - same drag-and-drop visual language as the
+        generic stock icons this was modeled after, just swapping their
+        photo/image glyph for an audio one. Drawn by hand (like
+        _build_folder_icon_photo) rather than a bundled image file, so it
+        recolors correctly per theme with zero extra assets.
+        """
+        color = "#9a9a9a" if dark else "#4a4a4a"
+        cursor_fill = color if dark else "#ffffff"
+        image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+
+        # Dashed drop-zone border - PIL has no native dashed-line primitive,
+        # so each side is walked in fixed dash/gap steps by hand.
+        pad = size * 0.05
+        dash, gap = size * 0.06, size * 0.045
+        border_width = max(2, round(size * 0.018))
+
+        def dashed_line(x1, y1, x2, y2):
+            length = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+            if length == 0:
+                return
+            dx, dy = (x2 - x1) / length, (y2 - y1) / length
+            travelled = 0.0
+            while travelled < length:
+                seg_end = min(travelled + dash, length)
+                draw.line(
+                    [(x1 + dx * travelled, y1 + dy * travelled), (x1 + dx * seg_end, y1 + dy * seg_end)],
+                    fill=color, width=border_width,
+                )
+                travelled = seg_end + gap
+
+        dashed_line(pad, pad, size - pad, pad)
+        dashed_line(size - pad, pad, size - pad, size - pad)
+        dashed_line(size - pad, size - pad, pad, size - pad)
+        dashed_line(pad, size - pad, pad, pad)
+
+        # Audio-file icon (rounded document with a folded corner) - smaller
+        # than the drop-zone and shifted up-left, leaving room for the
+        # cursor to overlap its bottom-right corner like the reference.
+        file_left, file_top = size * 0.24, size * 0.20
+        file_right, file_bottom = size * 0.66, size * 0.66
+        fold = size * 0.12
+        file_width = max(2, round(size * 0.028))
+        draw.line(
+            [
+                (file_left, file_top + fold * 0.4), (file_left, file_bottom),
+                (file_right, file_bottom), (file_right, file_top + fold),
+                (file_right - fold, file_top), (file_left + fold * 0.6, file_top),
+            ],
+            fill=color, width=file_width, joint="curve",
+        )
+        # Rounds the two corners the plain polyline above leaves sharp
+        # (top-left and the folded corner's outer edge), matching the
+        # rounded-document look real file-type icons use.
+        draw.arc(
+            [file_left, file_top, file_left + fold * 1.2, file_top + fold * 1.2],
+            180, 270, fill=color, width=file_width,
+        )
+        draw.line(
+            [(file_right - fold, file_top), (file_right, file_top + fold)],
+            fill=color, width=file_width,
+        )
+
+        # Eighth note, centered in the file - a filled notehead, a stem,
+        # and a small flag, same silhouette as a standard music glyph.
+        note_cx, note_cy = (file_left + file_right) / 2, (file_top + file_bottom) / 2 + size * 0.03
+        head_rx, head_ry = size * 0.055, size * 0.042
+        stem_top = note_cy - size * 0.16
+        draw.ellipse(
+            [note_cx - head_rx, note_cy - head_ry, note_cx + head_rx, note_cy + head_ry], fill=color,
+        )
+        draw.line(
+            [(note_cx + head_rx * 0.85, note_cy), (note_cx + head_rx * 0.85, stem_top)],
+            fill=color, width=max(2, round(size * 0.022)),
+        )
+        draw.line(
+            [
+                (note_cx + head_rx * 0.85, stem_top),
+                (note_cx + head_rx * 0.85 + size * 0.09, stem_top + size * 0.025),
+                (note_cx + head_rx * 0.85 + size * 0.03, stem_top + size * 0.08),
+            ],
+            fill=color, width=max(2, round(size * 0.018)), joint="curve",
+        )
+
+        # Mouse cursor overlapping the file's bottom-right corner, same
+        # composition as the reference drag-and-drop icons.
+        cx, cy = file_right - size * 0.06, file_bottom - size * 0.08
+        cursor_scale = size * 0.34
+        cursor_points = [
+            (0.00, 0.00), (0.00, 0.75), (0.18, 0.58), (0.30, 0.98),
+            (0.42, 0.93), (0.30, 0.53), (0.55, 0.53),
+        ]
+        cursor_polygon = [(cx + px * cursor_scale, cy + py * cursor_scale) for px, py in cursor_points]
+        draw.polygon(cursor_polygon, fill=cursor_fill, outline=color, width=max(2, round(size * 0.018)))
+
+        return ImageTk.PhotoImage(image)
+
     def _build_gray_dot_photo(self, size=10):
         """Static neutral dot shown in the Quality table's own verdict dot
         column heading (#0) - a plain drawn circle rather than a colored
@@ -1184,6 +1286,14 @@ class TaggerInterface:
         self.kevz_credit_label.configure(foreground=muted_fg)
         self.legal_text_label.configure(foreground=muted_fg)
 
+        # Matches the table's own background (colors["tree_bg"]/"white" -
+        # same literal the "even_row" tag uses for light mode above) so the
+        # hint blends into the empty table instead of looking like a
+        # separate panel dropped on top of it.
+        empty_state_bg = colors["tree_bg"] if dark else "white"
+        style.configure("EmptyState.TFrame", background=empty_state_bg)
+        style.configure("EmptyState.TLabel", background=empty_state_bg, foreground=muted_fg)
+
         # Separate PhotoImage per label (not one shared image) - each
         # widget needs its own reference kept alive, and building fresh
         # ones is cheap (a handful of tiny polygon draws).
@@ -1193,6 +1303,8 @@ class TaggerInterface:
         self.extract_folder_icon_label.configure(image=self._extract_folder_icon_photo)
         self._quality_folder_icon_photo = self._build_folder_icon_photo(dark)
         self.quality_folder_icon_label.configure(image=self._quality_folder_icon_photo)
+        self._empty_state_icon_photo = self._build_empty_state_icon_photo(dark)
+        self.empty_state_icon_label.configure(image=self._empty_state_icon_photo)
 
         self.theme_colors = colors
         self._set_titlebar_dark(self.window, dark)
@@ -1549,8 +1661,11 @@ class TaggerInterface:
 
         # The Notebook (tabs) covers the entire window, so registering only
         # the root window wouldn't actually catch drops - register it AND the
-        # tab content too, to cover the whole visible surface.
-        for widget in (self.window, self.notebook, self.tagger_tab, self.table):
+        # tab content too, to cover the whole visible surface. The empty-
+        # state hint's own widgets are included too - while it's showing,
+        # it's placed ON TOP of self.table, so it would otherwise catch the
+        # drop event itself and the table's registration would never fire.
+        for widget in (self.window, self.notebook, self.tagger_tab, self.table, *self.empty_state_widgets):
             try:
                 widget.drop_target_register(DND_FILES)
                 widget.dnd_bind("<<Drop>>", self._on_files_dropped)
@@ -1591,6 +1706,7 @@ class TaggerInterface:
             self._thumbnail_pil_images.clear()
             self.scanned_plan = []
             self.last_scanned_folder = folder
+            self._update_empty_state_hint()
 
         self.notebook.select(0)
         self._set_buttons_enabled(False)
@@ -1824,6 +1940,28 @@ class TaggerInterface:
 
         self.table.pack(side="left", fill="both", expand=True)
         vertical_scrollbar.pack(side="left", fill="y")
+
+        # Empty-state hint: placed (not packed) so it floats centered over
+        # the table area regardless of the scrollbar's own packing, and
+        # created after the table/scrollbar so its default stacking order
+        # already puts it on top of both. Shown/hidden by
+        # _update_empty_state_hint() - see its call sites (initial setup
+        # below, _add_scan_row, and every point that clears the table back
+        # to zero rows).
+        self.empty_state_frame = ttk.Frame(scrollbars_frame, style="EmptyState.TFrame")
+        self.empty_state_widgets = [self.empty_state_frame]
+        # Image is set in _apply_theme (needs to know light/dark), same as
+        # folder_icon_label above.
+        self.empty_state_icon_label = ttk.Label(self.empty_state_frame, style="EmptyState.TLabel")
+        self.empty_state_icon_label.pack(pady=(0, 12))
+        self.empty_state_widgets.append(self.empty_state_icon_label)
+        empty_state_text_label = ttk.Label(
+            self.empty_state_frame, style="EmptyState.TLabel", justify="center",
+            text="Drag and drop an audio file here,\nor select a folder above to get started",
+        )
+        empty_state_text_label.pack()
+        self.empty_state_widgets.append(empty_state_text_label)
+        self._update_empty_state_hint()
 
         self.table.bind("<Button-1>", self._toggle_cell, add="+")
         self.table.bind("<Button-1>", self._on_row_drag_start, add="+")
@@ -2940,6 +3078,7 @@ class TaggerInterface:
         self._thumbnail_pil_images.clear()
         self.scanned_plan = []
         self.last_scanned_folder = None
+        self._update_empty_state_hint()
         self.scan_button.configure(text="Scan")
         self._update_apply_button_label()
 
@@ -3056,6 +3195,7 @@ class TaggerInterface:
             self._thumbnail_pil_images.clear()
             self.scanned_plan = []
             self.last_scanned_folder = folder
+            self._update_empty_state_hint()
 
         self._set_buttons_enabled(False)
 
@@ -3284,6 +3424,15 @@ class TaggerInterface:
 
         self.window.after(SCAN_REVEAL_INTERVAL_MS, self._reveal_next_scan_row)
 
+    def _update_empty_state_hint(self):
+        """Shows the drag-and-drop/select-a-folder hint centered over the
+        table only while it has no rows at all - called after every table
+        mutation that could take it to (or from) zero rows."""
+        if self.table.get_children():
+            self.empty_state_frame.place_forget()
+        else:
+            self.empty_state_frame.place(relx=0.5, rely=0.5, anchor="center")
+
     def _add_scan_row(self, info):
         """Immediately adds a row to the table, ABOVE the previous ones, as soon as a file has just been scanned."""
         # Re-sync with the CURRENT "To remove" list (main thread, authoritative)
@@ -3313,6 +3462,7 @@ class TaggerInterface:
         )
         self._restripe_rows()
         self._flash_new_row(info["file"])
+        self._update_empty_state_hint()
 
     # Row-appear flash: a real slide/fade-in isn't possible on a native
     # Treeview row (Tkinter has no per-row opacity/position animation), so

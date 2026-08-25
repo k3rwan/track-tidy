@@ -125,6 +125,26 @@ if [ -f "fpcalc" ]; then
     chmod +x "dist/Track-Tidy.app/Contents/MacOS/fpcalc"
 fi
 
+# PyInstaller already ad-hoc-signs the .app as part of the build (arm64
+# refuses to even launch an unsigned binary) - but every cp above just
+# dropped new files straight into Contents/MacOS/ afterwards, which
+# invalidates that signature's sealed resource list without any error or
+# warning at build time. A same-machine launch (see build-macos.yml's own
+# launch check) doesn't care and still runs fine, but a REAL downloaded
+# .dmg gets the quarantine attribute set on open, and Gatekeeper's much
+# stricter check on quarantined + Apple Silicon then rejects the broken
+# signature outright ("'Track-Tidy' is damaged and can't be opened" - no
+# "Open Anyway" option at all, unlike the milder unidentified-developer
+# prompt an unsigned-but-INTACT app would normally get). Real report: a
+# colleague's M4 Mac hit exactly this on the 0.26.2 .dmg. Re-signing here,
+# after every file is already in place, fixes it - still not a real
+# Developer ID signature or notarization (see CLAUDE.md), so first launch
+# still needs the right-click-Open workaround the README documents, but at
+# least that workaround is reachable again instead of a hard block.
+echo
+echo "Re-signing the app (ad-hoc) now that every extra file is bundled..."
+codesign --force --deep --sign - "dist/Track-Tidy.app"
+
 echo
 echo "Building the .dmg..."
 mkdir -p installer_output
