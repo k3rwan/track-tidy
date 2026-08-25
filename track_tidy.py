@@ -41,6 +41,7 @@ Contents (in the order they appear below):
 
 import os
 import io
+import platform
 import socket
 import hashlib
 import uuid
@@ -627,6 +628,17 @@ def count_unique_discord_users(log=safe_print):
         return None
 
 
+def _os_description():
+    """Short "<System> <release>" string (e.g. "Windows 11", "Darwin 23.5.0")
+    for the reports below that benefit from knowing which OS a user is on -
+    cheap to compute, never raises (falls back to sys.platform if the
+    platform module itself misbehaves on some exotic system)."""
+    try:
+        return f"{platform.system()} {platform.release()}"
+    except Exception:
+        return sys.platform
+
+
 def send_track_report(info, reporter_name=None, timeout=10):
     """
     Posts this track's info to a Discord webhook, so the developer gets a
@@ -796,7 +808,10 @@ def send_new_install_notification(reporter_name=None, previous_version=None, tim
     """
     if _is_discord_notification_excluded(reporter_name) or not DISCORD_REPORT_WEBHOOK_URL:
         return False
-    fields = [{"name": "User", "value": reporter_name or "(unknown)", "inline": True}]
+    fields = [
+        {"name": "User", "value": reporter_name or "(unknown)", "inline": True},
+        {"name": "OS", "value": _os_description(), "inline": True},
+    ]
     if previous_version:
         fields.append({"name": "Previous version", "value": previous_version, "inline": True})
     else:
@@ -828,7 +843,8 @@ def send_new_install_notification(reporter_name=None, previous_version=None, tim
 
 def send_scan_complete_notification(
     reporter_name=None, number_new=0, number_removed=0, total=0, number_no_cover=0,
-    number_rate_limited_sources=0, auth_error_sources=None, cancelled=False, timeout=10,
+    number_rate_limited_sources=0, auth_error_sources=None, cancelled=False,
+    number_itunes=0, number_spotify=0, number_soundcloud=0, number_acoustid_used=0, timeout=10,
 ):
     """
     Posts a scan-complete ping to the same Discord webhook as
@@ -841,6 +857,17 @@ def send_scan_complete_notification(
     interface.py). Returns True on success, False on any failure (never
     raises) - also False without posting anything for an excluded account
     (see DISCORD_NOTIFICATION_EXCLUDED_USERS).
+
+    number_itunes/_spotify/_soundcloud are how many of this scan's tracks
+    actually got their cover from each source (see each track's own
+    "cover_source" - set in _finish_scan) - lets a source's real-world
+    match rate be watched over time instead of only surfacing as a spike
+    in "No cover match" once a source degrades badly enough to matter.
+    number_acoustid_used is how many tracks needed the AcoustID audio-
+    fingerprint fallback at all (see "acoustid_identified"), regardless of
+    which of the three sources the corrected artist/title then matched
+    against - useful on its own to judge whether the fallback's cost
+    (slow, real audio analysis) is worth keeping on by default.
     """
     if _is_discord_notification_excluded(reporter_name) or not DISCORD_REPORT_WEBHOOK_URL:
         return False
@@ -857,6 +884,10 @@ def send_scan_complete_notification(
                 "value": f"{number_no_cover} ({number_no_cover / total:.0%})" if total else str(number_no_cover),
                 "inline": True,
             },
+            {"name": "iTunes matches", "value": str(number_itunes), "inline": True},
+            {"name": "Spotify matches", "value": str(number_spotify), "inline": True},
+            {"name": "SoundCloud matches", "value": str(number_soundcloud), "inline": True},
+            {"name": "AcoustID fallback used", "value": str(number_acoustid_used), "inline": True},
             {"name": "Rate-limited sources", "value": str(number_rate_limited_sources), "inline": True},
             {"name": "Auth errors", "value": ", ".join(auth_error_sources) if auth_error_sources else "None", "inline": True},
             {"name": "App version", "value": APP_VERSION, "inline": True},
@@ -994,6 +1025,46 @@ def send_quality_scan_report(
             DISCORD_REPORT_WEBHOOK_URL,
             json={"embeds": [embed], "allowed_mentions": {"parse": []}},
             timeout=timeout,
+        )
+        return response.status_code in (200, 204)
+    except Exception:
+        return False
+
+
+def send_crash_report(reporter_name=None, traceback_text="", context="unknown", timeout=10):
+    """
+    Posts an unhandled-exception report to Discord, so a real crash is
+    visible immediately instead of only ever showing up (if at all) as a
+    vague "something went wrong" from whoever hit it - see interface.py's
+    report_callback_exception override (Tk main-thread callbacks) and
+    threading.excepthook override (background scan/extraction/quality
+    threads), both of which funnel into this. context is a short label for
+    where it happened ("ui_callback", "background_thread") - the traceback
+    itself is attached as a .txt file rather than inlined, since it can
+    easily exceed a Discord embed field's length limit.
+
+    Returns True on success, False on any failure (never raises) - also
+    False without posting anything for an excluded account (see
+    DISCORD_NOTIFICATION_EXCLUDED_USERS) - a crash report is automatic
+    telemetry like the others above, not a user-initiated action.
+    """
+    if _is_discord_notification_excluded(reporter_name) or not DISCORD_REPORT_WEBHOOK_URL:
+        return False
+    embed = {
+        "title": "Unhandled exception",
+        "color": 0xE74C3C,
+        "fields": [
+            {"name": "User", "value": reporter_name or "(unknown)", "inline": True},
+            {"name": "Context", "value": context, "inline": True},
+            {"name": "OS", "value": _os_description(), "inline": True},
+            {"name": "App version", "value": APP_VERSION, "inline": True},
+        ],
+    }
+    payload = {"embeds": [embed], "allowed_mentions": {"parse": []}}
+    files = {"files[0]": ("traceback.txt", traceback_text.encode("utf-8"), "text/plain")}
+    try:
+        response = requests.post(
+            DISCORD_REPORT_WEBHOOK_URL, data={"payload_json": json.dumps(payload)}, files=files, timeout=timeout,
         )
         return response.status_code in (200, 204)
     except Exception:

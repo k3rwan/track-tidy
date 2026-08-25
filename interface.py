@@ -22,6 +22,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import traceback
 import queue
 import webbrowser
 from datetime import datetime
@@ -311,6 +312,19 @@ class TaggerInterface:
         self.window.resizable(False, False)  # prevents fullscreen / resizing
 
         self.message_queue = queue.Queue()
+        # Catches an unhandled exception wherever it happens - a Tk callback
+        # on the main thread (report_callback_exception, Tkinter's own hook)
+        # or a background scan/extraction/quality/update thread
+        # (threading.excepthook, process-wide) - and reports it to Discord
+        # (see _report_crash) instead of it only ever surfacing, if at all,
+        # as a silent failure or a one-line stderr print nobody sees (a
+        # pythonw.exe build has no console at all - see the sys.stdout/
+        # stderr redirect above). Deduped per (context, exception type,
+        # message) so a crash that keeps recurring (e.g. on every redraw)
+        # doesn't flood the channel.
+        self._reported_crash_signatures = set()
+        self.window.report_callback_exception = self._handle_tk_exception
+        threading.excepthook = self._handle_thread_exception
         self._is_online = True  # optimistic default until the first real check lands
         self.processing_in_progress = False
         self._processing_failures = []  # (identifier, reason) pairs - see _show_processing_failures_dialog
@@ -667,6 +681,42 @@ class TaggerInterface:
         thread = threading.Thread(target=target, args=args, daemon=True)
         thread.start()
         return thread
+
+    def _handle_tk_exception(self, exc_type, exc_value, exc_tb):
+        """Replaces Tkinter's default report_callback_exception (which just
+        prints to stderr - invisible on a console-less pythonw.exe build) -
+        runs on the main thread, since that's what raised a Tk callback
+        (button command, event binding...)."""
+        traceback.print_exception(exc_type, exc_value, exc_tb)  # keep local visibility too
+        self._report_crash(exc_type, exc_value, exc_tb, context="ui_callback")
+
+    def _handle_thread_exception(self, args):
+        """threading.excepthook target - catches an exception that killed a
+        background thread (scan/extraction/quality/update-check...) before
+        it ever reaches a message_queue "done" message, which would
+        otherwise leave the UI stuck (Cancel/progress bar never reset) with
+        no visible explanation why."""
+        traceback.print_exception(args.exc_type, args.exc_value, args.exc_traceback)
+        self._report_crash(args.exc_type, args.exc_value, args.exc_traceback, context="background_thread")
+
+    def _report_crash(self, exc_type, exc_value, exc_tb, context):
+        if exc_type is None:
+            return
+        # Same (context, type, message) signature regardless of how many
+        # times it recurs in this run - a broken binding firing on every
+        # mouse move would otherwise flood Discord with hundreds of
+        # identical reports.
+        signature = (context, exc_type.__name__, str(exc_value))
+        if signature in self._reported_crash_signatures:
+            return
+        self._reported_crash_signatures.add(signature)
+
+        tb_text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        try:
+            reporter_name = getpass.getuser()
+        except Exception:
+            reporter_name = ""
+        self._run_in_background(tagger.send_crash_report, reporter_name, tb_text, context)
 
     def _sync_mentions_to_remove(self):
         """Pushes the current "To remove" listbox contents to the tagger
@@ -1262,6 +1312,7 @@ class TaggerInterface:
     def _notify_scan_complete(
         self, number_new, number_removed, total, number_no_cover=0,
         number_rate_limited_sources=0, auth_error_sources=None, cancelled=False,
+        number_itunes=0, number_spotify=0, number_soundcloud=0, number_acoustid_used=0,
     ):
         """Pings Discord once per finished scan (including a scan the user
         cancelled partway through - cancelled=True just relabels the
@@ -1281,6 +1332,8 @@ class TaggerInterface:
                 total=total, number_no_cover=number_no_cover,
                 number_rate_limited_sources=number_rate_limited_sources,
                 auth_error_sources=auth_error_sources, cancelled=cancelled,
+                number_itunes=number_itunes, number_spotify=number_spotify,
+                number_soundcloud=number_soundcloud, number_acoustid_used=number_acoustid_used,
             )
 
         self._run_in_background(_send)
@@ -3628,11 +3681,15 @@ class TaggerInterface:
             # skipped for all of them) still logged "N track(s) currently
             # have no cover match" for every one of them, which read as
             # "none of these have a cover" even though they all did.
-            no_cover_infos = [
+            # Tracks a search was actually attempted for this scan (as
+            # opposed to a previously-tagged file scan_files skipped
+            # outright) - the basis for both the no-cover count below and
+            # the per-source match breakdown sent to Discord.
+            searched_infos = [
                 info for info in self.scanned_plan
-                if not info.get("processed") and not info.get("found_cover_image")
-                and not info.get("already_applied")
+                if not info.get("processed") and not info.get("already_applied")
             ]
+            no_cover_infos = [info for info in searched_infos if not info.get("found_cover_image")]
             if no_cover_infos:
                 self._append_to_journal(f"{len(no_cover_infos)} track(s) currently have no cover match.")
 
@@ -3658,6 +3715,10 @@ class TaggerInterface:
                     number_rate_limited_sources=len(self._rate_limited_messages_this_scan),
                     auth_error_sources=sorted(self.source_auth_error_warned),
                     cancelled=self.cancel_requested.is_set(),
+                    number_itunes=sum(1 for i in searched_infos if i.get("cover_source") == "iTunes"),
+                    number_spotify=sum(1 for i in searched_infos if i.get("cover_source") == "Spotify"),
+                    number_soundcloud=sum(1 for i in searched_infos if i.get("cover_source") == "SoundCloud"),
+                    number_acoustid_used=sum(1 for i in searched_infos if i.get("acoustid_identified")),
                 )
 
         self._check_for_duplicates()

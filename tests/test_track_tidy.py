@@ -2094,6 +2094,24 @@ class NewInstallNotificationTests(unittest.TestCase):
         fields = captured["json"]["embeds"][0]["fields"]
         self.assertEqual(fields[0], {"name": "User", "value": "someuser", "inline": True})
 
+    def test_includes_os_field(self):
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["json"] = json
+
+            class FakeResponse:
+                status_code = 204
+            return FakeResponse()
+
+        tagger.requests.post = fake_post
+        tagger.send_new_install_notification(reporter_name="someuser")
+
+        fields = captured["json"]["embeds"][0]["fields"]
+        os_fields = [f for f in fields if f["name"] == "OS"]
+        self.assertEqual(len(os_fields), 1)
+        self.assertTrue(os_fields[0]["value"])  # non-empty
+
     def test_excluded_user_is_not_notified(self):
         # DISCORD_NOTIFICATION_EXCLUDED_USERS, checked case-insensitively.
         calls = []
@@ -2188,7 +2206,7 @@ class NewInstallNotificationTests(unittest.TestCase):
         embed = captured["json"]["embeds"][0]
         self.assertEqual(embed["title"], "App updated")
         fields = embed["fields"]
-        self.assertEqual(fields[1], {"name": "Previous version", "value": "0.20", "inline": True})
+        self.assertIn({"name": "Previous version", "value": "0.20", "inline": True}, fields)
 
 
 class UsageTelemetryOptOutTests(unittest.TestCase):
@@ -2324,13 +2342,35 @@ class ScanCompleteNotificationTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(captured["url"], tagger.DISCORD_REPORT_WEBHOOK_URL)
         fields = captured["json"]["embeds"][0]["fields"]
-        self.assertEqual(fields[0], {"name": "User", "value": "someuser", "inline": True})
-        self.assertEqual(fields[1], {"name": "New files", "value": "3", "inline": True})
-        self.assertEqual(fields[2], {"name": "Removed files", "value": "1", "inline": True})
-        self.assertEqual(fields[3], {"name": "Total files", "value": "10", "inline": True})
-        self.assertEqual(fields[4], {"name": "No cover match", "value": "2 (20%)", "inline": True})
-        self.assertEqual(fields[5], {"name": "Rate-limited sources", "value": "1", "inline": True})
-        self.assertEqual(fields[6], {"name": "Auth errors", "value": "SoundCloud", "inline": True})
+        self.assertIn({"name": "User", "value": "someuser", "inline": True}, fields)
+        self.assertIn({"name": "New files", "value": "3", "inline": True}, fields)
+        self.assertIn({"name": "Removed files", "value": "1", "inline": True}, fields)
+        self.assertIn({"name": "Total files", "value": "10", "inline": True}, fields)
+        self.assertIn({"name": "No cover match", "value": "2 (20%)", "inline": True}, fields)
+        self.assertIn({"name": "Rate-limited sources", "value": "1", "inline": True}, fields)
+        self.assertIn({"name": "Auth errors", "value": "SoundCloud", "inline": True}, fields)
+
+    def test_includes_per_source_match_breakdown(self):
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["json"] = json
+
+            class FakeResponse:
+                status_code = 204
+            return FakeResponse()
+
+        tagger.requests.post = fake_post
+        tagger.send_scan_complete_notification(
+            reporter_name="someuser", number_new=5,
+            number_itunes=2, number_spotify=1, number_soundcloud=1, number_acoustid_used=1,
+        )
+
+        fields = captured["json"]["embeds"][0]["fields"]
+        self.assertIn({"name": "iTunes matches", "value": "2", "inline": True}, fields)
+        self.assertIn({"name": "Spotify matches", "value": "1", "inline": True}, fields)
+        self.assertIn({"name": "SoundCloud matches", "value": "1", "inline": True}, fields)
+        self.assertIn({"name": "AcoustID fallback used", "value": "1", "inline": True}, fields)
 
     def test_no_auth_errors_shows_none(self):
         captured = {}
@@ -2346,7 +2386,7 @@ class ScanCompleteNotificationTests(unittest.TestCase):
         tagger.send_scan_complete_notification(reporter_name="someuser", number_new=1)
 
         fields = captured["json"]["embeds"][0]["fields"]
-        self.assertEqual(fields[6], {"name": "Auth errors", "value": "None", "inline": True})
+        self.assertIn({"name": "Auth errors", "value": "None", "inline": True}, fields)
 
     def test_cancelled_scan_still_notifies_with_relabeled_title(self):
         captured = {}
@@ -2482,6 +2522,58 @@ class QualityScanReportTests(unittest.TestCase):
         embed = captured["json"]["embeds"][0]
         self.assertEqual(embed["title"], "Quality scan failed")
         self.assertIn({"name": "Error", "value": "Folder not found", "inline": False}, embed["fields"])
+
+
+class CrashReportTests(unittest.TestCase):
+    def setUp(self):
+        self.original_post = tagger.requests.post
+
+    def tearDown(self):
+        tagger.requests.post = self.original_post
+
+    def _capture(self):
+        captured = {}
+
+        def fake_post(url, json=None, data=None, files=None, timeout=None):
+            captured["url"] = url
+            captured["data"] = data
+            captured["files"] = files
+
+            class FakeResponse:
+                status_code = 204
+            return FakeResponse()
+
+        tagger.requests.post = fake_post
+        return captured
+
+    def test_sends_traceback_as_attachment(self):
+        captured = self._capture()
+        result = tagger.send_crash_report(
+            reporter_name="someuser", traceback_text="Traceback...\nValueError: boom", context="ui_callback",
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(captured["url"], tagger.DISCORD_REPORT_WEBHOOK_URL)
+        payload = json.loads(captured["data"]["payload_json"])
+        embed = payload["embeds"][0]
+        self.assertEqual(embed["title"], "Unhandled exception")
+        self.assertIn({"name": "User", "value": "someuser", "inline": True}, embed["fields"])
+        self.assertIn({"name": "Context", "value": "ui_callback", "inline": True}, embed["fields"])
+        self.assertTrue(any(f["name"] == "OS" for f in embed["fields"]))
+        self.assertEqual(captured["files"]["files[0]"][1], b"Traceback...\nValueError: boom")
+
+    def test_opted_out_suppresses_crash_report(self):
+        calls = []
+        tagger.requests.post = lambda *a, **k: calls.append(1)
+        original_telemetry = tagger.SEND_USAGE_TELEMETRY
+        tagger.SEND_USAGE_TELEMETRY = False
+        try:
+            result = tagger.send_crash_report(reporter_name="someuser", traceback_text="boom")
+        finally:
+            tagger.SEND_USAGE_TELEMETRY = original_telemetry
+
+        self.assertFalse(result)
+        self.assertEqual(calls, [])
 
 
 class UpdateChecksumTests(unittest.TestCase):
