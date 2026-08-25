@@ -336,6 +336,11 @@ class TaggerInterface:
         # below, for the Quality tab's own scan - see _reveal_next_quality_row().
         self._pending_quality_reveals = []
         self._pending_quality_scan_done = None
+        # Cycles 0 -> 1 (worst/red on top) -> 2 (best/green on top) -> 0
+        # (back to scan/arrival order) on each click of the verdict dot
+        # column's heading - see _on_quality_verdict_heading_click.
+        self._quality_verdict_sort_state = 0
+        self._quality_default_row_order = None
         # Remembers the folder the user last manually located a moved
         # history file in (see restore_selected in the History window) -
         # kept at the app level, not just for one Restore call, since a
@@ -402,7 +407,7 @@ class TaggerInterface:
         # Extractor/Quality right away so they aren't left blank while
         # Tagger already has one, same as a fresh selection does.
         if self.folder_variable.get():
-            self._propagate_folder_to_other_tabs(self.folder_variable.get())
+            self._sync_all_folder_pickers(self.folder_variable.get())
         self._setup_drag_and_drop()
         self._adjust_window_height()
         self._apply_theme(self._resolve_theme_choice(self.theme_var.get()))
@@ -1936,21 +1941,24 @@ class TaggerInterface:
         # (\U0001f7e2 etc.) - Tk on Windows doesn't render multi-color emoji
         # glyphs, it falls back to a flat gray outline, which is why an
         # earlier version of this looked gray regardless of verdict.
-        quality_columns = ("file", "level", "bitrate", "format")
+        quality_columns = ("file", "level", "format", "bitrate")
         self.quality_table = ttk.Treeview(
             self.quality_table_frame, columns=quality_columns, show="tree headings",
             selectmode="browse", style="Table.Treeview",
         )
-        self.quality_table.heading("#0", text="")
+        # Clicking the dot column's heading cycles through sorting by
+        # verdict severity: worst-first, then best-first, then back to
+        # scan/arrival order - see _on_quality_verdict_heading_click.
+        self.quality_table.heading("#0", text="", command=self._on_quality_verdict_heading_click)
         self.quality_table.column("#0", width=36, minwidth=36, stretch=False, anchor="center")
         self.quality_table.heading("file", text="File")
-        # Stretches to soak up all leftover width, which keeps "format" - the
-        # last column - pinned flush against the table's right edge instead
-        # of leaving blank space after it. Base width kept modest (unlike
-        # the other, fixed-width columns here, ttk never shrinks a
+        # Stretches to soak up all leftover width, which keeps "bitrate" -
+        # now the last column - pinned flush against the table's right edge
+        # instead of leaving blank space after it. Base width kept modest
+        # (unlike the other, fixed-width columns here, ttk never shrinks a
         # stretching column below its configured width to make room for
         # its neighbors - only grows it - so a too-wide base width here
-        # would push "format" off the edge of the app's fixed 620px-wide
+        # would push "bitrate" off the edge of the app's fixed 620px-wide
         # window instead of actually stretching).
         self.quality_table.column("file", width=170, minwidth=100, stretch=True, anchor="w")
         # Unit isn't repeated in every cell (just "-13", not "-13 LUFS"/
@@ -1958,12 +1966,12 @@ class TaggerInterface:
         # three columns tight instead of each carrying its own padding.
         self.quality_table.heading("level", text="LUFS")
         self.quality_table.column("level", width=42, minwidth=42, stretch=False, anchor="center")
+        self.quality_table.heading("format", text="Format")
+        self.quality_table.column("format", width=46, minwidth=46, stretch=False, anchor="center")
         # "kbps" instead of "Bitrate" - shorter header, and matches the
         # LUFS/kbps pattern of the unit living in the header, not the cell.
         self.quality_table.heading("bitrate", text="kbps")
         self.quality_table.column("bitrate", width=42, minwidth=42, stretch=False, anchor="center")
-        self.quality_table.heading("format", text="Format")
-        self.quality_table.column("format", width=46, minwidth=46, stretch=False, anchor="center")
         # Colors the whole row (dot + file/format/detail text) - ttk Treeview
         # tags apply per-item, not per-cell, so there's no way to color only
         # the dot on its own; matches what was asked for anyway ("les lignes
@@ -2229,8 +2237,7 @@ class TaggerInterface:
     def _choose_extract_folder(self):
         folder = filedialog.askdirectory(title="Choose the folder to flatten")
         if folder:
-            self.extract_folder_var.set(folder)
-            self.extract_button.configure(state="normal")
+            self._sync_all_folder_pickers(folder)
 
     def _start_extraction(self):
         folder = self.extract_folder_var.get().strip()
@@ -2293,8 +2300,7 @@ class TaggerInterface:
     def _choose_quality_folder(self):
         folder = filedialog.askdirectory(title="Choose the folder to analyze")
         if folder:
-            self.quality_folder_var.set(folder)
-            self.quality_scan_button.configure(state="normal")
+            self._sync_all_folder_pickers(folder)
 
     def _start_quality_scan(self):
         folder = self.quality_folder_var.get().strip()
@@ -2310,6 +2316,8 @@ class TaggerInterface:
         self._quality_scan_counts = {tagger.QUALITY_GREEN: 0, tagger.QUALITY_ORANGE: 0, tagger.QUALITY_RED: 0}
         self._pending_quality_reveals = []  # results queued for _reveal_next_quality_row
         self._pending_quality_scan_done = None  # held until reveals catch up
+        self._quality_verdict_sort_state = 0  # a fresh scan invalidates any prior sort
+        self._quality_default_row_order = None
 
         self.quality_browse_button.configure(state="disabled")
         self.quality_cancel_requested.clear()
@@ -2366,8 +2374,8 @@ class TaggerInterface:
             values=(
                 result.get("file", ""),
                 f"{lufs:.1f}" if lufs is not None else "—",
-                f"{bitrate_kbps:.0f}" if bitrate_kbps is not None else "—",
                 result.get("format", ""),
+                f"{bitrate_kbps:.0f}" if bitrate_kbps is not None else "—",
             ),
             tags=final_tags,
         )
@@ -2376,6 +2384,46 @@ class TaggerInterface:
             self.quality_row_paths[item_id] = os.path.join(self.quality_last_scanned_folder, relative_file)
         self._restripe_rows(tree=self.quality_table)
         self._flash_new_row(item_id, tree=self.quality_table, final_tags=final_tags)
+
+    # Verdict rank per sort state: state 1 puts red on top (worst-first),
+    # state 2 puts green on top (best-first); a row with no recognized
+    # verdict tag (the "❓" rows) always sorts last in either direction.
+    _QUALITY_SORT_RANKS = {
+        1: {"verdict_red": 0, "verdict_orange": 1, "verdict_green": 2},
+        2: {"verdict_red": 2, "verdict_orange": 1, "verdict_green": 0},
+    }
+
+    def _on_quality_verdict_heading_click(self):
+        """Cycles the dot column through: 1st click = worst (red) on top,
+        2nd click = best (green) on top, 3rd click = back to the original
+        scan/arrival order - state tracked in _quality_verdict_sort_state,
+        reset on every new scan since it no longer means anything once the
+        rows themselves are gone."""
+        children = self.quality_table.get_children("")
+        if not children:
+            return
+        if self._quality_default_row_order is None:
+            self._quality_default_row_order = list(children)
+
+        self._quality_verdict_sort_state = (self._quality_verdict_sort_state + 1) % 3
+
+        if self._quality_verdict_sort_state == 0:
+            ordered = [iid for iid in self._quality_default_row_order if self.quality_table.exists(iid)]
+        else:
+            rank_map = self._QUALITY_SORT_RANKS[self._quality_verdict_sort_state]
+
+            def sort_key(iid):
+                tags = self.quality_table.item(iid, "tags")
+                for tag in tags:
+                    if tag in rank_map:
+                        return rank_map[tag]
+                return 3  # no recognized verdict tag - always last
+
+            ordered = sorted(children, key=sort_key)
+
+        for index, iid in enumerate(ordered):
+            self.quality_table.move(iid, "", index)
+        self._restripe_rows(tree=self.quality_table)
 
         self.quality_summary_green_var.set(f"● {self._quality_scan_counts[tagger.QUALITY_GREEN]}")
         self.quality_summary_orange_var.set(f"● {self._quality_scan_counts[tagger.QUALITY_ORANGE]}")
@@ -2601,25 +2649,25 @@ class TaggerInterface:
         instead of only finding out once Scan is clicked."""
         folder = filedialog.askdirectory(title="Choose the audio files folder")
         if folder:
-            self.folder_variable.set(folder)
-            self._refresh_tagger_buttons_for_connectivity()
-
-            tagger.MUSIC_FOLDER = folder
-            tagger.save_setting("music_folder", folder)
+            self._sync_all_folder_pickers(folder)
             file_count = len(tagger.list_audio_files())
             unit = "audio file" if file_count == 1 else "audio files"
             self._append_to_journal(f"Selected folder contains {file_count} {unit}.")
-            self._propagate_folder_to_other_tabs(folder)
 
-    def _propagate_folder_to_other_tabs(self, folder):
-        """Mirrors a folder picked in Tagger into Extractor/Quality, which
-        almost always need the same folder anyway - one-way only (Tagger
-        is the "main" picker), so choosing a folder directly in Extractor
-        or Quality still works independently and doesn't propagate back."""
+    def _sync_all_folder_pickers(self, folder):
+        """Tagger/Extractor/Quality's folder pickers are all linked -
+        picking a folder in any one of them updates the other two and
+        persists it as the app's remembered music folder, since in
+        practice all three are always meant to point at the same folder."""
+        self.folder_variable.set(folder)
         self.extract_folder_var.set(folder)
-        self.extract_button.configure(state="normal")
         self.quality_folder_var.set(folder)
+        self._refresh_tagger_buttons_for_connectivity()
+        self.extract_button.configure(state="normal")
         self.quality_scan_button.configure(state="normal")
+
+        tagger.MUSIC_FOLDER = folder
+        tagger.save_setting("music_folder", folder)
 
     def _add_mention(self, event=None):
         """Manual entries go straight into the 'To remove' list (press Enter to confirm)."""
