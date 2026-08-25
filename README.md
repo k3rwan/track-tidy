@@ -49,12 +49,10 @@ understand the hesitation. A few things that should help:
   actual audio anywhere.
 - It also sends the developer small usage pings (your OS username, no
   other machine info) on install and after each scan/extraction/quality
-  analysis - toggle this off any time in Settings ("Send anonymous usage
-  data to the developer"). Separately, the in-app "Report track" button
-  (only when you press it) sends that one track's info (title/artist/
-  filename + its cover) to help fix mismatches - see
-  [PRIVACY.md](PRIVACY.md) for the full breakdown of what's sent, when,
-  and how to opt out.
+  analysis. Separately, the in-app "Report track" button (only when you
+  press it) sends that one track's info (title/artist/filename + its
+  cover) to help fix mismatches - see [PRIVACY.md](PRIVACY.md) for the
+  full breakdown of what's sent and when.
 - The source code below is the real thing that gets built into the installer
   - nothing hidden.
 - The Windows installer is scanned with

@@ -2192,10 +2192,11 @@ class NewInstallNotificationTests(unittest.TestCase):
 
 
 class UsageTelemetryOptOutTests(unittest.TestCase):
-    """SEND_USAGE_TELEMETRY (Settings: "Send anonymous usage data to the
-    developer") gates every AUTOMATIC report via
+    """SEND_USAGE_TELEMETRY gates every AUTOMATIC report via
     _is_discord_notification_excluded() - send_track_report() (the
-    explicit "Report track" button) is deliberately NOT gated by it."""
+    explicit "Report track" button) is deliberately NOT gated by it. No
+    Settings UI currently exposes this flag (removed - see interface.py
+    history), but the flag/persisted setting itself still exists."""
 
     def setUp(self):
         self.original_post = tagger.requests.post

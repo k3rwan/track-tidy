@@ -7,14 +7,10 @@ anywhere: automatic usage pings, and the explicit "Report track" button.
 Everything else (your music files, your tags, your scan history) stays on
 your own machine.
 
-## Automatic usage pings ("Send anonymous usage data")
+## Automatic usage pings
 
-Controlled by the **"Send anonymous usage data to the developer"** checkbox
-in Settings - on by default, uncheck it at any time to stop all of this
-immediately.
-
-While it's checked, Track Tidy posts a small notification to a Discord
-channel the developer (Kevin) controls, via a webhook, in these cases:
+Track Tidy posts a small notification to a Discord channel the developer
+(Kevin) controls, via a webhook, in these cases:
 
 | When | What's sent |
 |---|---|
@@ -43,9 +39,9 @@ past messages - see `count_unique_discord_users()` in `track_tidy.py`.
 
 Pressing **Report track** on a specific row always sends that track's
 filename, current/detected artist and title, and its cover art (existing
-and/or suggested) to the same Discord channel - regardless of the checkbox
-above, since pressing the button is itself the explicit request to send
-that information. This is how mismatched covers/tags get fixed.
+and/or suggested) to the same Discord channel, since pressing the button is
+itself the explicit request to send that information. This is how
+mismatched covers/tags get fixed.
 
 ## What's never sent
 
@@ -73,10 +69,10 @@ that included your Windows username, open a
 contact method on the repo) naming the username, and they'll be located and
 deleted by hand.
 
-## Opting out entirely
+## Opting out
 
-Besides the Settings checkbox, Track Tidy is open source
-(GPL-2.0-or-later - see [LICENSE](LICENSE)): building it from source
+There's currently no in-app setting for this. Track Tidy is open source
+(GPL-2.0-or-later - see [LICENSE](LICENSE)) though: building it from source
 yourself, without the developer's shared credentials
 (`default_credentials.json` - see the README's "Setup" section), never
 talks to the developer's Discord channel at all, since the webhook URL

@@ -547,18 +547,6 @@ class TaggerInterface:
         tagger.save_setting("use_spotify", enabled)
         tagger.log_action(f"Use Spotify: {enabled}")
 
-    def _on_use_telemetry_changed(self):
-        """Gates every AUTOMATIC Discord report (new install, scan/
-        extraction/quality-scan complete, rate-limit, no-cover-match batch
-        - see _is_discord_notification_excluded in track_tidy.py) - does
-        NOT affect the "Report track" button, which stays available since
-        clicking it is itself an explicit, single-purpose request to send
-        that one track's info."""
-        enabled = self.use_telemetry_var.get()
-        tagger.SEND_USAGE_TELEMETRY = enabled
-        tagger.save_setting("send_usage_telemetry", enabled)
-        tagger.log_action(f"Send usage telemetry: {enabled}")
-
     def _reset_settings_to_default(self):
         """Restores every Settings-tab option to its out-of-the-box value.
         Deliberately bypasses the individual _on_X_changed() handlers -
@@ -2078,10 +2066,6 @@ class TaggerInterface:
         ttk.Checkbutton(
             behavior_frame, text="Show log section", variable=self.show_log_var,
             command=self._on_show_log_changed,
-        ).pack(anchor="w", padx=10, pady=(0, 0))
-        ttk.Checkbutton(
-            behavior_frame, text="Send anonymous usage data to the developer",
-            variable=self.use_telemetry_var, command=self._on_use_telemetry_changed,
         ).pack(anchor="w", padx=10, pady=(0, 10))
 
         # Maintenance actions, clearly grouped as their own section instead
@@ -2115,13 +2099,11 @@ class TaggerInterface:
                 "respective owners.\n"
                 "Licensed under the GNU General Public License v2 or later - includes "
                 "mutagen (GPL-2.0-or-later) and FFmpeg (GPLv3).\n"
-                "While \"Send anonymous usage data\" above is checked, Track Tidy notifies "
-                "the developer (via Discord) of your Windows username plus basic counts - "
-                "no track/file names - on install, and after each scan, extraction, or "
-                "quality analysis (including a cancelled one). Uncheck it to stop all of "
-                "that. The in-app \"Report track\" button always sends that one track's "
-                "info when you press it, regardless of this setting - see PRIVACY.md in "
-                "the repo for the full breakdown."
+                "Track Tidy notifies the developer (via Discord) of your Windows username "
+                "plus basic counts - no track/file names - on install, and after each scan, "
+                "extraction, or quality analysis (including a cancelled one). The in-app "
+                "\"Report track\" button additionally sends that one track's info when you "
+                "press it - see PRIVACY.md in the repo for the full breakdown."
             ),
             justify="left",
             foreground=MUTED_TEXT_COLOR,
