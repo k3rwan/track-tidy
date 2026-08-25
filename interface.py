@@ -929,6 +929,20 @@ class TaggerInterface:
 
         return ImageTk.PhotoImage(image)
 
+    @staticmethod
+    def _load_extractor_preview_photo(dark, side, preview_width=230):
+        """Loads the Extractor tab's before/after screenshot crop for the
+        current theme (assets/extractor-{side}-{dark,light}.png - see the
+        preview frame's own comment above for why two variants exist),
+        scaled to preview_width. Returns None if the asset is missing."""
+        suffix = "dark" if dark else "light"
+        path = resource_path(f"assets/extractor-{side}-{suffix}.png")
+        if not os.path.exists(path):
+            return None
+        source = Image.open(path)
+        height = round(preview_width * source.height / source.width)
+        return ImageTk.PhotoImage(source.resize((preview_width, height), Image.LANCZOS))
+
     def _build_gray_dot_photo(self, size=10):
         """Static neutral dot shown in the Quality table's own verdict dot
         column heading (#0) - a plain drawn circle rather than a colored
@@ -1305,6 +1319,10 @@ class TaggerInterface:
         self.quality_folder_icon_label.configure(image=self._quality_folder_icon_photo)
         self._empty_state_icon_photo = self._build_empty_state_icon_photo(dark)
         self.empty_state_icon_label.configure(image=self._empty_state_icon_photo)
+        self._extractor_preview_before_photo = self._load_extractor_preview_photo(dark, "before")
+        self._extractor_preview_after_photo = self._load_extractor_preview_photo(dark, "after")
+        self.extractor_preview_before_label.configure(image=self._extractor_preview_before_photo)
+        self.extractor_preview_after_label.configure(image=self._extractor_preview_after_photo)
 
         self.theme_colors = colors
         self._set_titlebar_dark(self.window, dark)
@@ -2065,37 +2083,24 @@ class TaggerInterface:
         # Before/after preview - shows what "Extract" actually does at a
         # glance, since the intro label's text alone wasn't landing (users
         # kept asking what this tab was for). Real screenshots, cropped
-        # tight to just the file list (a handful of nested-folder rows vs.
-        # the same handful of tracks flattened) rather than a full Explorer
-        # window - a whole-window screenshot shrunk down to fit this tab
-        # was illegible, and a hand-drawn illustration tried after that
-        # didn't land either; a close-up crop of real rows reads at a
-        # glance and still looks like an actual file listing.
-        extractor_preview_before_path = resource_path("assets/extractor-before.png")
-        extractor_preview_after_path = resource_path("assets/extractor-after.png")
-        if os.path.exists(extractor_preview_before_path) and os.path.exists(extractor_preview_after_path):
-            extractor_preview_frame = ttk.Frame(extractor_tab)
-            extractor_preview_frame.pack(pady=(10, 5))
-
-            preview_width = 230
-            before_source = Image.open(extractor_preview_before_path)
-            after_source = Image.open(extractor_preview_after_path)
-            before_height = round(preview_width * before_source.height / before_source.width)
-            after_height = round(preview_width * after_source.height / after_source.width)
-            # Keep references - Tk drops a PhotoImage as soon as nothing in
-            # Python still points to it, even while a Label keeps displaying it.
-            self._extractor_preview_before_photo = ImageTk.PhotoImage(
-                before_source.resize((preview_width, before_height), Image.LANCZOS)
-            )
-            self._extractor_preview_after_photo = ImageTk.PhotoImage(
-                after_source.resize((preview_width, after_height), Image.LANCZOS)
-            )
-
-            ttk.Label(extractor_preview_frame, image=self._extractor_preview_before_photo).pack(side="left")
-            ttk.Label(
-                extractor_preview_frame, text="  →  ", font=("Segoe UI", 36, "bold")
-            ).pack(side="left")
-            ttk.Label(extractor_preview_frame, image=self._extractor_preview_after_photo).pack(side="left")
+        # tight to just a few rows of the file list (folders with their own
+        # subfolder vs. that same handful of tracks flattened), background
+        # keyed out to transparent so it floats on the tab instead of
+        # showing as a dark box in light mode - which needs light/dark
+        # variants of the same crop (the light one has its near-white text
+        # inverted to dark, see _build_extractor_preview_photo), swapped in
+        # by _apply_theme like every other theme-aware icon in this file.
+        self.extractor_preview_frame = ttk.Frame(extractor_tab)
+        self.extractor_preview_frame.pack(pady=(10, 5))
+        self.extractor_preview_before_label = ttk.Label(self.extractor_preview_frame)
+        self.extractor_preview_before_label.pack(side="left")
+        self.extractor_preview_arrow_label = ttk.Label(
+            self.extractor_preview_frame, text="  →  ", font=("Segoe UI", 36, "bold")
+        )
+        self.extractor_preview_arrow_label.pack(side="left")
+        self.extractor_preview_after_label = ttk.Label(self.extractor_preview_frame)
+        self.extractor_preview_after_label.pack(side="left")
+        # Images are set in _apply_theme, same as folder_icon_label above.
 
         # not packed yet: only shown once an extraction has actually started
         self.extract_progress_canvas = self._build_progress_canvas(extractor_tab)
