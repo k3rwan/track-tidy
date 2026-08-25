@@ -2062,6 +2062,39 @@ class TaggerInterface:
         self.extract_button.configure(state="disabled")
         self.extract_button.pack(side="left", fill="x", expand=True)
 
+        # Before/after preview - shows what "Extract" actually does at a
+        # glance, since the intro label's text alone wasn't landing (users
+        # kept asking what this tab was for). Static screenshots, not
+        # theme-dependent generated art like the Tagger empty-state icon
+        # (see _build_empty_state_icon_photo), so nothing to rebuild in
+        # _apply_theme - only the surrounding ttk.Label backgrounds need to
+        # track the theme, and those already inherit it automatically.
+        extractor_preview_before_path = resource_path("assets/extractor-before.png")
+        extractor_preview_after_path = resource_path("assets/extractor-after.png")
+        if os.path.exists(extractor_preview_before_path) and os.path.exists(extractor_preview_after_path):
+            extractor_preview_frame = ttk.Frame(extractor_tab)
+            extractor_preview_frame.pack(pady=(10, 5))
+
+            preview_width = 240
+            before_source = Image.open(extractor_preview_before_path)
+            after_source = Image.open(extractor_preview_after_path)
+            before_height = round(preview_width * before_source.height / before_source.width)
+            after_height = round(preview_width * after_source.height / after_source.width)
+            # Keep references - Tk drops a PhotoImage as soon as nothing in
+            # Python still points to it, even while a Label keeps displaying it.
+            self._extractor_preview_before_photo = ImageTk.PhotoImage(
+                before_source.resize((preview_width, before_height), Image.LANCZOS)
+            )
+            self._extractor_preview_after_photo = ImageTk.PhotoImage(
+                after_source.resize((preview_width, after_height), Image.LANCZOS)
+            )
+
+            ttk.Label(extractor_preview_frame, image=self._extractor_preview_before_photo).pack(side="left")
+            ttk.Label(
+                extractor_preview_frame, text="  →  ", font=("Segoe UI", 20, "bold")
+            ).pack(side="left")
+            ttk.Label(extractor_preview_frame, image=self._extractor_preview_after_photo).pack(side="left")
+
         # not packed yet: only shown once an extraction has actually started
         self.extract_progress_canvas = self._build_progress_canvas(extractor_tab)
 
