@@ -2233,6 +2233,57 @@ class ExtractionReportTests(unittest.TestCase):
         self.assertIn({"name": "Error", "value": "Permission denied", "inline": False}, embed["fields"])
 
 
+class QualityScanReportTests(unittest.TestCase):
+    def setUp(self):
+        self.original_post = tagger.requests.post
+
+    def tearDown(self):
+        tagger.requests.post = self.original_post
+
+    def _capture(self):
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["json"] = json
+
+            class FakeResponse:
+                status_code = 204
+            return FakeResponse()
+
+        tagger.requests.post = fake_post
+        return captured
+
+    def test_completed_scan(self):
+        captured = self._capture()
+        result = tagger.send_quality_scan_report(
+            reporter_name="someuser", total=10, number_green=6, number_orange=3, number_red=1,
+        )
+
+        self.assertTrue(result)
+        embed = captured["json"]["embeds"][0]
+        self.assertEqual(embed["title"], "Quality scan complete")
+        fields = embed["fields"]
+        self.assertIn({"name": "Total files", "value": "10", "inline": True}, fields)
+        self.assertIn({"name": "Green", "value": "6", "inline": True}, fields)
+        self.assertIn({"name": "Orange", "value": "3", "inline": True}, fields)
+        self.assertIn({"name": "Red", "value": "1", "inline": True}, fields)
+        self.assertFalse(any(f["name"] == "Error" for f in fields))
+
+    def test_cancelled_scan(self):
+        captured = self._capture()
+        tagger.send_quality_scan_report(reporter_name="someuser", total=4, cancelled=True)
+
+        self.assertEqual(captured["json"]["embeds"][0]["title"], "Quality scan cancelled")
+
+    def test_failed_scan_includes_error_field(self):
+        captured = self._capture()
+        tagger.send_quality_scan_report(reporter_name="someuser", error="Folder not found")
+
+        embed = captured["json"]["embeds"][0]
+        self.assertEqual(embed["title"], "Quality scan failed")
+        self.assertIn({"name": "Error", "value": "Folder not found", "inline": False}, embed["fields"])
+
+
 class UpdateChecksumTests(unittest.TestCase):
     """check_for_update looks for a "<installer>.sha256" release asset, and
     download_installer verifies the download against it before letting the

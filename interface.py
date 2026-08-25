@@ -341,6 +341,10 @@ class TaggerInterface:
         # column's heading - see _on_quality_verdict_heading_click.
         self._quality_verdict_sort_state = 0
         self._quality_default_row_order = None
+        # Total file count for the current scan, used to drive the
+        # progress bar off the paced reveal (see _add_quality_row) rather
+        # than the background analysis, which runs far ahead of it.
+        self._quality_scan_total = 0
         # Remembers the folder the user last manually located a moved
         # history file in (see restore_selected in the History window) -
         # kept at the app level, not just for one Restore call, since a
@@ -2352,6 +2356,7 @@ class TaggerInterface:
         self._pending_quality_scan_done = None  # held until reveals catch up
         self._quality_verdict_sort_state = 0  # a fresh scan invalidates any prior sort
         self._quality_default_row_order = None
+        self._quality_scan_total = 0  # set once the first "quality_scan_progress" message arrives
 
         self.quality_browse_button.configure(state="disabled")
         self.quality_cancel_requested.clear()
@@ -2372,6 +2377,11 @@ class TaggerInterface:
         self.quality_scan_button.configure(state="disabled")
 
     def _run_quality_scan(self, folder):
+        try:
+            reporter_name = getpass.getuser()
+        except Exception:
+            reporter_name = ""
+
         def on_progress(index, total):
             self.message_queue.put(("quality_scan_progress", (index, total)))
 
@@ -2387,8 +2397,16 @@ class TaggerInterface:
                 should_cancel=self.quality_cancel_requested.is_set,
             )
             cancelled = self.quality_cancel_requested.is_set()
+            tagger.send_quality_scan_report(
+                reporter_name=reporter_name, total=len(results),
+                number_green=sum(1 for r in results if r.get("verdict") == tagger.QUALITY_GREEN),
+                number_orange=sum(1 for r in results if r.get("verdict") == tagger.QUALITY_ORANGE),
+                number_red=sum(1 for r in results if r.get("verdict") == tagger.QUALITY_RED),
+                cancelled=cancelled,
+            )
             self.message_queue.put(("quality_scan_done", (results, cancelled, None)))
         except Exception as error:
+            tagger.send_quality_scan_report(reporter_name=reporter_name, error=str(error))
             self.message_queue.put(("quality_scan_done", ([], False, str(error))))
 
     def _add_quality_row(self, result):
@@ -2422,6 +2440,13 @@ class TaggerInterface:
             self.quality_row_paths[item_id] = os.path.join(self.quality_last_scanned_folder, relative_file)
         self._restripe_rows(tree=self.quality_table)
         self._flash_new_row(item_id, tree=self.quality_table, final_tags=final_tags)
+
+        # Progress bar tracks what's actually on screen, not how far the
+        # background analysis has gotten - see the "quality_scan_progress"
+        # message handler for why.
+        if self._quality_scan_total:
+            fraction = len(self.quality_table.get_children()) / self._quality_scan_total
+            self._update_progress_bar(self.quality_progress_canvas, fraction, f"{round(fraction * 100)} %")
 
     # Verdict rank per sort state: state 1 puts red on top (worst-first),
     # state 2 puts green on top (best-first); a row with no recognized
@@ -5491,9 +5516,14 @@ class TaggerInterface:
                             pass
 
                 elif message_type == "quality_scan_progress":
-                    index, total = content
-                    fraction = (index / total) if total else 0
-                    self._update_progress_bar(self.quality_progress_canvas, fraction, f"{round(fraction * 100)} %")
+                    # Only the total is kept - the bar itself tracks how
+                    # many rows have actually been REVEALED (see
+                    # _add_quality_row), not how far the background
+                    # analysis has gotten, since that runs far ahead of the
+                    # paced 1/s reveal and would make the bar hit 100%
+                    # while most rows are still trickling into the table.
+                    _index, total = content
+                    self._quality_scan_total = total
 
                 elif message_type == "quality_scan_row":
                     # Not displayed the instant it's ready - see

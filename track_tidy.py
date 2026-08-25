@@ -938,6 +938,53 @@ def send_extraction_report(
         return False
 
 
+def send_quality_scan_report(
+    reporter_name=None, total=0, number_green=0, number_orange=0, number_red=0,
+    cancelled=False, error=None, timeout=10,
+):
+    """
+    Posts a ping to Discord once the Quality tab's scan finishes - whether
+    it ran to completion, was cancelled partway through, or failed
+    outright - the same visibility send_extraction_report/
+    send_scan_complete_notification already give for the other two tabs'
+    own runs. Called once per finished scan (see interface.py's
+    _run_quality_scan). cancelled and error are mutually exclusive in
+    practice but accepted independently, same as send_extraction_report.
+
+    Returns True on success, False on any failure (never raises) - also
+    False without posting anything for an excluded account (see
+    DISCORD_NOTIFICATION_EXCLUDED_USERS).
+    """
+    if _is_discord_notification_excluded(reporter_name) or not DISCORD_REPORT_WEBHOOK_URL:
+        return False
+    if error:
+        title, color = "Quality scan failed", 0xE74C3C
+    elif cancelled:
+        title, color = "Quality scan cancelled", 0xE67E22
+    else:
+        title, color = "Quality scan complete", 0x2ECC71
+    fields = [
+        {"name": "User", "value": reporter_name or "(unknown)", "inline": True},
+        {"name": "Total files", "value": str(total), "inline": True},
+        {"name": "Green", "value": str(number_green), "inline": True},
+        {"name": "Orange", "value": str(number_orange), "inline": True},
+        {"name": "Red", "value": str(number_red), "inline": True},
+    ]
+    if error:
+        fields.append({"name": "Error", "value": str(error)[:1000], "inline": False})
+    fields.append({"name": "App version", "value": APP_VERSION, "inline": True})
+    embed = {"title": title, "color": color, "fields": fields}
+    try:
+        response = requests.post(
+            DISCORD_REPORT_WEBHOOK_URL,
+            json={"embeds": [embed], "allowed_mentions": {"parse": []}},
+            timeout=timeout,
+        )
+        return response.status_code in (200, 204)
+    except Exception:
+        return False
+
+
 # --- Saved UI settings (theme choice...) ---
 
 SETTINGS_FILE = os.path.join(user_config_dir(), "settings.json")
