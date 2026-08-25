@@ -3,6 +3,50 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.26]
+
+### Added
+- New **Quality** tab: scans a folder and flags each track green/orange/red
+  based on spectral cutoff (detects transcoded lossy-to-lossless files),
+  loudness (LUFS - a too-quiet track gets boosted by Rekordbox, degrading
+  it), and bitrate. Results stream in live as each file finishes, paced to
+  one per second, with a real progress bar tied to what's actually on
+  screen rather than the background scan.
+  - Double-click a row for a full spectrogram view (time vs. frequency vs.
+    dB, matching Spek's layout) of that track's actual audio.
+  - Click the verdict dot column's heading to sort by severity - worst
+    first, then best first, then back to scan order.
+  - Right-click a row for "Open file location".
+- Folder pickers across Tagger/Extractor/Quality are now linked - choosing
+  a folder in any one of them updates all three.
+- PRIVACY.md documents exactly what Track Tidy sends to the developer,
+  when, and why.
+- Crash reports: an unhandled error anywhere in the app (main thread or a
+  background scan/extraction/quality/update thread) is now reported to
+  the developer with a full traceback, instead of silently failing.
+- Scan-complete reports now include how many tracks matched via each
+  cover source (iTunes/Spotify/SoundCloud) and how many needed the
+  AcoustID fallback, plus the OS on new-install/update pings.
+
+### Changed
+- Tagger/Extractor/Quality now share one visual design and the same
+  animated progress bar (Extractor previously had no progress feedback at
+  all; Quality used an unthemed plain progress bar).
+- The "Send anonymous usage data" setting was tried and removed again -
+  usage reporting is always on, disclosed in Settings and PRIVACY.md.
+
+### Fixed
+- The SoundCloud OAuth token was cached to disk in plain text; it's now
+  stored via the OS's credential store like the client ID/secret already
+  were (found in a security review).
+- FLAC files are now tagged in place instead of being skipped when MP3
+  conversion isn't requested.
+- A self-referential artist credit wrapping a title's mix qualifier (e.g.
+  "Title (Artist Remix) (Artist)") is now stripped correctly.
+- The macOS CI build workflow no longer bundles real shared API
+  credentials into every ad-hoc test run's downloadable artifact - only a
+  real tagged release build does now, which also uploads its own checksum.
+
 ## [0.25]
 
 ### Added
