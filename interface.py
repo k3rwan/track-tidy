@@ -397,6 +397,12 @@ class TaggerInterface:
         tagger.USE_SPOTIFY = self.use_spotify_var.get()
 
         self._build_interface()
+        # Tagger's folder may already be pre-filled from a saved setting
+        # (see folder_variable's construction above) - mirror it into
+        # Extractor/Quality right away so they aren't left blank while
+        # Tagger already has one, same as a fresh selection does.
+        if self.folder_variable.get():
+            self._propagate_folder_to_other_tabs(self.folder_variable.get())
         self._setup_drag_and_drop()
         self._adjust_window_height()
         self._apply_theme(self._resolve_theme_choice(self.theme_var.get()))
@@ -1951,11 +1957,13 @@ class TaggerInterface:
         # "320 kbps") - the header already says it, and it keeps these
         # three columns tight instead of each carrying its own padding.
         self.quality_table.heading("level", text="LUFS")
-        self.quality_table.column("level", width=50, minwidth=50, stretch=False, anchor="center")
-        self.quality_table.heading("bitrate", text="Bitrate")
-        self.quality_table.column("bitrate", width=60, minwidth=60, stretch=False, anchor="center")
+        self.quality_table.column("level", width=42, minwidth=42, stretch=False, anchor="center")
+        # "kbps" instead of "Bitrate" - shorter header, and matches the
+        # LUFS/kbps pattern of the unit living in the header, not the cell.
+        self.quality_table.heading("bitrate", text="kbps")
+        self.quality_table.column("bitrate", width=42, minwidth=42, stretch=False, anchor="center")
         self.quality_table.heading("format", text="Format")
-        self.quality_table.column("format", width=55, minwidth=55, stretch=False, anchor="center")
+        self.quality_table.column("format", width=46, minwidth=46, stretch=False, anchor="center")
         # Colors the whole row (dot + file/format/detail text) - ttk Treeview
         # tags apply per-item, not per-cell, so there's no way to color only
         # the dot on its own; matches what was asked for anyway ("les lignes
@@ -2342,16 +2350,19 @@ class TaggerInterface:
         counterpart to _run_quality_scan's on_result callback. Running
         counts/the summary strip update live here too, rather than being
         computed once at the end."""
-        row_tag = "even_row" if len(self.quality_table.get_children()) % 2 == 0 else "odd_row"
         verdict = result.get("verdict")
         verdict_tag = self.QUALITY_VERDICT_TAG.get(verdict)
         if verdict in self._quality_scan_counts:
             self._quality_scan_counts[verdict] += 1
-        final_tags = (row_tag, verdict_tag) if verdict_tag else (row_tag,)
+        # Row is inserted at index 0 (above the previous ones), so the stripe
+        # tag can't be based on the current child count the way a plain
+        # end-appended table would - it's assigned by _restripe_rows() below
+        # instead, same as the Tagger table does for the same reason.
+        final_tags = ("even_row", verdict_tag) if verdict_tag else ("even_row",)
         bitrate_kbps = result.get("bitrate_kbps")
         lufs = result.get("lufs")
         item_id = self.quality_table.insert(
-            "", "end", text="●" if verdict_tag else "❓",
+            "", 0, text="●" if verdict_tag else "❓",
             values=(
                 result.get("file", ""),
                 f"{lufs:.1f}" if lufs is not None else "—",
@@ -2363,6 +2374,7 @@ class TaggerInterface:
         relative_file = result.get("file", "")
         if self.quality_last_scanned_folder and relative_file:
             self.quality_row_paths[item_id] = os.path.join(self.quality_last_scanned_folder, relative_file)
+        self._restripe_rows(tree=self.quality_table)
         self._flash_new_row(item_id, tree=self.quality_table, final_tags=final_tags)
 
         self.quality_summary_green_var.set(f"● {self._quality_scan_counts[tagger.QUALITY_GREEN]}")
@@ -2597,6 +2609,17 @@ class TaggerInterface:
             file_count = len(tagger.list_audio_files())
             unit = "audio file" if file_count == 1 else "audio files"
             self._append_to_journal(f"Selected folder contains {file_count} {unit}.")
+            self._propagate_folder_to_other_tabs(folder)
+
+    def _propagate_folder_to_other_tabs(self, folder):
+        """Mirrors a folder picked in Tagger into Extractor/Quality, which
+        almost always need the same folder anyway - one-way only (Tagger
+        is the "main" picker), so choosing a folder directly in Extractor
+        or Quality still works independently and doesn't propagate back."""
+        self.extract_folder_var.set(folder)
+        self.extract_button.configure(state="normal")
+        self.quality_folder_var.set(folder)
+        self.quality_scan_button.configure(state="normal")
 
     def _add_mention(self, event=None):
         """Manual entries go straight into the 'To remove' list (press Enter to confirm)."""
@@ -3161,11 +3184,16 @@ class TaggerInterface:
         mixed = [round(s + (e - s) * t) for s, e in zip(start_rgb, end_rgb)]
         return "#{:02x}{:02x}{:02x}".format(*mixed)
 
-    def _restripe_rows(self):
-        """Re-applies alternating row colors based on each row's current position."""
-        for index, item_id in enumerate(self.table.get_children()):
-            tag = "even_row" if index % 2 == 0 else "odd_row"
-            self.table.item(item_id, tags=(tag,))
+    def _restripe_rows(self, tree=None):
+        """Re-applies alternating row colors based on each row's current
+        position. Reused for the Quality table (tree=self.quality_table)
+        too - there, rows also carry a verdict color tag alongside the
+        stripe tag, so that tag is preserved instead of being dropped."""
+        tree = tree if tree is not None else self.table
+        for index, item_id in enumerate(tree.get_children()):
+            stripe_tag = "even_row" if index % 2 == 0 else "odd_row"
+            other_tags = [t for t in tree.item(item_id, "tags") if t not in ("even_row", "odd_row")]
+            tree.item(item_id, tags=tuple([stripe_tag] + other_tags))
 
     def _fade_out_and_delete_rows(self, item_ids, on_complete=None):
         """Mirror of _flash_new_row for removal: fades each row toward the
