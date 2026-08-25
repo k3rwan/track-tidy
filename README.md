@@ -91,6 +91,19 @@ specific track that got tagged wrong.
 3. Click a checkbox/cell to toggle it, or double-click Title/Artist to edit manually
 4. Click **Apply**
 
+### Extractor tab
+
+Got a folder full of nested subfolders, each burying one track deep inside
+artist/album folders? The **Extractor** tab flattens it: click **Browse...**
+to pick the folder, then **Extract** - every audio file gets moved to the top
+level and the now-empty subfolders are cleaned up automatically.
+
+<p align="center">
+  <img src="screenshots/extractor-before.png" alt="Before: audio files buried in nested subfolders" width="280">
+  &nbsp;&nbsp;&nbsp;<b>&rarr;</b>&nbsp;&nbsp;&nbsp;
+  <img src="screenshots/extractor-after.png" alt="After: one flat folder" width="280">
+</p>
+
 ### Project layout
 
 | File | Purpose |
