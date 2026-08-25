@@ -2152,11 +2152,12 @@ class TaggerInterface:
                 "respective owners.\n"
                 "Licensed under the GNU General Public License v2 or later - includes "
                 "mutagen (GPL-2.0-or-later) and FFmpeg (GPLv3).\n"
-                "Track Tidy notifies the developer (via Discord) of your Windows username "
-                "plus basic counts - no track/file names - on install, and after each scan, "
-                "extraction, or quality analysis (including a cancelled one). The in-app "
-                "\"Report track\" button additionally sends that one track's info when you "
-                "press it - see PRIVACY.md in the repo for the full breakdown."
+                "Track Tidy notifies the developer (via Discord) of your Windows username, "
+                "OS, and basic counts - no track/file names - on install, and after each "
+                "scan, extraction, or quality analysis (including a cancelled one), as well "
+                "as on a crash (with an error traceback). The in-app \"Report track\" button "
+                "additionally sends that one track's info when you press it - see "
+                "PRIVACY.md in the repo for the full breakdown."
             ),
             justify="left",
             foreground=MUTED_TEXT_COLOR,
