@@ -1184,6 +1184,14 @@ class TaggerInterface:
         self.kevz_credit_label.configure(foreground=muted_fg)
         self.legal_text_label.configure(foreground=muted_fg)
 
+        # Matches the table's own background (colors["tree_bg"]/"white" -
+        # same literal the "even_row" tag uses for light mode above) so the
+        # hint blends into the empty table instead of looking like a
+        # separate panel dropped on top of it.
+        empty_state_bg = colors["tree_bg"] if dark else "white"
+        style.configure("EmptyState.TFrame", background=empty_state_bg)
+        style.configure("EmptyState.TLabel", background=empty_state_bg, foreground=muted_fg)
+
         # Separate PhotoImage per label (not one shared image) - each
         # widget needs its own reference kept alive, and building fresh
         # ones is cheap (a handful of tiny polygon draws).
@@ -1549,8 +1557,11 @@ class TaggerInterface:
 
         # The Notebook (tabs) covers the entire window, so registering only
         # the root window wouldn't actually catch drops - register it AND the
-        # tab content too, to cover the whole visible surface.
-        for widget in (self.window, self.notebook, self.tagger_tab, self.table):
+        # tab content too, to cover the whole visible surface. The empty-
+        # state hint's own widgets are included too - while it's showing,
+        # it's placed ON TOP of self.table, so it would otherwise catch the
+        # drop event itself and the table's registration would never fire.
+        for widget in (self.window, self.notebook, self.tagger_tab, self.table, *self.empty_state_widgets):
             try:
                 widget.drop_target_register(DND_FILES)
                 widget.dnd_bind("<<Drop>>", self._on_files_dropped)
@@ -1591,6 +1602,7 @@ class TaggerInterface:
             self._thumbnail_pil_images.clear()
             self.scanned_plan = []
             self.last_scanned_folder = folder
+            self._update_empty_state_hint()
 
         self.notebook.select(0)
         self._set_buttons_enabled(False)
@@ -1824,6 +1836,32 @@ class TaggerInterface:
 
         self.table.pack(side="left", fill="both", expand=True)
         vertical_scrollbar.pack(side="left", fill="y")
+
+        # Empty-state hint: placed (not packed) so it floats centered over
+        # the table area regardless of the scrollbar's own packing, and
+        # created after the table/scrollbar so its default stacking order
+        # already puts it on top of both. Shown/hidden by
+        # _update_empty_state_hint() - see its call sites (initial setup
+        # below, _add_scan_row, and every point that clears the table back
+        # to zero rows).
+        self.empty_state_frame = ttk.Frame(scrollbars_frame, style="EmptyState.TFrame")
+        self.empty_state_widgets = [self.empty_state_frame]
+        empty_state_icon_path = resource_path("assets/track-tidy_icon.png")
+        if os.path.exists(empty_state_icon_path):
+            icon_image = Image.open(empty_state_icon_path).convert("RGBA").resize((64, 64), Image.LANCZOS)
+            self._empty_state_icon_photo = ImageTk.PhotoImage(icon_image)  # keep a reference
+            empty_state_icon_label = ttk.Label(
+                self.empty_state_frame, image=self._empty_state_icon_photo, style="EmptyState.TLabel",
+            )
+            empty_state_icon_label.pack(pady=(0, 12))
+            self.empty_state_widgets.append(empty_state_icon_label)
+        empty_state_text_label = ttk.Label(
+            self.empty_state_frame, style="EmptyState.TLabel", justify="center",
+            text="Drag and drop an audio file here,\nor select a folder above to get started",
+        )
+        empty_state_text_label.pack()
+        self.empty_state_widgets.append(empty_state_text_label)
+        self._update_empty_state_hint()
 
         self.table.bind("<Button-1>", self._toggle_cell, add="+")
         self.table.bind("<Button-1>", self._on_row_drag_start, add="+")
@@ -2940,6 +2978,7 @@ class TaggerInterface:
         self._thumbnail_pil_images.clear()
         self.scanned_plan = []
         self.last_scanned_folder = None
+        self._update_empty_state_hint()
         self.scan_button.configure(text="Scan")
         self._update_apply_button_label()
 
@@ -3056,6 +3095,7 @@ class TaggerInterface:
             self._thumbnail_pil_images.clear()
             self.scanned_plan = []
             self.last_scanned_folder = folder
+            self._update_empty_state_hint()
 
         self._set_buttons_enabled(False)
 
@@ -3284,6 +3324,15 @@ class TaggerInterface:
 
         self.window.after(SCAN_REVEAL_INTERVAL_MS, self._reveal_next_scan_row)
 
+    def _update_empty_state_hint(self):
+        """Shows the drag-and-drop/select-a-folder hint centered over the
+        table only while it has no rows at all - called after every table
+        mutation that could take it to (or from) zero rows."""
+        if self.table.get_children():
+            self.empty_state_frame.place_forget()
+        else:
+            self.empty_state_frame.place(relx=0.5, rely=0.5, anchor="center")
+
     def _add_scan_row(self, info):
         """Immediately adds a row to the table, ABOVE the previous ones, as soon as a file has just been scanned."""
         # Re-sync with the CURRENT "To remove" list (main thread, authoritative)
@@ -3313,6 +3362,7 @@ class TaggerInterface:
         )
         self._restripe_rows()
         self._flash_new_row(info["file"])
+        self._update_empty_state_hint()
 
     # Row-appear flash: a real slide/fade-in isn't possible on a native
     # Treeview row (Tkinter has no per-row opacity/position animation), so
