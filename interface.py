@@ -2161,7 +2161,7 @@ class TaggerInterface:
         # inverted to dark, see _build_extractor_preview_photo), swapped in
         # by _apply_theme like every other theme-aware icon in this file.
         self.extractor_preview_frame = ttk.Frame(extractor_tab)
-        self.extractor_preview_frame.pack(pady=(10, 5))
+        self.extractor_preview_frame.pack(pady=(25, 15))
         self.extractor_preview_before_label = ttk.Label(self.extractor_preview_frame)
         self.extractor_preview_before_label.pack(side="left")
         self.extractor_preview_arrow_label = ttk.Label(
