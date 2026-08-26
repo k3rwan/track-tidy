@@ -1,0 +1,58 @@
+name: GUI smoke test
+
+# Runs automatically on every push/PR (unlike build-macos.yml, which is a
+# manual, expensive full PyInstaller build) - this just imports interface.py
+# directly and screenshots each tab/theme combo, the same same-process
+# technique this project already uses for manual visual-regression checks
+# (see CLAUDE.md's "For GUI changes..." section, and tests/gui_smoke_test.py).
+# Catches the class of bug unit tests alone miss (wrong icon size,
+# illegible light-mode text, a misplaced widget) without needing a full
+# packaged build.
+#
+# macOS-only for now: the one GitHub-hosted runner platform already proven
+# in this repo to open a real window and screen-capture it
+# (build-macos.yml's own "Launch the app" step, which calls `screencapture`
+# successfully). Unverified whether windows-latest/ubuntu-latest runners
+# would render a real Tk window the same way without extra setup (e.g.
+# Xvfb on Linux) - not attempted here since there's no way to validate that
+# without an actual run.
+on:
+  push:
+    branches: ["main", "wip"]
+  pull_request:
+
+jobs:
+  smoke-test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python3 -m venv venv
+          source venv/bin/activate
+          pip install -r requirements.txt
+
+      - name: Write placeholder credentials
+        # Same dummy values as build-macos.yml's non-release path - this
+        # job never makes a real network call, just needs the file to
+        # exist so load_default_credentials() has something to read.
+        run: |
+          jq -n '{soundcloud_client_id: "ci-placeholder", soundcloud_client_secret: "ci-placeholder", spotify_client_id: "ci-placeholder", spotify_client_secret: "ci-placeholder", discord_webhook_url: "https://discord.com/api/webhooks/0/ci-placeholder", acoustid_api_key: "ci-placeholder", discord_bot_token: "ci-placeholder"}' > default_credentials.json
+
+      - name: Run GUI smoke test
+        run: |
+          source venv/bin/activate
+          python tests/gui_smoke_test.py
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-smoke-screenshots-${{ github.run_number }}
+          path: gui_smoke_screenshots/*.png
+          if-no-files-found: ignore
