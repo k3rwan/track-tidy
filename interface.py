@@ -978,7 +978,7 @@ class TaggerInterface:
         return ImageTk.PhotoImage(image)
 
     @staticmethod
-    def _load_extractor_preview_photos(dark, target_total_width=480):
+    def _load_extractor_preview_photos(dark, target_total_width=340):
         """Loads the Extractor tab's before/after screenshot crops for the
         current theme (assets/extractor-{before,after}-{dark,light}.png -
         see the preview frame's own comment for why two theme variants
@@ -2098,10 +2098,9 @@ class TaggerInterface:
         extractor_intro_label = ttk.Label(
             extractor_tab,
             text=(
-                "Flattens a messy music folder: every audio file (MP3, WAV, FLAC, "
-                "AAC, M4A, OGG, WMA...) hidden inside any number of nested "
-                "subfolders gets moved straight into the folder below.\n"
-                "Now-empty subfolders are cleaned up automatically afterwards."
+                "Flattens a messy music folder: audio files buried in nested "
+                "subfolders move straight into the folder below, and any "
+                "subfolders left empty are cleaned up automatically."
             ),
             justify="left",
         )
