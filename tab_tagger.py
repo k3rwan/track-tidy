@@ -3,11 +3,10 @@ import getpass
 import io
 import os
 import re
-import subprocess
+import sys
 import threading
-import time
-import webbrowser
 import tkinter as tk
+from datetime import datetime
 from tkinter import ttk, filedialog, scrolledtext, messagebox
 from PIL import Image, ImageTk, ImageDraw
 
@@ -928,23 +927,29 @@ class TaggerTabMixin:
         trickling out over however many seconds are left, so the buttons/
         UI actually respond right away like they did before this pacing
         was added."""
-        if self.cancel_requested.is_set():
-            while self._pending_scan_reveals:
+        try:
+            if self.cancel_requested.is_set():
+                while self._pending_scan_reveals:
+                    info, scanned_count, total = self._pending_scan_reveals.pop(0)
+                    self._add_scan_row(info)
+                    self.scan_button.configure(text=f"Scan - {scanned_count}/{total}")
+                    self._update_scan_progress_bar(scanned_count, total)
+            elif self._pending_scan_reveals:
                 info, scanned_count, total = self._pending_scan_reveals.pop(0)
                 self._add_scan_row(info)
                 self.scan_button.configure(text=f"Scan - {scanned_count}/{total}")
                 self._update_scan_progress_bar(scanned_count, total)
-        elif self._pending_scan_reveals:
-            info, scanned_count, total = self._pending_scan_reveals.pop(0)
-            self._add_scan_row(info)
-            self.scan_button.configure(text=f"Scan - {scanned_count}/{total}")
-            self._update_scan_progress_bar(scanned_count, total)
 
-        if not self._pending_scan_reveals and self._pending_scan_done is not None:
-            content, self._pending_scan_done = self._pending_scan_done, None
-            self._finalize_scan(content)
-
-        self.window.after(SCAN_REVEAL_INTERVAL_MS, self._reveal_next_scan_row)
+            if not self._pending_scan_reveals and self._pending_scan_done is not None:
+                content, self._pending_scan_done = self._pending_scan_done, None
+                self._finalize_scan(content)
+        except Exception:
+            # This ticks for the app's entire lifetime - a bug in any one
+            # row/finalize call must not silently stop it forever. See the
+            # identical guard on _reveal_next_quality_row and _start_message_loop.
+            self._report_crash(*sys.exc_info(), context="scan_reveal_loop")
+        finally:
+            self.window.after(SCAN_REVEAL_INTERVAL_MS, self._reveal_next_scan_row)
 
     def _update_empty_state_hint(self):
         """Shows the drag-and-drop/select-a-folder hint centered over the

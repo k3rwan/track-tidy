@@ -1,14 +1,11 @@
 """Quality tab - split out of interface.py (see TaggerInterface)."""
 import getpass
-import io
 import os
 import re
-import subprocess
-import threading
+import sys
 import time
-import webbrowser
 import tkinter as tk
-from tkinter import ttk, filedialog, scrolledtext, messagebox
+from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageTk, ImageDraw
 
 import track_tidy as tagger
@@ -372,17 +369,23 @@ class QualityTabMixin:
         Cancellation bypasses the pacing entirely, same as the Tagger
         version - once Cancel is clicked, whatever's left in the buffer is
         flushed in one go instead of continuing to trickle out."""
-        if self.quality_cancel_requested.is_set():
-            while self._pending_quality_reveals:
+        try:
+            if self.quality_cancel_requested.is_set():
+                while self._pending_quality_reveals:
+                    self._add_quality_row(self._pending_quality_reveals.pop(0))
+            elif self._pending_quality_reveals:
                 self._add_quality_row(self._pending_quality_reveals.pop(0))
-        elif self._pending_quality_reveals:
-            self._add_quality_row(self._pending_quality_reveals.pop(0))
 
-        if not self._pending_quality_reveals and self._pending_quality_scan_done is not None:
-            content, self._pending_quality_scan_done = self._pending_quality_scan_done, None
-            self._finalize_quality_scan(content)
-
-        self.window.after(SCAN_REVEAL_INTERVAL_MS, self._reveal_next_quality_row)
+            if not self._pending_quality_reveals and self._pending_quality_scan_done is not None:
+                content, self._pending_quality_scan_done = self._pending_quality_scan_done, None
+                self._finalize_quality_scan(content)
+        except Exception:
+            # This ticks for the app's entire lifetime - a bug in any one
+            # row/finalize call must not silently stop it forever. See the
+            # identical guard on _reveal_next_scan_row and _start_message_loop.
+            self._report_crash(*sys.exc_info(), context="quality_reveal_loop")
+        finally:
+            self.window.after(SCAN_REVEAL_INTERVAL_MS, self._reveal_next_quality_row)
 
     def _finalize_quality_scan(self, content):
         results, cancelled, error = content

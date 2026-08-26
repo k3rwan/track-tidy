@@ -1830,8 +1830,15 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
 
         except queue.Empty:
             pass
-
-        self.window.after(100, self._start_message_loop)
+        except Exception:
+            # A bug in any single message handler above must not silently
+            # kill this loop forever (progress bars/journal frozen, Cancel/
+            # Done never resolving, with nothing shown to the user) - report
+            # it the same way an uncaught UI-callback exception is, and keep
+            # polling regardless via the `finally` below.
+            self._report_crash(*sys.exc_info(), context="message_loop")
+        finally:
+            self.window.after(100, self._start_message_loop)
 
     # --- Running the processing ---
 
