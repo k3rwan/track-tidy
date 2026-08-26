@@ -1868,17 +1868,17 @@ class TaggerInterface:
 
         # ============================== Tagger tab ==============================
 
-        # Same header pattern as Extractor/Quality below: just a "ⓘ" (see
-        # quality_info_icon) whose tooltip holds the tool description - kept
-        # out of a permanently-visible label so the tab isn't cluttered with
-        # text every time it's opened.
-        tagger_header_frame = ttk.Frame(tagger_tab)
-        tagger_header_frame.pack(fill="x", padx=10, pady=(10, 10))
+        # --- Folder selection ---
+        folder_frame = ttk.LabelFrame(tagger_tab, text="Parent folder:")
+        folder_frame.pack(fill="x", padx=10, pady=(10, 2))
 
-        tagger_info_icon = ttk.Label(
-            tagger_header_frame, text=" ⓘ", foreground="#1a73e8", cursor="hand2",
-        )
-        tagger_info_icon.pack(side="right", anchor="n")
+        # "ⓘ" placed (not packed) inside the LabelFrame itself, top-right
+        # corner - see quality_info_icon's original placement for the style
+        # (blue/hand2 clickable look); its tooltip holds the tool
+        # description, kept out of a permanently-visible label so the tab
+        # isn't cluttered with text every time it's opened.
+        tagger_info_icon = ttk.Label(folder_frame, text="ⓘ", foreground="#1a73e8", cursor="hand2")
+        tagger_info_icon.place(relx=1.0, x=-6, y=-18, anchor="ne")
         tagger_info_text = (
             "Matches tracks in a folder against online catalogs to fill in\n"
             "missing cover art, artist, and title tags.\n"
@@ -1889,10 +1889,6 @@ class TaggerInterface:
         )
         tagger_info_icon.bind("<Enter>", lambda e: self._show_tooltip(tagger_info_text, e))
         tagger_info_icon.bind("<Leave>", lambda e: self._hide_tooltip())
-
-        # --- Folder selection ---
-        folder_frame = ttk.LabelFrame(tagger_tab, text="Parent folder:")
-        folder_frame.pack(fill="x", padx=10, pady=(0, 2))
 
         self.folder_variable = tk.StringVar(value=os.path.abspath(tagger.MUSIC_FOLDER) if tagger.MUSIC_FOLDER else "")
 
@@ -2117,13 +2113,16 @@ class TaggerInterface:
 
         # ============================== Extractor tab ==============================
 
-        extractor_header_frame = ttk.Frame(extractor_tab)
-        extractor_header_frame.pack(fill="x", padx=10, pady=(10, 10))
+        # Same "Parent folder:" LabelFrame + icon + entry-row structure as
+        # the Tagger tab's own folder picker (folder_frame above) - was
+        # previously a bare Label + ungrouped Entry/buttons here.
+        extract_folder_frame = ttk.LabelFrame(extractor_tab, text="Folder to flatten:")
+        extract_folder_frame.pack(fill="x", padx=10, pady=(10, 2))
 
-        extractor_info_icon = ttk.Label(
-            extractor_header_frame, text=" ⓘ", foreground="#1a73e8", cursor="hand2",
-        )
-        extractor_info_icon.pack(side="right", anchor="n")
+        # "ⓘ" placed inside the LabelFrame's top-right corner - see
+        # tagger_info_icon above.
+        extractor_info_icon = ttk.Label(extract_folder_frame, text="ⓘ", foreground="#1a73e8", cursor="hand2")
+        extractor_info_icon.place(relx=1.0, x=-6, y=-18, anchor="ne")
         extractor_info_text = (
             "Flattens a messy music folder: audio files buried in nested\n"
             "subfolders move straight into the folder below, and any\n"
@@ -2135,12 +2134,6 @@ class TaggerInterface:
         )
         extractor_info_icon.bind("<Enter>", lambda e: self._show_tooltip(extractor_info_text, e))
         extractor_info_icon.bind("<Leave>", lambda e: self._hide_tooltip())
-
-        # Same "Parent folder:" LabelFrame + icon + entry-row structure as
-        # the Tagger tab's own folder picker (folder_frame above) - was
-        # previously a bare Label + ungrouped Entry/buttons here.
-        extract_folder_frame = ttk.LabelFrame(extractor_tab, text="Folder to flatten:")
-        extract_folder_frame.pack(fill="x", padx=10, pady=(0, 2))
 
         self.extract_folder_var = tk.StringVar(value="")
 
@@ -2201,16 +2194,17 @@ class TaggerInterface:
 
         # ============================== Quality tab ==============================
 
-        quality_header_frame = ttk.Frame(quality_tab)
-        quality_header_frame.pack(fill="x", padx=10, pady=(10, 10))
+        # Same LabelFrame + icon + entry-row structure as Tagger's own
+        # folder_frame (and now Extractor's extract_folder_frame above).
+        quality_folder_frame = ttk.LabelFrame(quality_tab, text="Folder to analyze:")
+        quality_folder_frame.pack(fill="x", padx=10, pady=(10, 2))
 
-        # "ⓘ" = circled "i" - matches the "▸" toggle labels' blue/
-        # hand2 clickable look used elsewhere (advanced_toggle, journal_toggle)
+        # "ⓘ" placed inside the LabelFrame's top-right corner - see
+        # tagger_info_icon above. Blue/hand2 clickable look matches the "▸"
+        # toggle labels used elsewhere (advanced_toggle, journal_toggle)
         # instead of introducing a new affordance style just for this tab.
-        quality_info_icon = ttk.Label(
-            quality_header_frame, text=" ⓘ", foreground="#1a73e8", cursor="hand2",
-        )
-        quality_info_icon.pack(side="right", anchor="n")
+        quality_info_icon = ttk.Label(quality_folder_frame, text="ⓘ", foreground="#1a73e8", cursor="hand2")
+        quality_info_icon.place(relx=1.0, x=-6, y=-18, anchor="ne")
         quality_info_text = (
             "Flags tracks whose real audio doesn't match their declared\n"
             "format/bitrate.\n"
@@ -2222,11 +2216,6 @@ class TaggerInterface:
         )
         quality_info_icon.bind("<Enter>", lambda e: self._show_tooltip(quality_info_text, e))
         quality_info_icon.bind("<Leave>", lambda e: self._hide_tooltip())
-
-        # Same LabelFrame + icon + entry-row structure as Tagger's own
-        # folder_frame (and now Extractor's extract_folder_frame above).
-        quality_folder_frame = ttk.LabelFrame(quality_tab, text="Folder to analyze:")
-        quality_folder_frame.pack(fill="x", padx=10, pady=(0, 2))
 
         self.quality_folder_var = tk.StringVar(value="")
 
@@ -2251,7 +2240,7 @@ class TaggerInterface:
         )
         self.quality_browse_button.pack(side="left", fill="x", expand=True, padx=(0, 5))
         self.quality_scan_button = ttk.Button(
-            quality_buttons_frame, text="Scan", command=self._start_quality_scan
+            quality_buttons_frame, text="Analyze", command=self._start_quality_scan
         )
         self.quality_scan_button.configure(state="disabled")
         self.quality_scan_button.pack(side="left", fill="x", expand=True, padx=(0, 5))
@@ -2879,7 +2868,7 @@ class TaggerInterface:
         results, cancelled, error = content
         self.quality_browse_button.configure(state="normal")
         self.quality_scan_button.configure(
-            text="Scan", command=self._start_quality_scan, state="normal",
+            text="Analyze", command=self._start_quality_scan, state="normal",
         )
         self.quality_reset_button.configure(state="normal")
         self.quality_progress_canvas.pack_forget()
@@ -3298,7 +3287,7 @@ class TaggerInterface:
         self._quality_verdict_sort_state = 0
         self._quality_default_row_order = None
         self._update_quality_empty_state_hint()
-        self.quality_scan_button.configure(text="Scan")
+        self.quality_scan_button.configure(text="Analyze")
 
         self.quality_progress_canvas.pack_forget()
         self._update_progress_bar(self.quality_progress_canvas, 0, "")
