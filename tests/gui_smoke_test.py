@@ -24,10 +24,12 @@ runner would render a real Tk window the same way without extra setup
 (e.g. Xvfb on Linux).
 """
 import os
+import subprocess
 import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import tkinter as tk
 from PIL import ImageGrab
@@ -62,8 +64,38 @@ def check_screenshot(path, min_width=200, min_height=200, min_unique_colors=8):
         raise AssertionError(f"{path}: only {unique_count} unique color(s) - looks blank/solid, not real UI")
 
 
+def check_direct_launch():
+    """Regression guard for a real incident: `import interface` (what this
+    script itself does below) always registers interface.py as module
+    "interface" in sys.modules, so a mistake where a tab_*.py file imports
+    something back FROM interface.py (instead of from ui_common.py, which
+    has no dependency on interface.py) can pass every other check here and
+    still crash the instant someone runs `python interface.py` directly -
+    that run makes interface.py module "__main__" instead, so a tab_*.py's
+    `from interface import X` re-imports and re-executes interface.py as a
+    SECOND, separate module, tripping a circular import the very first
+    time this happened. Spawning the real entry point as a subprocess (the
+    same way the desktop launcher .bat does) is the only way to actually
+    catch that."""
+    process = subprocess.Popen(
+        [sys.executable, "interface.py"], cwd=REPO_ROOT,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    time.sleep(3)
+    still_running = process.poll() is None
+    if still_running:
+        process.terminate()
+        process.wait(timeout=5)
+        print("OK   direct launch (python interface.py) stayed up")
+        return None
+    _, stderr = process.communicate()
+    return f"direct launch (python interface.py) exited early:\n{stderr}"
+
+
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    direct_launch_failure = check_direct_launch()
 
     root = tk.Tk()
     app = interface.TaggerInterface(root)
@@ -74,7 +106,7 @@ def main():
             f"Window failed to reach a real size: {app.window.winfo_width()}x{app.window.winfo_height()}"
         )
 
-    failures = []
+    failures = [direct_launch_failure] if direct_launch_failure else []
     for theme in ("dark", "light"):
         app._apply_theme(theme)
         pump(root, 0.3)

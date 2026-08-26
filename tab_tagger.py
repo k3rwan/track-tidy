@@ -12,7 +12,7 @@ from tkinter import ttk, filedialog, scrolledtext, messagebox
 from PIL import Image, ImageTk, ImageDraw
 
 import track_tidy as tagger
-from interface import (
+from ui_common import (
     open_with_default_app,
     reveal_in_file_manager,
     play_short_sound,
