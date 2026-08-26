@@ -537,12 +537,11 @@ class TaggerInterface:
             self.auto_convert_wav_aiff_var.set(False)
             tagger.AUTO_CONVERT_WAV_TO_AIFF = False
             tagger.save_setting("auto_convert_wav_to_aiff", False)
-            messagebox.showinfo(
-                "Convert WAV to AIFF disabled",
-                "\"Convert everything to MP3\" and \"Convert WAV to AIFF\" are two "
-                "different destinies for WAV files, so only one can be on at a time - "
-                "\"Convert WAV to AIFF\" has been turned off.",
-                parent=self.window,
+            # The checkbox unchecking itself is already the visible
+            # confirmation - a popup on top of that was redundant.
+            self._append_to_journal(
+                "\"Convert WAV to AIFF\" turned off (mutually exclusive with "
+                "\"Convert everything to MP3\")."
             )
         elif not enabled:
             wav_fate = (
@@ -566,12 +565,9 @@ class TaggerInterface:
             self.auto_convert_var.set(False)
             tagger.AUTO_CONVERT_MP3 = False
             tagger.save_setting("auto_convert_mp3", False)
-            messagebox.showinfo(
-                "Convert everything to MP3 disabled",
-                "\"Convert everything to MP3\" and \"Convert WAV to AIFF\" are two "
-                "different destinies for WAV files, so only one can be on at a time - "
-                "\"Convert everything to MP3\" has been turned off.",
-                parent=self.window,
+            self._append_to_journal(
+                "\"Convert everything to MP3\" turned off (mutually exclusive "
+                "with \"Convert WAV to AIFF\")."
             )
         tagger.AUTO_CONVERT_WAV_TO_AIFF = enabled
         tagger.save_setting("auto_convert_wav_to_aiff", enabled)
@@ -3284,9 +3280,9 @@ class TaggerInterface:
 
     def _reset_extract(self):
         """Extractor has no persistent results table like Tagger/Quality -
-        it's fire-and-forget, with the outcome shown in a one-time popup -
-        so there's nothing left to clear except a still-visible progress
-        bar/button state if a previous run somehow left one behind. Mainly
+        it's fire-and-forget, with the outcome left on the progress bar's
+        own final label (see "extract_done") - so there's nothing left to
+        clear except that still-visible progress bar/button state. Mainly
         here so Extractor isn't the only tab without a Reset, matching
         what's asked for. Doesn't touch the chosen folder - same as
         _reset_app not touching folder_variable. No processing_in_progress-
@@ -3470,11 +3466,9 @@ class TaggerInterface:
                 files_to_scan = new_files
                 if not files_to_scan:
                     self._set_buttons_enabled(True)
-                    messagebox.showinfo(
-                        "Nothing new to scan",
-                        "Every track in this folder has already been scanned before.",
-                        parent=self.window,
-                    )
+                    # Neutral, expected outcome (not an error) - a log line
+                    # is enough, no popup needed to click through.
+                    self._append_to_journal("Every track in this folder has already been scanned before.")
                     return
 
         self._show_scan_progress_bar()
@@ -3484,7 +3478,7 @@ class TaggerInterface:
         """Small choice dialog shown when some of the files about to be
         scanned have already been scanned before - "Scan only new tracks"
         is always the pre-selected default (even with zero new tracks;
-        clicking Scan as-is then just shows "Nothing new to scan" - see the
+        clicking Scan as-is then just logs "nothing new to scan" - see the
         caller). Returns "new_only" or "all", or None if cancelled."""
         result = {"choice": None}
 
@@ -3504,10 +3498,10 @@ class TaggerInterface:
         ).pack()
 
         # Always pre-selected, even when there happen to be zero new tracks -
-        # clicking "Scan" as-is then just shows the "Nothing new to scan"
-        # info dialog (see the caller), which is a clearer outcome than
-        # silently switching the default to "Rescan everything" underneath
-        # the user without them choosing that.
+        # clicking "Scan" as-is then just logs "nothing new to scan" (see
+        # the caller), which is a clearer outcome than silently switching
+        # the default to "Rescan everything" underneath the user without
+        # them choosing that.
         choice_var = tk.StringVar(value="new_only")
         options_frame = ttk.Frame(dialog)
         options_frame.pack(fill="x", padx=20, pady=(0, 5))
@@ -5944,24 +5938,26 @@ class TaggerInterface:
                     self.extract_browse_button.configure(state="normal")
                     self.extract_button.configure(text="Extract", command=self._start_extraction, state="normal")
                     self.extract_reset_button.configure(state="normal")
-                    self.extract_progress_canvas.pack_forget()
                     self._set_tabs_locked(False)
 
                     if error:
+                        self.extract_progress_canvas.pack_forget()
                         messagebox.showerror("Extraction error", error, parent=self.window)
                     elif cancelled:
-                        messagebox.showinfo(
-                            "Extraction cancelled",
-                            f"Stopped early - {moved_count} file(s) extracted, "
-                            f"{removed_count} empty folder(s) removed so far.",
-                            parent=self.window,
+                        # Same "leave the bar up with a final label" pattern
+                        # as Tagger's own progress_canvas (see "done" above) -
+                        # a popup on top of that was a redundant extra click.
+                        self._update_progress_bar(
+                            self.extract_progress_canvas, 0,
+                            f"Cancelled - {moved_count} file(s) extracted, {removed_count} folder(s) removed",
                         )
                     else:
-                        messagebox.showinfo(
-                            "Extraction complete",
-                            f"{moved_count} file(s) extracted, {removed_count} empty folder(s) removed.",
-                            parent=self.window,
+                        self._update_progress_bar(
+                            self.extract_progress_canvas, 1.0,
+                            f"Done ✓ - {moved_count} file(s) extracted, {removed_count} folder(s) removed",
                         )
+                        # Opening the destination folder right here IS the
+                        # confirmation - no extra popup needed on top of it.
                         try:
                             open_with_default_app(folder)
                         except Exception:
@@ -6029,16 +6025,20 @@ class TaggerInterface:
 
                 elif message_type == "manual_update_check_result":
                     is_newer, latest_version, release_url, installer_url, expected_sha256 = content
-                    self.check_update_button.configure(state="normal", text="Check for updates")
 
                     if is_newer:
+                        self.check_update_button.configure(state="normal", text="Check for updates")
                         self._offer_update(latest_version, release_url, installer_url, expected_sha256)
                     elif latest_version:
-                        messagebox.showinfo(
-                            "Up to date", f"You already have the latest version ({tagger.APP_VERSION}).",
-                            parent=self.window,
+                        # Transient label on the button itself instead of a
+                        # popup to click through - "up to date" isn't
+                        # actionable, just a flash of confirmation.
+                        self.check_update_button.configure(state="disabled", text="Up to date ✓")
+                        self.window.after(
+                            2000, lambda: self.check_update_button.configure(state="normal", text="Check for updates"),
                         )
                     else:
+                        self.check_update_button.configure(state="normal", text="Check for updates")
                         messagebox.showerror(
                             "Update check failed",
                             "Could not check for updates - check your internet connection and try again.",
@@ -6122,28 +6122,23 @@ class TaggerInterface:
             messagebox.showinfo("Nothing to do", "No new file and no pending change.", parent=self.window)
             return
 
-        confirmed = messagebox.askyesno(
-            "Apply changes?",
+        # One combined confirmation instead of up to 3 stacked dialogs
+        # (base confirm, filter warning, conversion warning) - same
+        # "combine every applicable notice into one dialog" pattern as
+        # _finalize_scan's rate-limit warning below.
+        paragraphs = [
             "This will overwrite the original artist/title/cover info for every "
             "selected track.\n\nThe original values are saved in the processing "
-            "history and can be restored from there if needed.\n\nContinue?",
-            parent=self.window,
-        )
-        if not confirmed:
-            return
+            "history and can be restored from there if needed."
+        ]
 
         if self._is_filter_active():
             visible_ids = set(self.table.get_children())
             hidden_count = sum(1 for i in to_process + fixes if i["file"] not in visible_ids)
             if hidden_count:
-                confirmed = messagebox.askyesno(
-                    "Filter active",
-                    f"{hidden_count} track(s) are hidden by the current filter and will also be processed.\n\n"
-                    "Continue?",
-                    parent=self.window,
+                paragraphs.append(
+                    f"{hidden_count} track(s) are hidden by the current filter and will also be processed."
                 )
-                if not confirmed:
-                    return
 
         to_convert = [i for i in to_process if i["format"] != "MP3" and i.get("convert")]
         mp3_count = sum(1 for i in to_convert if tagger._resolve_conversion_target(i["file"]) == "mp3")
@@ -6154,13 +6149,13 @@ class TaggerInterface:
                 parts.append(f"{mp3_count} file(s) to MP3 (320 kbps, takes noticeably longer than just updating tags)")
             if aiff_count:
                 parts.append(f"{aiff_count} file(s) to AIFF (lossless, quick)")
-            confirmed = messagebox.askyesno(
-                "Confirm conversion",
-                "\n".join(parts) + ".\n\nContinue?",
-                parent=self.window,
-            )
-            if not confirmed:
-                return
+            paragraphs.append("Will also convert " + ", ".join(parts) + ".")
+
+        confirmed = messagebox.askyesno(
+            "Apply changes?", "\n\n".join(paragraphs) + "\n\nContinue?", parent=self.window,
+        )
+        if not confirmed:
+            return
 
         folder = self.folder_variable.get().strip()
         if folder:
