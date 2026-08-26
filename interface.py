@@ -1868,9 +1868,10 @@ class TaggerInterface:
 
         # ============================== Tagger tab ==============================
 
-        # Same header pattern as Extractor/Quality below: a short one-line
-        # description plus a "ⓘ" (see quality_info_icon) for the more
-        # cautionary detail that doesn't need to be visible at all times.
+        # Same header pattern as Extractor/Quality below: just a "ⓘ" (see
+        # quality_info_icon) whose tooltip holds the tool description - kept
+        # out of a permanently-visible label so the tab isn't cluttered with
+        # text every time it's opened.
         tagger_header_frame = ttk.Frame(tagger_tab)
         tagger_header_frame.pack(fill="x", padx=10, pady=(10, 10))
 
@@ -1879,20 +1880,15 @@ class TaggerInterface:
         )
         tagger_info_icon.pack(side="right", anchor="n")
         tagger_info_text = (
-            "Automated matching isn't perfect - review the suggested Artist/Title "
-            "in the table before clicking Apply, especially any low-confidence or "
-            "\U0001f3a7 AcoustID-identified rows."
+            "Matches tracks in a folder against online catalogs to fill in\n"
+            "missing cover art, artist, and title tags.\n"
+            "\n"
+            "Automated matching isn't perfect - review the suggested\n"
+            "Artist/Title in the table before clicking Apply, especially any\n"
+            "low-confidence or \U0001f3a7 AcoustID-identified rows."
         )
         tagger_info_icon.bind("<Enter>", lambda e: self._show_tooltip(tagger_info_text, e))
         tagger_info_icon.bind("<Leave>", lambda e: self._hide_tooltip())
-
-        tagger_intro_label = ttk.Label(
-            tagger_header_frame,
-            text="Matches tracks in a folder against online catalogs to fill in missing cover art, artist, and title tags.",
-            justify="left",
-        )
-        tagger_intro_label.pack(side="left", fill="x", expand=True)
-        tagger_intro_label.bind("<Configure>", lambda e: e.widget.configure(wraplength=e.width))
 
         # --- Folder selection ---
         folder_frame = ttk.LabelFrame(tagger_tab, text="Parent folder:")
@@ -2129,27 +2125,16 @@ class TaggerInterface:
         )
         extractor_info_icon.pack(side="right", anchor="n")
         extractor_info_text = (
-            "Works on every common audio format (MP3, WAV, FLAC, AAC, M4A, OGG, "
-            "WMA...). Files already directly inside the folder are left alone."
+            "Flattens a messy music folder: audio files buried in nested\n"
+            "subfolders move straight into the folder below, and any\n"
+            "subfolders left empty are cleaned up automatically.\n"
+            "\n"
+            "Works on every common audio format (MP3, WAV, FLAC, AAC, M4A,\n"
+            "OGG, WMA...). Files already directly inside the folder are left\n"
+            "alone."
         )
         extractor_info_icon.bind("<Enter>", lambda e: self._show_tooltip(extractor_info_text, e))
         extractor_info_icon.bind("<Leave>", lambda e: self._hide_tooltip())
-
-        extractor_intro_label = ttk.Label(
-            extractor_header_frame,
-            text=(
-                "Flattens a messy music folder: audio files buried in nested "
-                "subfolders move straight into the folder below, and any "
-                "subfolders left empty are cleaned up automatically."
-            ),
-            justify="left",
-        )
-        extractor_intro_label.pack(side="left", fill="x", expand=True)
-        # Wraps to the label's own actual width instead of a fixed guess, so
-        # it uses the full available width up to the right edge (like the
-        # left-aligned text already does), not just whatever a hardcoded
-        # wraplength happened to allow.
-        extractor_intro_label.bind("<Configure>", lambda e: e.widget.configure(wraplength=e.width))
 
         # Same "Parent folder:" LabelFrame + icon + entry-row structure as
         # the Tagger tab's own folder picker (folder_frame above) - was
@@ -2227,21 +2212,16 @@ class TaggerInterface:
         )
         quality_info_icon.pack(side="right", anchor="n")
         quality_info_text = (
-            "Best-effort ESTIMATE, not a certainty. A real track can legitimately "
-            "roll off high frequencies (mastering, genre), and some lossy sources "
-            "don't show a detectable trace at all - treat orange/red as \"worth a "
-            "listen\", not proof."
+            "Flags tracks whose real audio doesn't match their declared\n"
+            "format/bitrate.\n"
+            "\n"
+            "Best-effort ESTIMATE, not a certainty. A real track can\n"
+            "legitimately roll off high frequencies (mastering, genre), and\n"
+            "some lossy sources don't show a detectable trace at all - treat\n"
+            "orange/red as \"worth a listen\", not proof."
         )
         quality_info_icon.bind("<Enter>", lambda e: self._show_tooltip(quality_info_text, e))
         quality_info_icon.bind("<Leave>", lambda e: self._hide_tooltip())
-
-        quality_intro_label = ttk.Label(
-            quality_header_frame,
-            text="Flags tracks whose real audio doesn't match their declared format/bitrate.",
-            justify="left",
-        )
-        quality_intro_label.pack(side="left", fill="x", expand=True)
-        quality_intro_label.bind("<Configure>", lambda e: e.widget.configure(wraplength=e.width))
 
         # Same LabelFrame + icon + entry-row structure as Tagger's own
         # folder_frame (and now Extractor's extract_folder_frame above).
