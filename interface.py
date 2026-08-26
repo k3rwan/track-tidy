@@ -2104,7 +2104,7 @@ class TaggerInterface:
             ),
             justify="left",
         )
-        extractor_intro_label.pack(anchor="w", fill="x", padx=10, pady=(15, 10))
+        extractor_intro_label.pack(anchor="w", fill="x", padx=10, pady=(10, 10))
         # Wraps to the label's own actual width instead of a fixed guess, so
         # it uses the full available width up to the right edge (like the
         # left-aligned text already does), not just whatever a hardcoded
@@ -2177,7 +2177,7 @@ class TaggerInterface:
         # ============================== Quality tab ==============================
 
         quality_header_frame = ttk.Frame(quality_tab)
-        quality_header_frame.pack(fill="x", padx=10, pady=(15, 8))
+        quality_header_frame.pack(fill="x", padx=10, pady=(10, 10))
 
         # "ⓘ" = circled "i" - matches the "▸" toggle labels' blue/
         # hand2 clickable look used elsewhere (advanced_toggle, journal_toggle)
