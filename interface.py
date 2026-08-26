@@ -1868,9 +1868,35 @@ class TaggerInterface:
 
         # ============================== Tagger tab ==============================
 
+        # Same header pattern as Extractor/Quality below: a short one-line
+        # description plus a "ⓘ" (see quality_info_icon) for the more
+        # cautionary detail that doesn't need to be visible at all times.
+        tagger_header_frame = ttk.Frame(tagger_tab)
+        tagger_header_frame.pack(fill="x", padx=10, pady=(10, 10))
+
+        tagger_info_icon = ttk.Label(
+            tagger_header_frame, text=" ⓘ", foreground="#1a73e8", cursor="hand2",
+        )
+        tagger_info_icon.pack(side="right", anchor="n")
+        tagger_info_text = (
+            "Automated matching isn't perfect - review the suggested Artist/Title "
+            "in the table before clicking Apply, especially any low-confidence or "
+            "\U0001f3a7 AcoustID-identified rows."
+        )
+        tagger_info_icon.bind("<Enter>", lambda e: self._show_tooltip(tagger_info_text, e))
+        tagger_info_icon.bind("<Leave>", lambda e: self._hide_tooltip())
+
+        tagger_intro_label = ttk.Label(
+            tagger_header_frame,
+            text="Matches tracks in a folder against online catalogs to fill in missing cover art, artist, and title tags.",
+            justify="left",
+        )
+        tagger_intro_label.pack(side="left", fill="x", expand=True)
+        tagger_intro_label.bind("<Configure>", lambda e: e.widget.configure(wraplength=e.width))
+
         # --- Folder selection ---
         folder_frame = ttk.LabelFrame(tagger_tab, text="Parent folder:")
-        folder_frame.pack(fill="x", padx=10, pady=(10, 2))
+        folder_frame.pack(fill="x", padx=10, pady=(0, 2))
 
         self.folder_variable = tk.StringVar(value=os.path.abspath(tagger.MUSIC_FOLDER) if tagger.MUSIC_FOLDER else "")
 
@@ -2095,8 +2121,22 @@ class TaggerInterface:
 
         # ============================== Extractor tab ==============================
 
+        extractor_header_frame = ttk.Frame(extractor_tab)
+        extractor_header_frame.pack(fill="x", padx=10, pady=(10, 10))
+
+        extractor_info_icon = ttk.Label(
+            extractor_header_frame, text=" ⓘ", foreground="#1a73e8", cursor="hand2",
+        )
+        extractor_info_icon.pack(side="right", anchor="n")
+        extractor_info_text = (
+            "Works on every common audio format (MP3, WAV, FLAC, AAC, M4A, OGG, "
+            "WMA...). Files already directly inside the folder are left alone."
+        )
+        extractor_info_icon.bind("<Enter>", lambda e: self._show_tooltip(extractor_info_text, e))
+        extractor_info_icon.bind("<Leave>", lambda e: self._hide_tooltip())
+
         extractor_intro_label = ttk.Label(
-            extractor_tab,
+            extractor_header_frame,
             text=(
                 "Flattens a messy music folder: audio files buried in nested "
                 "subfolders move straight into the folder below, and any "
@@ -2104,7 +2144,7 @@ class TaggerInterface:
             ),
             justify="left",
         )
-        extractor_intro_label.pack(anchor="w", fill="x", padx=10, pady=(10, 10))
+        extractor_intro_label.pack(side="left", fill="x", expand=True)
         # Wraps to the label's own actual width instead of a fixed guess, so
         # it uses the full available width up to the right edge (like the
         # left-aligned text already does), not just whatever a hardcoded
