@@ -24,6 +24,12 @@ on:
 jobs:
   smoke-test:
     runs-on: macos-14
+    # Hard backstop: a first real run of this workflow hung indefinitely
+    # inside ImageGrab.grab() (see tests/gui_smoke_test.py's own comment) -
+    # the script now guards that internally too, but this caps the whole
+    # job in case something else ever hangs the same way, instead of
+    # silently burning the default 360-minute timeout.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
