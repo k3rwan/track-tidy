@@ -1069,6 +1069,33 @@ class TaggerInterface:
         style = ttk.Style()
         style.theme_use("clam" if dark else self._native_theme)
 
+        # macOS's native "aqua" Notebook.tab is a compiled, natively-drawn
+        # element (not the generic box-model one every other theme uses) -
+        # it ignores style overrides the same way its Radiobutton/Scrollbar
+        # elements do (see below), and centers the tab row instead of
+        # packing it against the left edge. Borrowing clam's generic
+        # tab/client elements - same "from clam" trick as those - swaps in
+        # standard left-to-right box layout on macOS specifically, matching
+        # every other platform/theme (clam is already what dark mode uses
+        # everywhere, so this is a no-op there).
+        if sys.platform == "darwin":
+            for element_name, source_element in (
+                ("Uniform.Notebook.tab", "Notebook.tab"),
+                ("Uniform.Notebook.client", "Notebook.client"),
+            ):
+                if element_name not in style.element_names():
+                    style.element_create(element_name, "from", "clam", source_element)
+            style.layout("TNotebook", [("Uniform.Notebook.client", {"sticky": "nswe"})])
+            style.layout("TNotebook.Tab", [
+                ("Uniform.Notebook.tab", {"sticky": "nswe", "children": [
+                    ("Notebook.padding", {"side": "top", "sticky": "nswe", "children": [
+                        ("Notebook.focus", {"side": "top", "sticky": "nswe", "children": [
+                            ("Notebook.label", {"side": "top", "sticky": ""}),
+                        ]}),
+                    ]}),
+                ]}),
+            ])
+
         # Custom style names are scoped to the CURRENTLY active ttk theme, so
         # switching theme_use() above resets them - both of these have to be
         # re-applied every time, for every theme, not just for dark mode.
