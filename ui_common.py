@@ -60,6 +60,13 @@ def resource_path(filename):
         base = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base, filename)
 
+# Accent used for every clickable link/info-icon/toggle label across the 4
+# tabs (info icons, the Extractor/Journal/Advanced-section toggles, legal
+# links...) - one shared constant instead of the same literal repeated at
+# each call site, independent of light/dark theming like the app's other
+# "flat UI" accents (see e.g. Quality's verdict dot colors).
+LINK_ACCENT_COLOR = "#1a73e8"
+
 # Windows renders ☑/☐ inconsistently when the Treeview has no explicit
 # font: a thin outline in the native column header vs. a solid black
 # emoji-style box in table cells (same character, different font fallback

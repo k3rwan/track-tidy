@@ -1,19 +1,14 @@
 """Extractor tab - split out of interface.py (see TaggerInterface)."""
 import getpass
-import io
 import os
-import re
-import subprocess
-import threading
-import time
-import webbrowser
 import tkinter as tk
-from tkinter import ttk, filedialog, scrolledtext, messagebox
-from PIL import Image, ImageTk, ImageDraw
+from tkinter import ttk, filedialog, messagebox
+from PIL import Image, ImageTk
 
 import track_tidy as tagger
 from ui_common import (
     resource_path,
+    LINK_ACCENT_COLOR,
 )
 
 
@@ -29,7 +24,7 @@ class ExtractorTabMixin:
 
         # "ⓘ" placed inside the LabelFrame's top-right corner - see
         # tagger_info_icon above.
-        extractor_info_icon = ttk.Label(extract_folder_frame, text="ⓘ", foreground="#1a73e8", cursor="hand2")
+        extractor_info_icon = ttk.Label(extract_folder_frame, text="ⓘ", foreground=LINK_ACCENT_COLOR, cursor="hand2")
         extractor_info_icon.place(relx=1.0, x=-6, y=-18, anchor="ne")
         extractor_info_text = (
             "Flattens a messy music folder: audio files buried in nested\n"

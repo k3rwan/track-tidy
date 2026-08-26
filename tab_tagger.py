@@ -28,6 +28,7 @@ from ui_common import (
     COLUMNS,
     NO_COVER_SUMMARY_ROW_ID,
     SEARCH_RESULT_SUMMARY_ROW_ID,
+    LINK_ACCENT_COLOR,
     setup_placeholder,
 )
 
@@ -45,7 +46,7 @@ class TaggerTabMixin:
         # (blue/hand2 clickable look); its tooltip holds the tool
         # description, kept out of a permanently-visible label so the tab
         # isn't cluttered with text every time it's opened.
-        tagger_info_icon = ttk.Label(folder_frame, text="ⓘ", foreground="#1a73e8", cursor="hand2")
+        tagger_info_icon = ttk.Label(folder_frame, text="ⓘ", foreground=LINK_ACCENT_COLOR, cursor="hand2")
         tagger_info_icon.place(relx=1.0, x=-6, y=-18, anchor="ne")
         tagger_info_text = (
             "Matches tracks in a folder against online catalogs to fill in\n"
@@ -95,7 +96,7 @@ class TaggerTabMixin:
         # --- Advanced section (collapsible): mentions to remove ---
         self.advanced_section_visible = False
 
-        self.advanced_toggle = ttk.Label(tagger_tab, text="▸ ⚙️", cursor="hand2", foreground="#1a73e8")
+        self.advanced_toggle = ttk.Label(tagger_tab, text="▸ ⚙️", cursor="hand2", foreground=LINK_ACCENT_COLOR)
         self.advanced_toggle.pack(anchor="w", padx=10, pady=(0, 2))
         self.advanced_toggle.bind("<Button-1>", lambda event: self._toggle_advanced_section())
 
@@ -248,7 +249,7 @@ class TaggerTabMixin:
         # --- Journal section (collapsible, shown/hidden via Settings -> "Show log section") ---
         self.journal_section_visible = False
 
-        self.journal_toggle = ttk.Label(tagger_tab, text="▸ Log", cursor="hand2", foreground="#1a73e8")
+        self.journal_toggle = ttk.Label(tagger_tab, text="▸ Log", cursor="hand2", foreground=LINK_ACCENT_COLOR)
         if self.show_log_var.get():
             self.journal_toggle.pack(anchor="w", padx=10, pady=(0, 5))
         self.journal_toggle.bind("<Button-1>", lambda event: self._toggle_journal_section())
@@ -446,14 +447,33 @@ class TaggerTabMixin:
                 )
                 continue
             relative_name = os.path.basename(path)
-            if any(info["file"] == relative_name for info in self.scanned_plan):
-                continue  # already in the table
+            if folder == getattr(self, "last_scanned_folder", None) and any(
+                info["file"] == relative_name for info in self.scanned_plan
+            ):
+                self._append_to_journal(f"Ignored '{relative_name}' - already in the table.")
+                continue
             relative_names.append(relative_name)
 
         if not relative_names:
             return
 
         relative_names = self._apply_track_count_limit(relative_names)
+
+        # Switching to a different folder than whatever's currently shown
+        # must drop the old rows first - otherwise tagger.MUSIC_FOLDER
+        # below now points at the new folder while a stale row from the
+        # old one is still in scanned_plan/the table, so any action on
+        # that row (Play, Apply, cover edit...) would resolve against the
+        # WRONG file. Mirrors the equivalent check in
+        # _start_dropped_folder_scan just above.
+        if folder != getattr(self, "last_scanned_folder", None):
+            for row in self.table.get_children():
+                self.table.delete(row)
+            self.tk_images.clear()
+            self.tk_images_hover.clear()
+            self._thumbnail_pil_images.clear()
+            self.scanned_plan = []
+            self._update_empty_state_hint()
 
         tagger.MUSIC_FOLDER = folder
         self.last_scanned_folder = folder
@@ -616,6 +636,11 @@ class TaggerTabMixin:
         self._thumbnail_pil_images.clear()
         self.scanned_plan = []
         self.last_scanned_folder = None
+        # Otherwise Ctrl+Z right after a Reset can resurrect a row removed
+        # from the PREVIOUS folder into a table that's supposed to
+        # represent the new (or no) folder, with a path that may no
+        # longer even resolve against tagger.MUSIC_FOLDER.
+        self._undo_stack = []
         self._update_empty_state_hint()
         self.scan_button.configure(text="Scan")
         self._update_apply_button_label()
@@ -667,7 +692,7 @@ class TaggerTabMixin:
         # _is_run_active() guard), so "disabling" it means faking the look
         # instead of an actual state="disabled".
         self.advanced_toggle.configure(
-            foreground="#1a73e8" if enabled else "#999999", cursor="hand2" if enabled else "arrow",
+            foreground=LINK_ACCENT_COLOR if enabled else "#999999", cursor="hand2" if enabled else "arrow",
         )
         if enabled:
             self.scan_button.configure(text="Scan")

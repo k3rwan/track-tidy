@@ -12,6 +12,7 @@ import track_tidy as tagger
 from ui_common import (
     reveal_in_file_manager,
     SCAN_REVEAL_INTERVAL_MS,
+    LINK_ACCENT_COLOR,
 )
 
 
@@ -28,7 +29,7 @@ class QualityTabMixin:
         # tagger_info_icon above. Blue/hand2 clickable look matches the "▸"
         # toggle labels used elsewhere (advanced_toggle, journal_toggle)
         # instead of introducing a new affordance style just for this tab.
-        quality_info_icon = ttk.Label(quality_folder_frame, text="ⓘ", foreground="#1a73e8", cursor="hand2")
+        quality_info_icon = ttk.Label(quality_folder_frame, text="ⓘ", foreground=LINK_ACCENT_COLOR, cursor="hand2")
         quality_info_icon.place(relx=1.0, x=-6, y=-18, anchor="ne")
         quality_info_text = (
             "Flags tracks whose real audio doesn't match their declared\n"
@@ -287,6 +288,7 @@ class QualityTabMixin:
         verdict_tag = self.QUALITY_VERDICT_TAG.get(verdict)
         if verdict in self._quality_scan_counts:
             self._quality_scan_counts[verdict] += 1
+            self._update_quality_summary_strip()
         # Row is inserted at index 0 (above the previous ones), so the stripe
         # tag can't be based on the current child count the way a plain
         # end-appended table would - it's assigned by _restripe_rows() below
@@ -317,6 +319,19 @@ class QualityTabMixin:
         if self._quality_scan_total:
             fraction = len(self.quality_table.get_children()) / self._quality_scan_total
             self._update_progress_bar(self.quality_progress_canvas, fraction, f"{round(fraction * 100)} %")
+
+    def _update_quality_summary_strip(self):
+        """Refreshes the colored green/orange/red at-a-glance counts and
+        reveals the strip the first time there's anything to show - was
+        previously only ever done as a side effect of clicking the verdict
+        column's heading (which sorts, not reveals), so the strip never
+        appeared during or after a normal scan unless the user happened to
+        click that heading."""
+        self.quality_summary_green_var.set(f"● {self._quality_scan_counts[tagger.QUALITY_GREEN]}")
+        self.quality_summary_orange_var.set(f"● {self._quality_scan_counts[tagger.QUALITY_ORANGE]}")
+        self.quality_summary_red_var.set(f"● {self._quality_scan_counts[tagger.QUALITY_RED]}")
+        if not self.quality_summary_frame.winfo_ismapped():
+            self.quality_summary_frame.pack(fill="x", padx=10, pady=(0, 5), before=self.quality_table_frame)
 
     def _on_quality_verdict_heading_click(self):
         """Cycles the dot column through: 1st click = worst (red) on top,
@@ -349,12 +364,7 @@ class QualityTabMixin:
         for index, iid in enumerate(ordered):
             self.quality_table.move(iid, "", index)
         self._restripe_rows(tree=self.quality_table)
-
-        self.quality_summary_green_var.set(f"● {self._quality_scan_counts[tagger.QUALITY_GREEN]}")
-        self.quality_summary_orange_var.set(f"● {self._quality_scan_counts[tagger.QUALITY_ORANGE]}")
-        self.quality_summary_red_var.set(f"● {self._quality_scan_counts[tagger.QUALITY_RED]}")
-        if not self.quality_summary_frame.winfo_ismapped():
-            self.quality_summary_frame.pack(fill="x", padx=10, pady=(0, 5), before=self.quality_table_frame)
+        self._update_quality_summary_strip()
 
     def _reveal_next_quality_row(self):
         """Ticks every SCAN_REVEAL_INTERVAL_MS, for the app's entire

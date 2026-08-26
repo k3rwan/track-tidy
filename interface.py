@@ -13,12 +13,10 @@ Flow:
 """
 
 import getpass
-import io
 import os
 import re
 import socket
 import sys
-import subprocess
 import tempfile
 import threading
 import time
@@ -27,12 +25,9 @@ import queue
 import webbrowser
 from datetime import datetime
 import tkinter as tk
-from tkinter import ttk, filedialog, scrolledtext, messagebox
+from tkinter import ttk, messagebox
 from tkinter import font as tkfont
 from PIL import Image, ImageTk, ImageDraw
-
-if sys.platform == "win32":
-    import winsound
 
 # When launched via pythonw.exe (no console), sys.stdout/stderr are None.
 # Any leftover print() call would then crash with AttributeError. Redirect
@@ -49,28 +44,14 @@ import track_tidy as tagger
 
 from ui_common import (
     open_with_default_app,
-    reveal_in_file_manager,
-    play_short_sound,
     resource_path,
-    CHECKED_BOX,
-    EMPTY_BOX,
-    PROCESSED_CHECK,
-    ALREADY_APPLIED_MARK,
-    SCAN_REVEAL_INTERVAL_MS,
-    MAX_TRACKS_PER_SCAN,
-    NO_COVER_REPORT_THRESHOLD,
     AUTO_THEME_LIGHT_START_HOUR,
     AUTO_THEME_DARK_START_HOUR,
     AUTO_THEME_RECHECK_INTERVAL_MS,
-    THUMBNAIL_SIZE,
     TABLE_ROW_HEIGHT,
-    COLUMNS,
-    NO_COVER_SUMMARY_ROW_ID,
-    SEARCH_RESULT_SUMMARY_ROW_ID,
     DARK_COLORS,
     LIGHT_COLORS,
     INDICATOR_CHECKED_BG,
-    setup_placeholder,
 )
 
 
@@ -1287,10 +1268,6 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
         tagger.log_action(f"Update installer launched: '{os.path.basename(dest_path)}'")
         self.window.destroy()
 
-    # --- Startup checks ---
-
-    # --- Drag and drop ---
-
     # --- UI construction ---
 
     def _build_interface(self):
@@ -1391,10 +1368,6 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
         if canvas.progress_animating:
             self.window.after(self.PROGRESS_GLIDE_STEP_MS, lambda: self._glide_progress_bar(canvas))
 
-    # --- Settings tab actions ---
-
-    # --- Extractor tab actions ---
-
     # --- Quality tab actions ---
 
     # Plain "●" per verdict, colored via the matching Treeview tag - see the
@@ -1481,21 +1454,13 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
     # flash instead of the plain row color (see _flash_new_row).
     _VERDICT_TAG_NAMES = ("verdict_green", "verdict_orange", "verdict_red")
 
-    # --- Fix Artist/Title and search again (tracks with no cover match) ---
-
-    # --- Table row rendering ---
-
-    # --- Table interactions (sort, toggle, reorder) ---
-
-    # --- Cover zoom ---
-
-    # --- Processing history window ---
-
-    # --- Cover hover badge ---
-
     # --- Truncated-text tooltip ---
 
     def _show_tooltip(self, text, event):
+        # A missed <Leave> (fast mouse movement, focus lost mid-hover) would
+        # otherwise overwrite self._tooltip_window without ever destroying
+        # the previous one, leaking an orphaned Toplevel.
+        self._hide_tooltip()
         self._tooltip_window = tk.Toplevel(self.window)
         self._tooltip_window.overrideredirect(True)
         self._tooltip_window.attributes("-topmost", True)
@@ -1522,8 +1487,6 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
             self._tooltip_window.destroy()
             self._tooltip_window = None
         self._tooltip_key = None
-
-    # --- Table editing & context menu ---
 
     # --- Log / progress (thread-safe) ---
 
@@ -1839,8 +1802,6 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
             self._report_crash(*sys.exc_info(), context="message_loop")
         finally:
             self.window.after(100, self._start_message_loop)
-
-    # --- Running the processing ---
 
 if __name__ == "__main__":
     if not acquire_single_instance_lock():

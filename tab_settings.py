@@ -1,21 +1,14 @@
 """Settings tab - split out of interface.py (see TaggerInterface)."""
-import getpass
-import io
 import os
 import re
-import subprocess
-import threading
-import time
 import webbrowser
-import tkinter as tk
-from tkinter import ttk, filedialog, scrolledtext, messagebox
-from PIL import Image, ImageTk, ImageDraw
+from tkinter import ttk, messagebox
 
 import track_tidy as tagger
 from ui_common import (
     open_with_default_app,
     MUTED_TEXT_COLOR,
-    DARK_COLORS,
+    LINK_ACCENT_COLOR,
 )
 
 
@@ -77,7 +70,11 @@ class SettingsTabMixin:
         ).pack(fill="x", padx=10, pady=(0, 5))
         ttk.Button(
             app_frame, text="Reset all settings to default", command=self._reset_settings_to_default,
-        ).pack(fill="x", padx=10, pady=(0, 10))
+        ).pack(fill="x", padx=10, pady=(0, 5))
+        ttk.Checkbutton(
+            app_frame, text="Send anonymous usage telemetry", variable=self.use_telemetry_var,
+            command=self._on_use_telemetry_changed,
+        ).pack(anchor="w", padx=10, pady=(0, 10))
 
         self.internet_status_label = ttk.Label(
             soundcloud_tab, text="● Checking connection...", foreground="#999999",
@@ -111,7 +108,7 @@ class SettingsTabMixin:
 
         self.legal_notices_link = ttk.Label(
             soundcloud_tab, text="View license & third-party notices",
-            foreground="#1a73e8", cursor="hand2", font=("TkDefaultFont", 8),
+            foreground=LINK_ACCENT_COLOR, cursor="hand2", font=("TkDefaultFont", 8),
         )
         self.legal_notices_link.pack(anchor="w", padx=10, pady=(0, 6), side="bottom")
         self.legal_notices_link.bind("<Button-1>", self._open_legal_notices)
@@ -191,6 +188,12 @@ class SettingsTabMixin:
         tagger.USE_SPOTIFY = enabled
         tagger.save_setting("use_spotify", enabled)
         tagger.log_action(f"Use Spotify: {enabled}")
+
+    def _on_use_telemetry_changed(self):
+        enabled = self.use_telemetry_var.get()
+        tagger.SEND_USAGE_TELEMETRY = enabled
+        tagger.save_setting("send_usage_telemetry", enabled)
+        tagger.log_action(f"Send usage telemetry: {enabled}")
 
     def _reset_settings_to_default(self):
         """Restores every Settings-tab option to its out-of-the-box value.
