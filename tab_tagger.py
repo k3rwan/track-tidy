@@ -993,15 +993,10 @@ class TaggerTabMixin:
         should settle back into (defaults match the Tagger table's own
         original always-plain-striped behavior)."""
         tree = tree if tree is not None else self.table
-        is_dark = self.theme_colors is not None
-        start_color = self.theme_colors["select_bg"] if is_dark else "#cfe0f5"
+        start_color = self.theme_colors["select_bg"]
         is_even = tree.index(file_iid) % 2 == 0
-        if is_dark:
-            end_color = self.theme_colors["tree_bg"] if is_even else self.theme_colors["tree_odd_row"]
-            fg_color = self.theme_colors["tree_fg"]
-        else:
-            end_color = "#ffffff" if is_even else "#e9e9e9"
-            fg_color = "black"
+        end_color = self.theme_colors["tree_bg"] if is_even else self.theme_colors["tree_odd_row"]
+        fg_color = self.theme_colors["tree_fg"]
 
         if final_tags is None:
             final_tags = ("even_row" if is_even else "odd_row",)
@@ -1069,19 +1064,15 @@ class TaggerTabMixin:
         if not hasattr(self, "_fading_row_tags"):
             self._fading_row_tags = {}
 
-        is_dark = self.theme_colors is not None
-        end_color = self.theme_colors["bg"] if is_dark else "#f0f0f0"
-        fg_color = self.theme_colors["tree_fg"] if is_dark else "black"
+        end_color = self.theme_colors["bg"]
+        fg_color = self.theme_colors["tree_fg"]
 
         pending = {}
         for item_id in item_ids:
             if not self.table.exists(item_id):
                 continue
             is_even = self.table.index(item_id) % 2 == 0
-            if is_dark:
-                start_color = self.theme_colors["tree_bg"] if is_even else self.theme_colors["tree_odd_row"]
-            else:
-                start_color = "#ffffff" if is_even else "#e9e9e9"
+            start_color = self.theme_colors["tree_bg"] if is_even else self.theme_colors["tree_odd_row"]
             tag = f"fadeout_{item_id}"
             pending[item_id] = (tag, start_color)
             self._fading_row_tags[item_id] = tag

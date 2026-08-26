@@ -119,22 +119,20 @@ NO_COVER_SUMMARY_ROW_ID = "__no_cover_summary_row__"
 # a real scanned_plan entry.
 SEARCH_RESULT_SUMMARY_ROW_ID = "__search_result_summary_row__"
 
-# Soft selection highlight for the main table in light mode, in place of the
-# native theme's stock (harsher) Windows blue - the rest of light mode still
-# intentionally leaves the native theme's own colors alone (see below).
-LIGHT_TABLE_SELECT_BG = "#cfe3f5"
-LIGHT_TABLE_SELECT_FG = "#1a1a1a"
-
 # Muted/secondary text (footer credits, version label) - a plain mid-grey
-# reads fine on light mode's near-white background, but is borderline-low
+# reads fine on light mode's off-white background, but is borderline-low
 # contrast against dark mode's near-black one, so it's brightened for dark
-# specifically (see MUTED_TEXT_COLOR's uses in _apply_theme).
+# specifically. Also folded into each palette below as "muted_fg".
 MUTED_TEXT_COLOR = "#888888"
 DARK_MUTED_TEXT_COLOR = "#a0a0a0"
 
-# Dark palette. There's no equivalent LIGHT_COLORS dict - "light" instead
-# means "leave the native theme's own colors alone", captured at startup
-# (see App._native_bg etc.) so it matches today's look exactly.
+# Dark and light palettes - both rendered on ttk's "clam" theme (see
+# _apply_theme), so every control (buttons, tabs, entries, the table...)
+# sits at the exact same position/size in both modes and only the colors
+# below actually change. Light mode used to instead leave the OS's own
+# native theme (vista/aqua) in charge of its look, which drew widgets at
+# subtly different metrics than dark's clam - unifying on clam for both
+# is what makes the two pixel-identical.
 DARK_COLORS = {
     "bg": "#18191C",  # background
     "fg": "#e0e0e0",
@@ -156,33 +154,43 @@ DARK_COLORS = {
     "menu_bg": "#2B2E33",
     "menu_fg": "#e0e0e0",
     "border": "#3A3D42",
+    "muted_fg": DARK_MUTED_TEXT_COLOR,
+}
+
+# Off-white ("blanc casse") - mirrors DARK_COLORS key-for-key so
+# _apply_theme can treat both palettes identically. entry_bg (panels) is a
+# touch brighter than bg (the plain window) the same way dark's entry_bg is
+# a touch brighter than its bg, just at the opposite end of the scale.
+LIGHT_COLORS = {
+    "bg": "#F2EFE8",
+    "fg": "#1c1c1c",
+    "entry_bg": "#FFFFFF",
+    "entry_fg": "#1c1c1c",
+    "select_bg": "#cfe3f5",  # soft pastel highlight, not the native theme's harsher OS blue
+    "select_fg": "#1a1a1a",
+    "tree_bg": "#FFFFFF",
+    "tree_fg": "#1c1c1c",
+    "tree_odd_row": "#F2EFE8",
+    "tree_heading_bg": "#E8E3D8",
+    "listbox_bg": "#FFFFFF",
+    "listbox_fg": "#1c1c1c",
+    "journal_bg": "#FFFFFF",
+    "journal_fg": "#333333",
+    "progress_track": "#E8E3D8",
+    "progress_fill": "#4a90d9",
+    "progress_text": "#1a1a1a",
+    "menu_bg": "#FFFFFF",
+    "menu_fg": "#1c1c1c",
+    "border": "#C9C2B2",
+    "muted_fg": MUTED_TEXT_COLOR,
 }
 
 # Checkbutton/Radiobutton indicator colors. Light and dark draw the exact
 # same clam-sourced indicator shape (see the "Uniform.*.indicator" block in
-# _apply_theme) - the native theme's own indicator is pure OS drawing with
-# no configurable colors at all, so without this both modes would show two
-# completely different checkbox/radio shapes for the same control. Only the
-# colors differ here; "checked" intentionally reuses dark mode's own accent
-# blue in both themes.
+# _apply_theme), each recolored from its own palette above ("entry_bg"/
+# "border") - "checked" intentionally reuses dark mode's own accent blue in
+# both themes rather than each palette's own select_bg.
 INDICATOR_CHECKED_BG = DARK_COLORS["select_bg"]
-LIGHT_INDICATOR_COLORS = {
-    "indicator_bg": "#ffffff",
-    "indicator_border": "#8a8a8a",
-}
-
-# Scrollbar colors for light mode. The native theme's own scrollbar (like
-# its checkbox indicator above) has zero stylable properties either, so it
-# can't literally be copied pixel-for-pixel - both modes instead render the
-# same clam-sourced scrollbar shape (see _apply_theme), recolored to
-# approximate each theme's look. Chosen to sit close to stock Windows'
-# light-grey thumb/near-white trough.
-LIGHT_SCROLLBAR_COLORS = {
-    "thumb": "#c1c1c1",
-    "trough": "#f0f0f0",
-    "arrow": "#606060",
-    "active_thumb": "#8c8c8c",
-}
 
 
 def setup_placeholder(entry, placeholder, on_change=None):

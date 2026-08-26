@@ -26,7 +26,7 @@ class SettingsTabMixin:
         appearance_frame = ttk.LabelFrame(soundcloud_tab, text="Appearance")
         appearance_frame.pack(fill="x", padx=10, pady=(15, 10))
         self._theme_radio_buttons = {}
-        for value, label in (("auto", "Automatic (time of day)"), ("light", "Light"), ("dark", "Dark")):
+        for value, label in (("auto", "Auto"), ("light", "Light"), ("dark", "Dark")):
             theme_radio = ttk.Radiobutton(
                 appearance_frame, text=label, value=value, variable=self.theme_var,
                 command=self._on_theme_changed,

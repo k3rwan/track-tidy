@@ -67,14 +67,9 @@ from ui_common import (
     COLUMNS,
     NO_COVER_SUMMARY_ROW_ID,
     SEARCH_RESULT_SUMMARY_ROW_ID,
-    LIGHT_TABLE_SELECT_BG,
-    LIGHT_TABLE_SELECT_FG,
-    MUTED_TEXT_COLOR,
-    DARK_MUTED_TEXT_COLOR,
     DARK_COLORS,
+    LIGHT_COLORS,
     INDICATOR_CHECKED_BG,
-    LIGHT_INDICATOR_COLORS,
-    LIGHT_SCROLLBAR_COLORS,
     setup_placeholder,
 )
 
@@ -242,8 +237,7 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
         # fresh defaults rather than whatever the previous version saved.
         tagger.check_and_apply_version_reset()
 
-        self._native_theme = ttk.Style().theme_use()  # so "light" can restore it later
-        self.theme_colors = None  # None while light/native; DARK_COLORS once dark is applied
+        self.theme_colors = None  # set to DARK_COLORS/LIGHT_COLORS by the first _apply_theme() call below
         saved_theme = tagger.load_settings().get("theme", "auto")
         if saved_theme not in ("light", "dark", "auto"):
             saved_theme = "light"  # e.g. an old "system" preference from before that option existed
@@ -707,10 +701,8 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
         element_name = f"{'Dark' if dark else 'Light'}.Checkbutton.indicator"
         if element_name in style.element_names():
             return
-        box_bg, box_border = (
-            (DARK_COLORS["entry_bg"], DARK_COLORS["border"]) if dark
-            else (LIGHT_INDICATOR_COLORS["indicator_bg"], LIGHT_INDICATOR_COLORS["indicator_border"])
-        )
+        colors = DARK_COLORS if dark else LIGHT_COLORS
+        box_bg, box_border = colors["entry_bg"], colors["border"]
         unchecked_photo = self._build_checkbox_indicator_photo(box_bg, box_border, checked=False)
         checked_photo = self._build_checkbox_indicator_photo(box_bg, box_border, checked=True)
         self._checkbox_indicator_photos[theme_key] = (unchecked_photo, checked_photo)
@@ -718,9 +710,9 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
 
     def _apply_theme(self, choice):
         dark = choice == "dark"
-        colors = DARK_COLORS if dark else None
+        colors = DARK_COLORS if dark else LIGHT_COLORS
         style = ttk.Style()
-        style.theme_use("clam" if dark else self._native_theme)
+        style.theme_use("clam")
 
         # macOS's native "aqua" Notebook.tab is a compiled, natively-drawn
         # element (not the generic box-model one every other theme uses) -
@@ -789,10 +781,7 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
                 ]}),
             ]}),
         ])
-        if dark:
-            indicator_bg, indicator_border = colors["entry_bg"], colors["border"]
-        else:
-            indicator_bg, indicator_border = LIGHT_INDICATOR_COLORS["indicator_bg"], LIGHT_INDICATOR_COLORS["indicator_border"]
+        indicator_bg, indicator_border = colors["entry_bg"], colors["border"]
         style.configure(
             "TRadiobutton",
             indicatorbackground=indicator_bg, indicatorforeground="#ffffff",
@@ -836,12 +825,9 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
                 ("Uniform.Horizontal.Scrollbar.thumb", {"sticky": "nswe"}),
             ]}),
         ])
-        if dark:
-            scrollbar_colors = dict(
-                thumb=colors["border"], trough=colors["tree_bg"], arrow=colors["fg"], active_thumb=colors["select_bg"],
-            )
-        else:
-            scrollbar_colors = LIGHT_SCROLLBAR_COLORS
+        scrollbar_colors = dict(
+            thumb=colors["border"], trough=colors["tree_bg"], arrow=colors["fg"], active_thumb=colors["select_bg"],
+        )
         for scrollbar_style in ("TScrollbar", "Vertical.TScrollbar", "Horizontal.TScrollbar"):
             style.configure(
                 scrollbar_style,
@@ -852,201 +838,168 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
             )
             style.map(scrollbar_style, background=[("active", scrollbar_colors["active_thumb"])])
 
-        if dark:
-            style.configure(".", background=colors["bg"], foreground=colors["fg"])
-            style.configure("TFrame", background=colors["bg"])
-            style.configure("TLabel", background=colors["bg"], foreground=colors["fg"])
-            # No border at all - panels are set apart from the plain window
-            # background by color contrast (entry_bg vs bg) rather than a
-            # drawn line, per the "no old-Windows bevels" dark mode design.
-            style.configure(
-                "TLabelframe", background=colors["entry_bg"], foreground=colors["fg"], borderwidth=0,
-            )
-            style.configure("TLabelframe.Label", background=colors["entry_bg"], foreground=colors["fg"])
-            # clam's default dotted focus ring renders as a solid block unless
-            # focuscolor is pinned to the background - blend it in instead.
-            # Uses entry_bg (the panel color) rather than bg since every
-            # checkbutton/radiobutton in this app lives inside a LabelFrame
-            # panel, not directly on the plain window background.
-            style.configure(
-                "TCheckbutton", background=colors["entry_bg"], foreground=colors["fg"], focuscolor=colors["entry_bg"],
-            )
-            style.configure(
-                "TRadiobutton", background=colors["entry_bg"], foreground=colors["fg"], focuscolor=colors["entry_bg"],
-            )
-            # clam shows a light "active" (hover) background by default -
-            # against dark text that's nearly white-on-white. Pin both the
-            # background and foreground back to the normal panel colors.
-            style.map(
-                "TCheckbutton",
-                background=[("active", colors["entry_bg"])], foreground=[("active", colors["fg"])],
-            )
-            style.map(
-                "TRadiobutton",
-                background=[("active", colors["entry_bg"])], foreground=[("active", colors["fg"])],
-            )
-            # borderwidth=0 alone doesn't fully suppress the client pane's
-            # border - like Treeview.field, Notebook.client still exposes
-            # (and clam still draws with) its own bordercolor/lightcolor/
-            # darkcolor defaults (light, made for light-mode) unless those
-            # are pinned too. That's the actual source of the outline
-            # tracing the whole tab content area, not any single control
-            # inside it.
-            style.configure(
-                "TNotebook", background=colors["bg"], borderwidth=0,
-                bordercolor=colors["bg"], lightcolor=colors["bg"], darkcolor=colors["bg"],
-            )
-            style.configure(
-                "TNotebook.Tab", background=colors["entry_bg"], foreground=colors["fg"],
-                bordercolor=colors["border"],
-            )
-            # clam's default dotted focus ring on the active tab (e.g.
-            # "Tagger") renders as a bright white rectangle - blend it into
-            # whichever background is actually showing behind that tab.
-            style.map(
-                "TNotebook.Tab",
-                background=[("selected", colors["bg"])],
-                focuscolor=[("selected", colors["bg"]), ("!selected", colors["entry_bg"])],
-            )
-            # clam draws every control with a 2px raised/sunken bevel
-            # (lightcolor/darkcolor highlight+shadow on two opposite edges) -
-            # that's the "old Windows" look. Pinning lightcolor/darkcolor to
-            # the same flat bordercolor and trimming borderwidth to 1px kills
-            # the bevel everywhere without touching layout.
-            style.configure(
-                "TButton", background=colors["entry_bg"], foreground=colors["fg"], focuscolor=colors["entry_bg"],
-                bordercolor=colors["border"], lightcolor=colors["border"], darkcolor=colors["border"],
-                borderwidth=1,
-                # clam's default vertical button padding is much taller than
-                # the native theme's (which ignores this option entirely and
-                # uses its own compact OS metrics instead) - trimmed down so
-                # switching themes doesn't visibly resize the window.
-                padding=(5, 0),
-            )
-            style.map("TButton", background=[("active", colors["select_bg"])])
-            style.configure(
-                "TEntry", fieldbackground=colors["entry_bg"], foreground=colors["entry_fg"],
-                insertcolor=colors["fg"], padding=(1, 0),
-                bordercolor=colors["border"], lightcolor=colors["border"], darkcolor=colors["border"],
-                borderwidth=1,
-            )
-            style.configure("TSeparator", background=colors["border"])
-            style.configure(
-                "Table.Treeview", background=colors["tree_bg"], fieldbackground=colors["tree_bg"],
-                foreground=colors["tree_fg"],
-                # clam's "Treeview.field" element has a 1px border baked
-                # directly into its layout ('border': '1') - unlike every
-                # other bordered control here, that inset isn't gated by a
-                # -borderwidth style option at all, so it can't be removed,
-                # only recolored (element_options() confirms only
-                # bordercolor/lightcolor exist for it, no darkcolor either).
-                # Coloring it colors["border"] (a lighter shade, meant to
-                # read as a visible line elsewhere) made it stand out as a
-                # bright outline against this much darker panel - matching
-                # it to the surrounding frame background instead blends the
-                # unavoidable 1px away entirely.
-                bordercolor=colors["bg"], lightcolor=colors["bg"],
-            )
-            style.map(
-                "Table.Treeview",
-                background=[("selected", colors["select_bg"])], foreground=[("selected", colors["select_fg"])],
-                # clam's built-in Treeview map brightens bordercolor/lightcolor
-                # for the "focus" state (i.e. as soon as the table is clicked)
-                # regardless of the plain configure() default above - pin
-                # that state too or the blended-away border above reappears
-                # the moment the table actually gets used.
-                bordercolor=[("focus", colors["bg"])], lightcolor=[("focus", colors["bg"])],
-            )
-            style.configure(
-                "Treeview.Heading", background=colors["tree_heading_bg"], foreground=colors["fg"],
-                bordercolor=colors["border"], lightcolor=colors["tree_heading_bg"], darkcolor=colors["tree_heading_bg"],
-                relief="flat",
-            )
-            # clam shows a light "active" (hover) background on column
-            # headers by default, same as the checkbutton/radiobutton issue
-            # above - pin it back to the normal heading color.
-            style.map(
-                "Treeview.Heading",
-                background=[("active", colors["tree_heading_bg"])], foreground=[("active", colors["fg"])],
-            )
-            style.map(
-                "ReadonlyWhite.TEntry",
-                fieldbackground=[("readonly", colors["entry_bg"])],
-                foreground=[("readonly", colors["entry_fg"])],
-                # Blends any text selection into the field's own colors -
-                # these entries are readonly folder-path displays, not real
-                # text inputs, so a click-drag selection highlight just
-                # looks like a stray visual glitch rather than anything
-                # meaningful to select.
-                selectbackground=[("readonly", colors["entry_bg"])],
-                selectforeground=[("readonly", colors["entry_fg"])],
-            )
+        # Applied identically for both themes - only the values inside
+        # `colors` (DARK_COLORS or LIGHT_COLORS) differ, so light and dark
+        # always place every control at the exact same position/size.
+        style.configure(".", background=colors["bg"], foreground=colors["fg"])
+        style.configure("TFrame", background=colors["bg"])
+        style.configure("TLabel", background=colors["bg"], foreground=colors["fg"])
+        # No border at all - panels are set apart from the plain window
+        # background by color contrast (entry_bg vs bg) rather than a
+        # drawn line, per the "no old-Windows bevels" design.
+        style.configure(
+            "TLabelframe", background=colors["entry_bg"], foreground=colors["fg"], borderwidth=0,
+        )
+        style.configure("TLabelframe.Label", background=colors["entry_bg"], foreground=colors["fg"])
+        # clam's default dotted focus ring renders as a solid block unless
+        # focuscolor is pinned to the background - blend it in instead.
+        # Uses entry_bg (the panel color) rather than bg since every
+        # checkbutton/radiobutton in this app lives inside a LabelFrame
+        # panel, not directly on the plain window background.
+        style.configure(
+            "TCheckbutton", background=colors["entry_bg"], foreground=colors["fg"], focuscolor=colors["entry_bg"],
+        )
+        style.configure(
+            "TRadiobutton", background=colors["entry_bg"], foreground=colors["fg"], focuscolor=colors["entry_bg"],
+        )
+        # clam shows a light "active" (hover) background by default -
+        # against dark text that's nearly white-on-white. Pin both the
+        # background and foreground back to the normal panel colors.
+        style.map(
+            "TCheckbutton",
+            background=[("active", colors["entry_bg"])], foreground=[("active", colors["fg"])],
+        )
+        style.map(
+            "TRadiobutton",
+            background=[("active", colors["entry_bg"])], foreground=[("active", colors["fg"])],
+        )
+        # borderwidth=0 alone doesn't fully suppress the client pane's
+        # border - like Treeview.field, Notebook.client still exposes
+        # (and clam still draws with) its own bordercolor/lightcolor/
+        # darkcolor defaults (light, made for light-mode) unless those
+        # are pinned too. That's the actual source of the outline
+        # tracing the whole tab content area, not any single control
+        # inside it.
+        style.configure(
+            "TNotebook", background=colors["bg"], borderwidth=0,
+            bordercolor=colors["bg"], lightcolor=colors["bg"], darkcolor=colors["bg"],
+        )
+        style.configure(
+            "TNotebook.Tab", background=colors["entry_bg"], foreground=colors["fg"],
+            bordercolor=colors["border"],
+        )
+        # clam's default dotted focus ring on the active tab (e.g.
+        # "Tagger") renders as a bright white rectangle - blend it into
+        # whichever background is actually showing behind that tab.
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", colors["bg"])],
+            focuscolor=[("selected", colors["bg"]), ("!selected", colors["entry_bg"])],
+        )
+        # clam draws every control with a 2px raised/sunken bevel
+        # (lightcolor/darkcolor highlight+shadow on two opposite edges) -
+        # that's the "old Windows" look. Pinning lightcolor/darkcolor to
+        # the same flat bordercolor and trimming borderwidth to 1px kills
+        # the bevel everywhere without touching layout.
+        style.configure(
+            "TButton", background=colors["entry_bg"], foreground=colors["fg"], focuscolor=colors["entry_bg"],
+            bordercolor=colors["border"], lightcolor=colors["border"], darkcolor=colors["border"],
+            borderwidth=1,
+            # clam's default vertical button padding is much taller than
+            # the old native theme's compact OS metrics - trimmed down so
+            # switching themes doesn't visibly resize the window.
+            padding=(5, 0),
+        )
+        style.map("TButton", background=[("active", colors["select_bg"])])
+        style.configure(
+            "TEntry", fieldbackground=colors["entry_bg"], foreground=colors["entry_fg"],
+            insertcolor=colors["fg"], padding=(1, 0),
+            bordercolor=colors["border"], lightcolor=colors["border"], darkcolor=colors["border"],
+            borderwidth=1,
+        )
+        style.configure("TSeparator", background=colors["border"])
+        style.configure(
+            "Table.Treeview", background=colors["tree_bg"], fieldbackground=colors["tree_bg"],
+            foreground=colors["tree_fg"],
+            # clam's "Treeview.field" element has a 1px border baked
+            # directly into its layout ('border': '1') - unlike every
+            # other bordered control here, that inset isn't gated by a
+            # -borderwidth style option at all, so it can't be removed,
+            # only recolored (element_options() confirms only
+            # bordercolor/lightcolor exist for it, no darkcolor either).
+            # Matching it to the surrounding frame background instead
+            # blends the unavoidable 1px away entirely.
+            bordercolor=colors["bg"], lightcolor=colors["bg"],
+        )
+        style.map(
+            "Table.Treeview",
+            background=[("selected", colors["select_bg"])], foreground=[("selected", colors["select_fg"])],
+            # clam's built-in Treeview map brightens bordercolor/lightcolor
+            # for the "focus" state (i.e. as soon as the table is clicked)
+            # regardless of the plain configure() default above - pin
+            # that state too or the blended-away border above reappears
+            # the moment the table actually gets used.
+            bordercolor=[("focus", colors["bg"])], lightcolor=[("focus", colors["bg"])],
+        )
+        style.configure(
+            "Treeview.Heading", background=colors["tree_heading_bg"], foreground=colors["fg"],
+            bordercolor=colors["border"], lightcolor=colors["tree_heading_bg"], darkcolor=colors["tree_heading_bg"],
+            relief="flat",
+        )
+        # clam shows a light "active" (hover) background on column
+        # headers by default, same as the checkbutton/radiobutton issue
+        # above - pin it back to the normal heading color.
+        style.map(
+            "Treeview.Heading",
+            background=[("active", colors["tree_heading_bg"])], foreground=[("active", colors["fg"])],
+        )
+        style.map(
+            "ReadonlyWhite.TEntry",
+            fieldbackground=[("readonly", colors["entry_bg"])],
+            foreground=[("readonly", colors["entry_fg"])],
+            # Blends any text selection into the field's own colors -
+            # these entries are readonly folder-path displays, not real
+            # text inputs, so a click-drag selection highlight just
+            # looks like a stray visual glitch rather than anything
+            # meaningful to select.
+            selectbackground=[("readonly", colors["entry_bg"])],
+            selectforeground=[("readonly", colors["entry_fg"])],
+        )
 
-            self.window.configure(bg=colors["bg"])
-            self.journal_text.configure(
-                bg=colors["journal_bg"], fg=colors["journal_fg"], insertbackground=colors["journal_fg"],
+        self.window.configure(bg=colors["bg"])
+        self.journal_text.configure(
+            bg=colors["journal_bg"], fg=colors["journal_fg"], insertbackground=colors["journal_fg"],
+        )
+        for listbox in (self.suggested_listbox, self.mentions_listbox):
+            listbox.configure(
+                bg=colors["listbox_bg"], fg=colors["listbox_fg"],
+                selectbackground=colors["select_bg"], selectforeground=colors["select_fg"],
             )
-            for listbox in (self.suggested_listbox, self.mentions_listbox):
-                listbox.configure(
-                    bg=colors["listbox_bg"], fg=colors["listbox_fg"],
-                    selectbackground=colors["select_bg"], selectforeground=colors["select_fg"],
-                )
-            for canvas in (self.progress_canvas, self.extract_progress_canvas, self.quality_progress_canvas):
-                canvas.configure(bg=colors["progress_track"])
-                canvas.itemconfig(canvas.progress_rect, fill=colors["progress_fill"])
-                canvas.itemconfig(canvas.progress_text, fill=colors["progress_text"])
-            self.table.tag_configure("odd_row", background=colors["tree_odd_row"], foreground=colors["tree_fg"])
-            self.table.tag_configure("even_row", background=colors["tree_bg"], foreground=colors["tree_fg"])
-            self.quality_table.tag_configure(
-                "odd_row", background=colors["tree_odd_row"], foreground=colors["tree_fg"],
-            )
-            self.quality_table.tag_configure("even_row", background=colors["tree_bg"], foreground=colors["tree_fg"])
-        else:
-            style.map(
-                "ReadonlyWhite.TEntry",
-                fieldbackground=[("readonly", "white")],
-                foreground=[("readonly", "black")],
-                selectbackground=[("readonly", "white")],
-                selectforeground=[("readonly", "black")],
-            )
-            style.map(
-                "Table.Treeview",
-                background=[("selected", LIGHT_TABLE_SELECT_BG)],
-                foreground=[("selected", LIGHT_TABLE_SELECT_FG)],
-            )
-            self.window.configure(bg=self._native_bg)
-            self.journal_text.configure(
-                bg=self._native_journal_bg, fg=self._native_journal_fg, insertbackground=self._native_journal_fg,
-            )
-            for listbox in (self.suggested_listbox, self.mentions_listbox):
-                listbox.configure(
-                    bg=self._native_listbox_bg, fg=self._native_listbox_fg,
-                    selectbackground="SystemHighlight", selectforeground="SystemHighlightText",
-                )
-            for canvas in (self.progress_canvas, self.extract_progress_canvas, self.quality_progress_canvas):
-                canvas.configure(bg="#e2e2e2")
-                canvas.itemconfig(canvas.progress_rect, fill="#4a90d9")
-                canvas.itemconfig(canvas.progress_text, fill="#1a1a1a")
-            self.table.tag_configure("odd_row", background="#e9e9e9", foreground="black")
-            self.table.tag_configure("even_row", background="white", foreground="black")
-            self.quality_table.tag_configure("odd_row", background="#e9e9e9", foreground="black")
-            self.quality_table.tag_configure("even_row", background="white", foreground="black")
+        for canvas in (self.progress_canvas, self.extract_progress_canvas, self.quality_progress_canvas):
+            canvas.configure(bg=colors["progress_track"])
+            canvas.itemconfig(canvas.progress_rect, fill=colors["progress_fill"])
+            canvas.itemconfig(canvas.progress_text, fill=colors["progress_text"])
+        self.table.tag_configure("odd_row", background=colors["tree_odd_row"], foreground=colors["tree_fg"])
+        self.table.tag_configure("even_row", background=colors["tree_bg"], foreground=colors["tree_fg"])
+        self.quality_table.tag_configure(
+            "odd_row", background=colors["tree_odd_row"], foreground=colors["tree_fg"],
+        )
+        self.quality_table.tag_configure("even_row", background=colors["tree_bg"], foreground=colors["tree_fg"])
 
         for entry in (self.new_mention_entry, self.table_filter_entry):
-            entry.normal_color = colors["entry_fg"] if dark else "black"
+            entry.normal_color = colors["entry_fg"]
             if not getattr(entry, "placeholder_active", False):
                 entry.configure(foreground=entry.normal_color)
 
-        muted_fg = DARK_MUTED_TEXT_COLOR if dark else MUTED_TEXT_COLOR
+        muted_fg = colors["muted_fg"]
         self.dev_credit_label.configure(foreground=muted_fg)
         self.kevz_credit_label.configure(foreground=muted_fg)
         self.legal_text_label.configure(foreground=muted_fg)
 
-        # Matches the table's own background (colors["tree_bg"]/"white" -
-        # same literal the "even_row" tag uses for light mode above) so the
-        # hint blends into the empty table instead of looking like a
-        # separate panel dropped on top of it.
-        empty_state_bg = colors["tree_bg"] if dark else "white"
+        # Matches the table's own background (same "even_row" tag color
+        # used above) so the hint blends into the empty table instead of
+        # looking like a separate panel dropped on top of it.
+        empty_state_bg = colors["tree_bg"]
         style.configure("EmptyState.TFrame", background=empty_state_bg)
         style.configure("EmptyState.TLabel", background=empty_state_bg, foreground=muted_fg)
 
@@ -1362,14 +1315,6 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
         self._build_extractor_tab(extractor_tab)
         self._build_quality_tab(quality_tab)
         self._build_settings_tab(soundcloud_tab)
-
-        # Captured now (native theme, before any dark styling is ever applied)
-        # so "light" mode can restore these exact values later.
-        self._native_bg = self.window.cget("bg")
-        self._native_journal_bg = self.journal_text.cget("bg")
-        self._native_journal_fg = self.journal_text.cget("fg")
-        self._native_listbox_bg = self.suggested_listbox.cget("bg")
-        self._native_listbox_fg = self.suggested_listbox.cget("fg")
 
     # --- Window / progress bar helpers ---
 

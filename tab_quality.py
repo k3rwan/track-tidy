@@ -15,8 +15,6 @@ import track_tidy as tagger
 from ui_common import (
     reveal_in_file_manager,
     SCAN_REVEAL_INTERVAL_MS,
-    MUTED_TEXT_COLOR,
-    DARK_MUTED_TEXT_COLOR,
 )
 
 
@@ -449,7 +447,7 @@ class QualityTabMixin:
         dialog.resizable(False, False)
         dialog.transient(self.window)
 
-        muted_color = DARK_MUTED_TEXT_COLOR if self.theme_colors else MUTED_TEXT_COLOR
+        muted_color = self.theme_colors["muted_fg"]
         ttk.Label(dialog, text=file_path, font=("TkDefaultFont", 8)).pack(
             anchor="w", padx=15, pady=(12, 0),
         )
@@ -458,7 +456,7 @@ class QualityTabMixin:
             font=("TkDefaultFont", 8),
         ).pack(anchor="w", padx=15, pady=(0, 8))
 
-        canvas_bg = self.theme_colors["tree_bg"] if self.theme_colors else "white"
+        canvas_bg = self.theme_colors["tree_bg"]
         canvas = tk.Canvas(
             dialog, width=self.QUALITY_SPECTROGRAM_CANVAS_W, height=self.QUALITY_SPECTROGRAM_CANVAS_H,
             highlightthickness=0, bg=canvas_bg,
@@ -520,9 +518,8 @@ class QualityTabMixin:
         canvas.spectrogram_photo_refs = (photo, legend_image)
         canvas.create_image(margin_left, margin_top, anchor="nw", image=photo)
 
-        is_dark = self.theme_colors is not None
-        axis_color = self.theme_colors["border"] if is_dark else "#999999"
-        text_color = self.theme_colors["tree_fg"] if is_dark else "#333333"
+        axis_color = self.theme_colors["border"]
+        text_color = self.theme_colors["tree_fg"]
         cutoff_color = "#ff5555"
 
         canvas.create_rectangle(
