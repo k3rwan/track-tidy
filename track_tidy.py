@@ -1187,6 +1187,12 @@ def log_action(message):
 # --- Processing history log ---
 
 HISTORY_FILE = os.path.join(user_config_dir(), "history.jsonl")
+# Guards every read-modify-write AND append against HISTORY_FILE - without
+# it, deleting/restoring an entry from the (non-modal) History window while
+# a background Apply run is still appending new ones could read the file
+# before that append lands, then overwrite it with a version that silently
+# drops the entry the other thread just wrote.
+_HISTORY_FILE_LOCK = threading.Lock()
 
 
 def log_history_entry(old_file, new_file, old_artist, old_title, new_artist, new_title,
@@ -1226,7 +1232,7 @@ def log_history_entry(old_file, new_file, old_artist, old_title, new_artist, new
         "old_cover_b64": base64.b64encode(old_cover_bytes).decode("ascii") if old_cover_bytes else None,
     }
     try:
-        with open(HISTORY_FILE, "a", encoding="utf-8") as f:
+        with _HISTORY_FILE_LOCK, open(HISTORY_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception as error:
         print(f"  Could not write history entry: {error}")
@@ -1421,11 +1427,15 @@ def delete_history_entries(entries_to_delete):
     if not os.path.exists(HISTORY_FILE):
         return
     keys_to_delete = {_history_entry_key(entry) for entry in entries_to_delete}
-    remaining = [e for e in load_history_entries() if _history_entry_key(e) not in keys_to_delete]
     try:
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            for entry in remaining:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        with _HISTORY_FILE_LOCK:
+            # Read and rewrite under the same lock as log_history_entry's
+            # append, so an entry appended by a background Apply run in
+            # between can't be silently dropped by this read-then-overwrite.
+            remaining = [e for e in load_history_entries() if _history_entry_key(e) not in keys_to_delete]
+            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+                for entry in remaining:
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception as error:
         print(f"  Could not delete history entries: {error}")
 
@@ -1438,15 +1448,18 @@ def mark_history_entries_restored(entries_to_mark):
     if not os.path.exists(HISTORY_FILE):
         return
     keys_to_mark = {_history_entry_key(entry) for entry in entries_to_mark}
-    updated = []
-    for entry in load_history_entries():
-        if _history_entry_key(entry) in keys_to_mark:
-            entry = dict(entry, restored=True)
-        updated.append(entry)
     try:
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            for entry in updated:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        with _HISTORY_FILE_LOCK:
+            # Same reasoning as delete_history_entries: read and rewrite
+            # under the same lock log_history_entry's append uses.
+            updated = []
+            for entry in load_history_entries():
+                if _history_entry_key(entry) in keys_to_mark:
+                    entry = dict(entry, restored=True)
+                updated.append(entry)
+            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+                for entry in updated:
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception as error:
         print(f"  Could not mark history entries as restored: {error}")
 
@@ -2754,19 +2767,43 @@ def search_cover_manual_with_tokens(
     )
 
 
+_HISTORY_LOOKUP_CACHE = None  # (mtime, size) fingerprint of HISTORY_FILE the cached set below was built from
+_HISTORY_LOOKUP_CACHE_SET = None
+
+
 def _build_history_lookup():
     """
     Set of (absolute folder, new_file) pairs from every logged processing-
-    history entry (history.jsonl) - computed once per scan/precheck rather
-    than re-reading the whole file from disk once per track. Feeds
-    _is_already_applied()'s authoritative check.
+    history entry (history.jsonl) - feeds _is_already_applied()'s
+    authoritative check. Called multiple times per scan (once per
+    precheck/scan/Apply run), and history.jsonl can grow large over a long
+    session (each entry can embed a full cover image) - re-reading and
+    re-parsing the whole file from scratch every single time would mean
+    every scan, however small, pays that cost again for no reason if
+    nothing was actually applied in between. Cached against the file's own
+    (mtime, size), which changes on every append/rewrite (log_history_entry,
+    delete_history_entries, mark_history_entries_restored) - so a stale
+    cache is only ever served if the file genuinely hasn't changed.
     """
+    global _HISTORY_LOOKUP_CACHE, _HISTORY_LOOKUP_CACHE_SET
+    try:
+        stat = os.stat(HISTORY_FILE)
+        fingerprint = (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        fingerprint = None  # doesn't exist yet - never matches a real cache
+
+    if fingerprint is not None and fingerprint == _HISTORY_LOOKUP_CACHE:
+        return _HISTORY_LOOKUP_CACHE_SET
+
     lookup = set()
     for entry in load_history_entries():
         folder = entry.get("folder")
         new_file = entry.get("new_file")
         if folder and new_file:
             lookup.add((os.path.abspath(folder), new_file))
+
+    _HISTORY_LOOKUP_CACHE = fingerprint
+    _HISTORY_LOOKUP_CACHE_SET = lookup
     return lookup
 
 

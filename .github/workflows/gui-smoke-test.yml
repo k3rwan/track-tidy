@@ -23,6 +23,16 @@ on:
 
 jobs:
   smoke-test:
+    # A commit pushed straight to main/wip (the normal day-to-day flow -
+    # see CLAUDE.md) that's ALSO the head of an open PR (e.g. the eventual
+    # wip -> main release PR) would otherwise trigger this workflow twice
+    # for the identical commit - once per push, once per pull_request, on
+    # this repo's own (non-fork) PRs, `push` above already covers it, so
+    # skip the pull_request-triggered run there and only actually run it
+    # for a PR from an outside fork, which `push` never sees.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    permissions:
+      contents: read
     runs-on: macos-14
     # Hard backstop: a first real run of this workflow hung indefinitely
     # inside ImageGrab.grab() (see tests/gui_smoke_test.py's own comment) -

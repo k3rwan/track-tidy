@@ -373,6 +373,18 @@ class TaggerTabMixin:
                 pass  # not fatal - the app works fine without drag-and-drop
 
     def _on_files_dropped(self, event):
+        # Browse/Scan/Apply are already disabled while a run is active (see
+        # _is_run_active) precisely so the folder/table can't change out
+        # from under a running scan or Apply - but drag-and-drop is a raw
+        # window-level event binding, not gated by any button's state, so
+        # without this check a drop here could still switch
+        # tagger.MUSIC_FOLDER (and clear/replace scanned_plan) while a scan
+        # or Apply thread is mid-run against the OLD folder, corrupting
+        # that thread's path resolution for the rest of its run.
+        if self._is_run_active():
+            self._append_to_journal("Ignored dropped file(s) - wait for the current run to finish first.")
+            return
+
         raw_paths = self.window.tk.splitlist(event.data)
         if not raw_paths:
             return
