@@ -3,6 +3,51 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.27]
+
+### Added
+- The Extractor tab now shows a before/after visual preview of what
+  "flatten" actually does, plus an info icon with a short description
+  (matching Quality/Tagger's own).
+- Reset button on the Extractor and Quality tabs.
+- The window now scales to the screen's resolution, and a folder path can
+  be pasted directly into the folder field.
+- The Quality tab's empty state explains what the green/orange/red dot
+  colors mean before a scan has produced any results.
+- A "Send anonymous usage telemetry" toggle in Settings (the setting
+  already existed; there was previously no way to see or change it).
+
+### Changed
+- Light mode now renders through the same styling as dark mode (its own
+  color palette) instead of following the OS's native theme - keeps every
+  control at the identical size/position in both themes. The "Automatic
+  (time of day)" theme option is now just "Auto".
+- Several redundant confirmation popups removed or merged into one.
+- Each tab's intro text moved into its info icon's tooltip instead of
+  always being shown.
+- Quality's "Scan" button renamed to "Analyze".
+- **macOS**: the Notebook tabs are now left-aligned instead of centered.
+
+### Fixed
+- The app now declares itself DPI-aware, fixing blurry rendering on a
+  scaled Windows display (e.g. 150%).
+- A circular-import crash when launching the app directly
+  (`python interface.py`) instead of through its usual entry point.
+- A ttk padding glitch that looked like a double space before "KEVZ" in
+  the developer credit.
+- Editing a track's title without retyping the whole thing could bake the
+  no-cover/AcoustID review marker (⚠️/🎧) into the saved title as literal
+  text, instead of it clearing once the row was reviewed.
+- A missing import and two background loops that silently stopped
+  instead of continuing after hitting an unexpected error on one file.
+- A few race conditions around concurrent writes to the processing-history
+  file.
+- WAV files with legacy (non-UTF-8) RIFF INFO tags now read correctly
+  instead of showing mangled text.
+- Filenames colliding with a Windows-reserved device name (CON, PRN,
+  NUL...) or ending in a dot/space are now sanitized instead of failing
+  silently.
+
 ## [0.26.3]
 
 ### Added

@@ -349,7 +349,7 @@ def check_restrictive_firewall(timeout=5):
 
 # Single source of truth for the app's version - shown in the GUI and used to
 # check for updates. Bump this (and installer.iss's MyAppVersion) on release.
-APP_VERSION = "0.26.4"
+APP_VERSION = "0.27"
 GITHUB_REPO = "k3rwan/track-tidy"  # public since 2026-08-21 - releases and source now live together
 
 
