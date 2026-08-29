@@ -2993,6 +2993,29 @@ class TaggerTabMixin:
 
         self._run_in_background(_send)
 
+    def _raw_field_value(self, info, field):
+        """Same title/artist fallback chain as _build_row_values, but never
+        with the ⚠️/🎧 review markers appended - used to seed the inline-edit
+        box, since editing a still-unreviewed row must not bake that marker
+        glyph into the saved override text (it used to: the edit box was
+        pre-filled from the marker-decorated display string, so unless the
+        user retyped the whole title rather than tweaking part of it, the
+        emoji rode along into title_override and got applied to the file)."""
+        if info.get("processed"):
+            if field == "title":
+                return info["title_override"] or info["detected_title"] or "?"
+            override = info["artist_override"]
+            return override if override is not None else (info["detected_artist"] or "(empty)")
+
+        override = info[f"{field}_override"]
+        if override is not None:
+            return override
+        if info["apply_changes"]:
+            if field == "title":
+                return info["detected_title"] or "?"
+            return info["detected_artist"] if info["detected_artist"] else "(empty)"
+        return info[f"current_{field}"] or "(empty)"
+
     def _edit_cell(self, item_id, info, field, column_id):
         """Opens an input field directly on the cell to edit title/artist."""
         bbox = self.table.bbox(item_id, column_id)
@@ -3000,7 +3023,7 @@ class TaggerTabMixin:
             return
         x, y, width, height = bbox
 
-        current_value = self._build_row_values(info)[COLUMNS.index(field)]
+        current_value = self._raw_field_value(info, field)
 
         edit_entry = ttk.Entry(self.table)
         edit_entry.insert(0, current_value)
