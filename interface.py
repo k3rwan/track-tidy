@@ -37,6 +37,33 @@ if sys.stdout is None:
 if sys.stderr is None:
     sys.stderr = open(os.devnull, "w")
 
+# Without this, Windows treats the whole process as "DPI-unaware" and
+# compensates for a scaled display (125%/150%/200%...) by stretching the
+# ENTIRE rendered window as a bitmap instead of letting it render natively
+# at that resolution - the classic cause of a blurry Tkinter app on a
+# scaled Windows display (see TaggerInterface.__init__ for the matching
+# `tk scaling` fix, needed so fonts/widgets come out the right SIZE once
+# Windows stops doing that automatic stretch for us).
+#
+# Must run before ANY Tk window is created (tk.Tk()/Toplevel()) - hence
+# module level, not inside __main__ or TaggerInterface.__init__, since a
+# script that only imports this module (e.g. tests/gui_smoke_test.py)
+# creates its own tk.Tk() after importing it.
+if sys.platform == "win32":
+    import ctypes
+    try:
+        # Per-Monitor v2 (Windows 10 1703+) - correct behavior if the
+        # window is ever moved between two monitors with different scaling.
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(-4)
+    except Exception:
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)  # Per-Monitor v1 (Windows 8.1+)
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()  # System-DPI-aware (Vista+)
+            except Exception:
+                pass
+
 import track_tidy as tagger
 
 
@@ -107,8 +134,38 @@ from tab_settings import SettingsTabMixin
 
 
 class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, SettingsTabMixin):
+    def _apply_dpi_scaling(self):
+        """Companion to the module-level SetProcessDpiAwarenessContext call
+        above: declaring the process DPI-aware stops Windows from
+        stretching the whole window as a blurry bitmap, but Tk itself still
+        assumes 96 DPI (scaling = 1.333, i.e. 96/72 px-per-point) unless
+        told otherwise - fonts sized in points (a positive integer, e.g.
+        `("TkDefaultFont", 8)`, used throughout this app) would then render
+        at their 96-DPI physical size on a monitor whose real pixel density
+        is now fully exposed, i.e. visibly too small on any scaled display.
+        Telling Tk the real px-per-point ratio up front (before any font or
+        widget is built) makes those point-sized fonts come out the
+        correct physical size again. No-op on macOS, which has no such
+        two-step DPI model - AppKit already renders natively at the
+        display's real backing resolution.
+
+        WINDOW_WIDTH/window_scale's own sizing (right below this call, in
+        __init__) doesn't need a matching adjustment here - it already
+        computes itself fresh from winfo_screenwidth()/winfo_screenheight(),
+        which return the REAL physical pixel resolution once the process is
+        DPI-aware, same as before this fix on an unscaled (100%) display.
+        """
+        if sys.platform != "win32":
+            return
+        try:
+            dpi = ctypes.windll.user32.GetDpiForWindow(self.window.winfo_id())
+            self.window.tk.call("tk", "scaling", dpi / 72)
+        except Exception:
+            pass
+
     def __init__(self, window):
         self.window = window
+        self._apply_dpi_scaling()
         # Hidden until the theme warm-up finishes (see the call site further
         # down) - otherwise the light/dark flicker during warm-up would be
         # visible for a moment on every launch.
