@@ -139,6 +139,78 @@ def check_direct_launch():
     return f"direct launch (python interface.py) exited early:\n{stderr}"
 
 
+def check_tagger_row_logic(app):
+    """Regression guard for a real incident: double-clicking a Title cell
+    used to pre-fill the edit box from the DISPLAYED value (which already
+    has " ⚠️"/" 🎧" appended for an unreviewed row), so unless the user
+    retyped the whole title, the marker glyph rode along as literal text
+    into title_override - it stayed baked into the title even after the
+    row was "reviewed" (normally what clears it). Fixed via
+    _raw_field_value(); this exercises the same table/undo/sort/filter
+    logic a real editing session hits, entirely through Tk object
+    construction and direct method calls (no OS screen capture, no
+    simulated clicks/keys - see CLAUDE.md's own guidance on both), so it
+    doesn't share the screenshot-capture reliability gap the rest of this
+    script tolerates as non-fatal."""
+    info = {
+        "file": "__gui_smoke_test_row__.mp3", "format": "MP3", "processed": False,
+        "apply_changes": True, "convert": False,
+        "current_title": "old title", "current_artist": "old artist",
+        "detected_title": "Real Title", "detected_artist": "Real Artist",
+        "title_override": None, "artist_override": None,
+        "found_cover_image": None, "already_applied": False,
+        "acoustid_identified": False, "original_order": 0,
+    }
+    app.scanned_plan = [info]
+    image_tk = app._create_thumbnail(info)
+    app.tk_images[info["file"]] = image_tk
+    app.table.insert(
+        "", "end", iid=info["file"], image=image_tk if image_tk else "",
+        values=app._build_row_values(info),
+    )
+
+    displayed_title = app._build_row_values(info)[1]
+    if "⚠" not in displayed_title:
+        raise AssertionError(f"expected the no-cover marker in the displayed title, got {displayed_title!r}")
+
+    raw_title = app._raw_field_value(info, "title")
+    if "⚠" in raw_title or "🎧" in raw_title:
+        raise AssertionError(f"review marker leaked into the editable value: {raw_title!r}")
+    if raw_title != "Real Title":
+        raise AssertionError(f"unexpected raw title value: {raw_title!r}")
+
+    # Simulate confirming an edit WITHOUT touching the marker (the exact
+    # scenario that used to bake it into title_override).
+    info["title_override"] = raw_title
+    app.table.item(info["file"], values=app._build_row_values(info))
+    displayed_after_edit = app._build_row_values(info)[1]
+    if "⚠" in displayed_after_edit:
+        raise AssertionError(f"marker still present after a clean edit: {displayed_after_edit!r}")
+
+    # Undo must bring the marker back (title_override reverts to None).
+    app._push_undo("edit", {
+        "info": info, "field": "title",
+        "old_override": None, "old_override_is_manual": False,
+        "old_fix_pending": info.get("fix_pending"),
+    })
+    info["title_override"] = "Something Else"
+    app.table.item(info["file"], values=app._build_row_values(info))
+    app._undo_last_action()
+    if info["title_override"] is not None:
+        raise AssertionError("undo did not restore title_override to None")
+    if "⚠" not in app._build_row_values(info)[1]:
+        raise AssertionError("marker did not come back after undo")
+
+    # Basic sort/filter smoke - must not raise on a table with real rows.
+    app._sort_by("title")
+    app._sort_by("title")
+    app._sort_by("title")
+    app.no_cover_filter_var.set(True)
+    app._apply_table_filter()
+    app.no_cover_filter_var.set(False)
+    app._apply_table_filter()
+
+
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -153,12 +225,20 @@ def main():
             f"Window failed to reach a real size: {app.window.winfo_width()}x{app.window.winfo_height()}"
         )
 
-    # Fatal: these two don't depend on OS-level screen capture at all (just
-    # process liveness and a Tk-internal geometry query), so they're the
-    # real regression signal. Screenshot capture below is best-effort on
-    # top of that - see its own warnings-only handling.
+    # Fatal: none of these depend on OS-level screen capture at all (just
+    # process liveness, Tk-internal geometry/table queries, and direct
+    # method calls), so they're the real regression signal. Screenshot
+    # capture below is best-effort on top of that - see its own
+    # warnings-only handling.
     failures = [direct_launch_failure] if direct_launch_failure else []
     warnings = []
+
+    try:
+        check_tagger_row_logic(app)
+        print("OK   tagger row edit/undo/sort/filter logic")
+    except Exception as error:
+        failures.append(f"tagger row logic: {error}")
+        print(f"FAIL tagger row logic: {error}")
 
     for theme in ("dark", "light"):
         app._apply_theme(theme)
