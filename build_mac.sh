@@ -83,6 +83,10 @@ pyinstaller --windowed --noconfirm \
   --add-data "assets/track-tidy_icon.png:assets" \
   --add-data "assets/fart.wav:assets" \
   --add-data "assets/success.wav:assets" \
+  --add-data "assets/extractor-before-dark.png:assets" \
+  --add-data "assets/extractor-before-light.png:assets" \
+  --add-data "assets/extractor-after-dark.png:assets" \
+  --add-data "assets/extractor-after-light.png:assets" \
   --collect-all tkinterdnd2 \
   --collect-all keyring \
   interface.py

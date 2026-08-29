@@ -26,8 +26,10 @@ pointer to the license name.
 
 Because mutagen is imported directly into the packaged application, this
 whole project is licensed under the GNU General Public License v2 or
-later - see the root [LICENSE](LICENSE) file. A matching source archive
-is attached to every GitHub release alongside the installer.
+later - see the root [LICENSE](LICENSE) file. GitHub automatically
+generates a matching "Source code (zip)"/"(tar.gz)" archive for every
+tagged release, from the repository contents at that tag - it isn't a
+file manually attached alongside the installer.
 
 ## Permissive
 

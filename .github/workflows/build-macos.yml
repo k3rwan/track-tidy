@@ -30,6 +30,13 @@ jobs:
           - os: macos-14
             arch: apple-silicon
     runs-on: ${{ matrix.os }}
+    # Hard backstop, same reasoning as gui-smoke-test.yml's own cap: this
+    # job is far more prone to hanging (brew install, a curl fetch, hdiutil
+    # create, gh release upload) than that one was even before it got its
+    # own timeout after a real incident - and this is the job used for
+    # actual release builds, so a silent hang here is the costliest one to
+    # leave uncapped.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 

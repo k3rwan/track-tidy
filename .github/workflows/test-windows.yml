@@ -1,0 +1,68 @@
+name: Windows test suite
+
+# Windows is this project's primary, first-shipped platform (the only one
+# with a real installer, a DPAPI legacy-credential migration path, and
+# DWM dark-titlebar code) but previously had ZERO automated coverage -
+# only macOS ever ran in CI (build-macos.yml, gui-smoke-test.yml). This
+# closes that gap for the unit test suite specifically.
+#
+# Deliberately does NOT attempt a full installer build here:
+# installer.iss/build_all.bat/build_exe.bat/Track-Tidy.spec are gitignored
+# (Kevin's own build-machine-only tooling - see .gitignore's comment), so
+# a fresh CI checkout can't produce the real installer at all. Running the
+# test suite is already most of what build-macos.yml's own "Run the test
+# suite" step catches for macOS, applied to the platform that never had it.
+on:
+  push:
+    branches: ["main", "wip"]
+  pull_request:
+
+jobs:
+  test:
+    # Same reasoning as gui-smoke-test.yml's identical guard: a commit
+    # pushed straight to main/wip that's also an open PR's head (e.g. the
+    # eventual wip -> main release PR) would otherwise run this workflow
+    # twice for the same commit - `push` above already covers this repo's
+    # own branches, so only actually run the pull_request trigger for a PR
+    # from an outside fork.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    permissions:
+      contents: read
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m venv venv
+          .\venv\Scripts\pip install -r requirements.txt
+
+      - name: Write placeholder credentials
+        # Same dummy, non-secret values as build-macos.yml's own
+        # non-release path - the test suite only checks that these are
+        # configured (e.g. send_scan_complete_notification), never
+        # dereferences them for a real network call (requests.post is
+        # mocked in every test that cares). Written via python -c instead
+        # of hand-rolled PowerShell JSON string escaping.
+        run: |
+          python -c "import json; json.dump({'soundcloud_client_id': 'ci-placeholder', 'soundcloud_client_secret': 'ci-placeholder', 'spotify_client_id': 'ci-placeholder', 'spotify_client_secret': 'ci-placeholder', 'discord_webhook_url': 'https://discord.com/api/webhooks/0/ci-placeholder', 'acoustid_api_key': 'ci-placeholder', 'discord_bot_token': 'ci-placeholder'}, open('default_credentials.json', 'w'))"
+
+      - name: Ensure ffmpeg is on PATH
+        # Some tests (WAV RIFF INFO tag writing) silently behave
+        # differently without a real ffmpeg on PATH - see build-macos.yml's
+        # identical concern for why this runs before the test suite.
+        # GitHub's windows-latest image ships ffmpeg already; the choco
+        # install is just a fallback in case that ever changes.
+        run: |
+          if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+            choco install ffmpeg -y
+          }
+          ffmpeg -version
+
+      - name: Run the test suite
+        run: .\venv\Scripts\python -m unittest discover -s tests
