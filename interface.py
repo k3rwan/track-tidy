@@ -326,7 +326,15 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
         def _recheck():
             if self.theme_var.get() != "auto":
                 return
-            self._apply_theme(self._resolve_theme_choice("auto"))
+            resolved = self._resolve_theme_choice("auto")
+            # _apply_theme does a full, non-cheap rebuild (every ttk style
+            # plus several hand-drawn PhotoImages, including re-reading two
+            # PNGs off disk) - skip it entirely on the far more common case
+            # where this tick's resolved theme is the same one already
+            # showing, rather than redoing all of that for nothing every
+            # AUTO_THEME_RECHECK_INTERVAL_MS.
+            if (self.theme_colors is DARK_COLORS) != (resolved == "dark"):
+                self._apply_theme(resolved)
             self._schedule_auto_theme_recheck()
 
         self.window.after(AUTO_THEME_RECHECK_INTERVAL_MS, _recheck)
@@ -1159,12 +1167,17 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
         last_checked = tagger.load_settings().get("last_source_health_check", 0)
         if time.time() - last_checked < 24 * 60 * 60:
             return
-        tagger.save_setting("last_source_health_check", time.time())
 
         def _run_check():
             broken_credentials = tagger.check_source_credentials(log=self._append_to_journal)
             is_online = tagger.check_internet_connection()
             blocked_sources = tagger.check_restrictive_firewall() if is_online else []
+            # Saved only AFTER the checks actually ran - same reasoning as
+            # _notify_new_install_on_startup just above: saving this
+            # beforehand would consume the 24h cooldown even if the app
+            # was offline at launch or this thread died mid-check, silently
+            # skipping a retry until the next day for no reason.
+            tagger.save_setting("last_source_health_check", time.time())
             self.message_queue.put(("source_health_checked", (broken_credentials, blocked_sources)))
 
         self._run_in_background(_run_check)

@@ -263,7 +263,19 @@ def load_id_txt_credentials(filename="id.txt"):
     Convenience file for quick offline testing: "id.txt" next to the app,
     with the Client ID on line 1 and the Client Secret on line 2.
     Takes priority over the normal saved credentials when present.
+
+    Never honored in a frozen/packaged build (PyInstaller sets sys.frozen) -
+    only a print() (invisible in a --windowed build, whose stdout/stderr are
+    None) used to mark that this happened, so a copy of id.txt/id_2.txt
+    accidentally left in the project root at build time would otherwise
+    silently ship every user the wrong SoundCloud credentials with nothing
+    in the UI to explain it. A real end user's install can never have
+    either file "legitimately" - they're gitignored dev-only tooling - so
+    this can only ever change behavior for an accidental packaging mistake,
+    never for a real user.
     """
+    if getattr(sys, "frozen", False):
+        return None, None
     path = os.path.join(app_base_dir(), filename)
     if not os.path.exists(path):
         return None, None
@@ -648,6 +660,36 @@ def _os_description():
         return sys.platform
 
 
+def _post_discord_payload(payload, files=None, timeout=10):
+    """Lowest-level shared POST to DISCORD_REPORT_WEBHOOK_URL - every
+    send_*_report/notification function below builds its own embed/
+    attachment(s) and calls this (usually via _post_discord_embed) instead
+    of each hand-rolling the same files-vs-plain-JSON POST. Returns the
+    requests.Response, or raises - callers decide what "failure" means for
+    them (send_track_report distinguishes an HTTP rejection from a network
+    error; everything else collapses both into a single bool)."""
+    if files:
+        return requests.post(
+            DISCORD_REPORT_WEBHOOK_URL, data={"payload_json": json.dumps(payload)}, files=files, timeout=timeout,
+        )
+    return requests.post(DISCORD_REPORT_WEBHOOK_URL, json=payload, timeout=timeout)
+
+
+def _post_discord_embed(embed, files=None, timeout=10):
+    """Shared by every send_*_report/notification function except
+    send_track_report (which needs the finer-grained http/network error
+    distinction _post_discord_payload's caller can make for itself).
+    Returns True on success, False on any failure - never raises, since a
+    failed report must never disrupt whatever the caller was doing."""
+    try:
+        response = _post_discord_payload(
+            {"embeds": [embed], "allowed_mentions": {"parse": []}}, files=files, timeout=timeout,
+        )
+        return response.status_code in (200, 204)
+    except Exception:
+        return False
+
+
 def send_track_report(info, reporter_name=None, timeout=10):
     """
     Posts this track's info to a Discord webhook, so the developer gets a
@@ -700,12 +742,7 @@ def send_track_report(info, reporter_name=None, timeout=10):
     payload = {"embeds": [embed], "allowed_mentions": {"parse": []}}
 
     try:
-        if files:
-            response = requests.post(
-                DISCORD_REPORT_WEBHOOK_URL, data={"payload_json": json.dumps(payload)}, files=files, timeout=timeout
-            )
-        else:
-            response = requests.post(DISCORD_REPORT_WEBHOOK_URL, json=payload, timeout=timeout)
+        response = _post_discord_payload(payload, files=files, timeout=timeout)
         if response.status_code in (200, 204):
             return True, None
         return False, "http_error"
@@ -725,13 +762,11 @@ def send_track_report(info, reporter_name=None, timeout=10):
 # the channel the way it used to before that request.
 DISCORD_NOTIFICATION_EXCLUDED_USERS = set() if getattr(sys, "frozen", False) else {"kevin"}
 
-# Opt-out flag for the automatic pings above - no Settings UI currently
-# exposes it (removed - see interface.py history), so this stays True in
-# practice, but interface.py's use_telemetry_var/settings.json plumbing
-# is still there if a toggle gets reintroduced. Same "doesn't apply to
-# send_track_report()" carve-out as DISCORD_NOTIFICATION_EXCLUDED_USERS -
-# that one's an explicit, single-purpose action the user themselves
-# triggered, not passive telemetry.
+# Opt-out flag for the automatic pings above - toggled by Settings' "Send
+# anonymous usage telemetry" checkbox (interface.py's use_telemetry_var).
+# Same "doesn't apply to send_track_report()" carve-out as
+# DISCORD_NOTIFICATION_EXCLUDED_USERS - that one's an explicit, single-
+# purpose action the user themselves triggered, not passive telemetry.
 SEND_USAGE_TELEMETRY = True
 
 
@@ -786,16 +821,8 @@ def send_no_cover_report(no_cover_infos, total, reporter_name=None, timeout=10):
             {"name": "App version", "value": APP_VERSION, "inline": True},
         ],
     }
-    payload = {"embeds": [embed], "allowed_mentions": {"parse": []}}
     files = {"files[0]": ("no_cover_tracks.txt", content, "text/plain")}
-
-    try:
-        response = requests.post(
-            DISCORD_REPORT_WEBHOOK_URL, data={"payload_json": json.dumps(payload)}, files=files, timeout=timeout
-        )
-        return response.status_code in (200, 204)
-    except Exception:
-        return False
+    return _post_discord_embed(embed, files=files, timeout=timeout)
 
 
 def send_new_install_notification(reporter_name=None, previous_version=None, timeout=10):
@@ -839,15 +866,7 @@ def send_new_install_notification(reporter_name=None, previous_version=None, tim
         "color": 0x2ECC71,
         "fields": fields,
     }
-    try:
-        response = requests.post(
-            DISCORD_REPORT_WEBHOOK_URL,
-            json={"embeds": [embed], "allowed_mentions": {"parse": []}},
-            timeout=timeout,
-        )
-        return response.status_code in (200, 204)
-    except Exception:
-        return False
+    return _post_discord_embed(embed, timeout=timeout)
 
 
 def send_scan_complete_notification(
@@ -902,15 +921,7 @@ def send_scan_complete_notification(
             {"name": "App version", "value": APP_VERSION, "inline": True},
         ],
     }
-    try:
-        response = requests.post(
-            DISCORD_REPORT_WEBHOOK_URL,
-            json={"embeds": [embed], "allowed_mentions": {"parse": []}},
-            timeout=timeout,
-        )
-        return response.status_code in (200, 204)
-    except Exception:
-        return False
+    return _post_discord_embed(embed, timeout=timeout)
 
 
 def send_rate_limit_report(source, reporter_name=None, timeout=10):
@@ -937,15 +948,7 @@ def send_rate_limit_report(source, reporter_name=None, timeout=10):
             {"name": "App version", "value": APP_VERSION, "inline": True},
         ],
     }
-    try:
-        response = requests.post(
-            DISCORD_REPORT_WEBHOOK_URL,
-            json={"embeds": [embed], "allowed_mentions": {"parse": []}},
-            timeout=timeout,
-        )
-        return response.status_code in (200, 204)
-    except Exception:
-        return False
+    return _post_discord_embed(embed, timeout=timeout)
 
 
 def send_extraction_report(
@@ -982,15 +985,7 @@ def send_extraction_report(
         fields.append({"name": "Error", "value": str(error)[:1000], "inline": False})
     fields.append({"name": "App version", "value": APP_VERSION, "inline": True})
     embed = {"title": title, "color": color, "fields": fields}
-    try:
-        response = requests.post(
-            DISCORD_REPORT_WEBHOOK_URL,
-            json={"embeds": [embed], "allowed_mentions": {"parse": []}},
-            timeout=timeout,
-        )
-        return response.status_code in (200, 204)
-    except Exception:
-        return False
+    return _post_discord_embed(embed, timeout=timeout)
 
 
 def send_quality_scan_report(
@@ -1029,15 +1024,7 @@ def send_quality_scan_report(
         fields.append({"name": "Error", "value": str(error)[:1000], "inline": False})
     fields.append({"name": "App version", "value": APP_VERSION, "inline": True})
     embed = {"title": title, "color": color, "fields": fields}
-    try:
-        response = requests.post(
-            DISCORD_REPORT_WEBHOOK_URL,
-            json={"embeds": [embed], "allowed_mentions": {"parse": []}},
-            timeout=timeout,
-        )
-        return response.status_code in (200, 204)
-    except Exception:
-        return False
+    return _post_discord_embed(embed, timeout=timeout)
 
 
 def send_crash_report(reporter_name=None, traceback_text="", context="unknown", timeout=10):
@@ -1069,15 +1056,25 @@ def send_crash_report(reporter_name=None, traceback_text="", context="unknown", 
             {"name": "App version", "value": APP_VERSION, "inline": True},
         ],
     }
-    payload = {"embeds": [embed], "allowed_mentions": {"parse": []}}
-    files = {"files[0]": ("traceback.txt", traceback_text.encode("utf-8"), "text/plain")}
-    try:
-        response = requests.post(
-            DISCORD_REPORT_WEBHOOK_URL, data={"payload_json": json.dumps(payload)}, files=files, timeout=timeout,
-        )
-        return response.status_code in (200, 204)
-    except Exception:
-        return False
+    files = {"files[0]": (
+        "traceback.txt", _scrub_home_directory(traceback_text).encode("utf-8"), "text/plain",
+    )}
+    return _post_discord_embed(embed, files=files, timeout=timeout)
+
+
+def _scrub_home_directory(text):
+    """Replaces every occurrence of the current user's home directory
+    (e.g. "C:\\Users\\kevin") with "~" - a Python traceback routinely
+    includes full local file paths, which on Windows embed the OS
+    username. reporter_name is already sent as its own structured field
+    (see send_crash_report) specifically so this doesn't need to be
+    inferred from paths; scrubbing it out of the raw traceback text avoids
+    exposing it a second time, in a form that also reveals the local
+    folder layout around it."""
+    home = os.path.expanduser("~")
+    if not home or home == "~":
+        return text
+    return re.sub(re.escape(home), "~", text, flags=re.IGNORECASE)
 
 
 # --- Saved UI settings (theme choice...) ---
@@ -1250,13 +1247,25 @@ def _find_file_by_name(folder, basename):
     lightweight auto-locate attempt for restore_history_entry when the file
     isn't where it was originally processed (e.g. moved to a subfolder
     since). Bounded to the entry's own logged folder tree, not a full-drive
-    search. Returns the first match's full path, or None."""
+    search.
+
+    Returns (path, is_ambiguous). path is the first match found, or None
+    if there isn't one. is_ambiguous is True if a SECOND file with the
+    same name was also found elsewhere in the tree - there's no stored
+    content hash/size to disambiguate them, so the caller should refuse to
+    guess (silently restoring tags/a cover onto whichever one os.walk
+    happened to visit first) rather than treat `path` as reliable."""
     if not folder or not os.path.isdir(folder):
-        return None
+        return None, False
+    matches = []
     for root, _dirs, files in os.walk(folder):
         if basename in files:
-            return os.path.join(root, basename)
-    return None
+            matches.append(os.path.join(root, basename))
+            if len(matches) > 1:
+                break  # already ambiguous - no need to keep walking
+    if not matches:
+        return None, False
+    return matches[0], len(matches) > 1
 
 
 def restore_history_entry(entry, log=safe_print, override_path=None):
@@ -1301,7 +1310,12 @@ def restore_history_entry(entry, log=safe_print, override_path=None):
         full_path = os.path.join(folder, current_relative)
 
         if not os.path.exists(full_path):
-            found = _find_file_by_name(folder, os.path.basename(current_relative))
+            found, is_ambiguous = _find_file_by_name(folder, os.path.basename(current_relative))
+            if is_ambiguous:
+                raise FileNotFoundError(
+                    f"Multiple files named '{os.path.basename(current_relative)}' found under "
+                    f"'{folder}' - can't tell which one is the right one. Locate it manually instead."
+                )
             if found:
                 log(f"  Not at its logged location - found it at: '{found}'")
                 full_path = found
@@ -1642,9 +1656,29 @@ def clean_title(text):
     return text.strip()
 
 
+# Legacy MS-DOS device names Windows still treats as reserved for a
+# filename's base name (before the extension), regardless of case - e.g.
+# "con.mp3" refers to the console device, not a real file, and can't be
+# created via a normal file API.
+_WINDOWS_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
+
 def sanitize_filename(name):
-    """Replaces characters forbidden in Windows filenames with '_'."""
-    return re.sub(r'[\\/:*?"<>|]', "_", name)
+    """Replaces characters forbidden in Windows filenames with '_', and
+    works around two things Windows does silently rather than raising, so
+    a file processed here doesn't quietly end up named something other
+    than what this app believes it just wrote: trailing dots/spaces are
+    stripped from a filename at the OS level (e.g. a title ending in an
+    abbreviation like "Pt. III."), and a handful of legacy device names
+    (CON, PRN, NUL, COM1...) are reserved regardless of case or extension."""
+    name = re.sub(r'[\\/:*?"<>|]', "_", name).rstrip(". ")
+    if name.upper() in _WINDOWS_RESERVED_NAMES:
+        name += "_"
+    return name
 
 
 def build_display_name(artist, title):
@@ -2144,6 +2178,22 @@ def resolve_artist_title(file_name, current_artist, current_title):
 # 3. READING EXISTING TAGS
 # ============================================================================
 
+def _decode_riff_info_text(raw_bytes):
+    """RIFF INFO text carries no charset marker of its own (unlike ID3v2,
+    which encodes its own charset byte and is decoded correctly by
+    mutagen already) - many older Windows tools wrote it in the system
+    ANSI codepage (cp1252), not UTF-8. Blindly decoding as UTF-8 with
+    errors="ignore" would silently mangle a real accented artist/title
+    (e.g. "Cafe Del Mar") from such a file into wrong-but-not-obviously-
+    wrong data instead. Any modern writer (including this app's own tag
+    writer) uses real UTF-8, which this still decodes correctly - cp1252
+    is only ever tried as a fallback once strict UTF-8 decoding fails."""
+    try:
+        return raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw_bytes.decode("cp1252", errors="replace")
+
+
 def read_wav_riff_info_tags(file_path):
     """
     Reads Title/Artist from a WAV file's RIFF INFO chunk (INAM/IART) - the
@@ -2177,7 +2227,7 @@ def read_wav_riff_info_tags(file_path):
                             sub_data = f.read(sub_size)
                             if sub_size % 2 == 1:
                                 f.read(1)  # padding byte
-                            text = sub_data.rstrip(b"\x00").decode("utf-8", errors="ignore").strip()
+                            text = _decode_riff_info_text(sub_data.rstrip(b"\x00")).strip()
                             if sub_id == b"INAM":
                                 title = text or None
                             elif sub_id == b"IART":
@@ -5387,6 +5437,30 @@ def fix_title_artist(info, artist, title):
 # 13. PROCESSING (APPLY)
 # ============================================================================
 
+def _describe_processing_error(error, full_path):
+    """Turns a raw exception from processing one file into a clearer
+    message where a common cause can be pinned down. Windows' legacy
+    ~260-character MAX_PATH limit is the one case worth calling out
+    specifically: a rename/tag-write that fails even though the file's
+    parent folder plainly exists is the classic symptom - easy to mistake
+    for a genuinely missing/corrupt file otherwise - and a real risk here
+    specifically, since this app lengthens filenames (qualifier text like
+    "(Someone's Bootleg) (Extended Mix)") and DJs commonly keep deep
+    genre/label subfolder trees. Falls back to str(error) unchanged for
+    anything else (there's no general fix for this within the app - only a
+    clearer explanation of what's actually going wrong)."""
+    if (
+        sys.platform == "win32" and full_path and isinstance(error, OSError)
+        and len(full_path) > 259 and os.path.isdir(os.path.dirname(full_path))
+    ):
+        return (
+            f"{error} - this path is {len(full_path)} characters long, over Windows' classic "
+            "260-character limit. Try a shorter folder name, or enable Windows' long path support "
+            "(Group Policy/registry: 'Enable Win32 long paths')."
+        )
+    return str(error)
+
+
 def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None, should_cancel=None):
     """
     Processes a list of already-scanned files (see scan_files()).
@@ -5415,6 +5489,7 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
         identifier = file_name  # stable key to find the row again in the UI
         log(f"File: {file_name}")
 
+        full_path = None
         try:
             full_path = os.path.join(MUSIC_FOLDER, file_name)
             converted_this_file = False
@@ -5530,10 +5605,11 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
             # the whole batch - every file queued after it would otherwise
             # silently never get tagged/renamed at all, with nothing in the
             # log to explain why.
-            log(f"  Error processing '{file_name}': {error}\n")
+            reason = _describe_processing_error(error, full_path)
+            log(f"  Error processing '{file_name}': {reason}\n")
             info["processed"] = True
             if on_file_processed:
-                on_file_processed(identifier, False, str(error))
+                on_file_processed(identifier, False, reason)
 
         if on_progress:
             on_progress(index, total)

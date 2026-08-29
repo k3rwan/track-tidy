@@ -92,6 +92,13 @@ SCAN_REVEAL_INTERVAL_MS = 1000
 # for now (see _apply_track_count_limit).
 MAX_TRACKS_PER_SCAN = 100
 
+# Caps how many Ctrl+Z steps back (row removal, cell edit) a session keeps -
+# see _push_undo. Unbounded growth here is only ever a slow memory leak
+# over a very long session (nobody undoes more than a handful of steps
+# back in practice), not a correctness issue, so this is generous rather
+# than tight.
+MAX_UNDO_STACK_SIZE = 100
+
 # Above this fraction of no-cover-match tracks in a scanned folder,
 # automatically send the whole batch to Discord - see _finalize_scan /
 # _notify_no_cover_report.

@@ -22,6 +22,7 @@ from ui_common import (
     ALREADY_APPLIED_MARK,
     SCAN_REVEAL_INTERVAL_MS,
     MAX_TRACKS_PER_SCAN,
+    MAX_UNDO_STACK_SIZE,
     NO_COVER_REPORT_THRESHOLD,
     THUMBNAIL_SIZE,
     TABLE_ROW_HEIGHT,
@@ -1697,6 +1698,18 @@ class TaggerTabMixin:
             values=self._build_row_values(info),
         )
 
+    def _acoustid_marker(self, info):
+        """"🎧" for a row AcoustID identified from the audio itself (not the
+        filename/tags) that the user hasn't reviewed yet - a real, if
+        uncommon, way for it to be confidently (high score) wrong: two
+        different tracks/remixes in similar genres (e.g. house/techno) can
+        fingerprint close enough to collide. Flagged so the user knows to
+        double check it before trusting Apply - cleared once they've
+        actually reviewed it (title_override no longer None, whether they
+        kept it or corrected it). Shared by the main table (_build_row_values)
+        and the track info dialog (_show_track_info)."""
+        return " 🎧" if info.get("acoustid_identified") and info["title_override"] is None else ""
+
     def _build_row_values(self, info):
         """Builds the tuple of displayed values for a row (image handled separately)."""
         # AIFF is treated like MP3 here - already taggable and lossless, it
@@ -1717,15 +1730,7 @@ class TaggerTabMixin:
         # with software that doesn't read artwork from WAV (e.g. Rekordbox).
         target_format = (tagger._resolve_conversion_target(info["file"]) or "mp3").upper()
 
-        # AcoustID identifies a track from the audio itself, not the
-        # filename/tags - a real, if uncommon, way for it to be confidently
-        # (high score) wrong: two different tracks/remixes in similar
-        # genres (e.g. house/techno) can fingerprint close enough to
-        # collide. Flagged here so the user knows to double check it
-        # before trusting Apply - cleared once they've actually reviewed
-        # it (title_override no longer None, whether they kept it or
-        # corrected it).
-        acoustid_marker = " 🎧" if info.get("acoustid_identified") and info["title_override"] is None else ""
+        acoustid_marker = self._acoustid_marker(info)
         # Same "no cover match" criterion as the post-scan count/filter (see
         # _run_scan's no_cover_infos / _apply_table_filter) - a genuine
         # search miss, not a file whose search was skipped because it's
@@ -2685,7 +2690,7 @@ class TaggerTabMixin:
         removed = [
             (index, info) for index, info in enumerate(self.scanned_plan) if info["file"] in selected_set
         ]
-        self._undo_stack.append(("removal", removed))
+        self._push_undo("removal", removed)
         self.scanned_plan = [info for info in self.scanned_plan if info["file"] not in selected_set]
 
         def _after_fade():
@@ -2704,6 +2709,16 @@ class TaggerTabMixin:
             self._undo_removal(payload)
         else:
             self._undo_edit(payload)
+
+    def _push_undo(self, action_type, payload):
+        """Records one Ctrl+Z step (a row removal or a cell edit), capping
+        how far back a session can accumulate - nobody undoes more than a
+        handful of steps back in practice, so this is just a bound on
+        otherwise-unlimited memory growth over a long session, not a
+        real usage limit."""
+        self._undo_stack.append((action_type, payload))
+        if len(self._undo_stack) > MAX_UNDO_STACK_SIZE:
+            del self._undo_stack[: len(self._undo_stack) - MAX_UNDO_STACK_SIZE]
 
     def _undo_removal(self, removed):
         """Brings back removed row(s), each at its original position in the list."""
@@ -2856,12 +2871,7 @@ class TaggerTabMixin:
 
     def _open_file_location(self, info):
         """Opens Windows Explorer with the corresponding file selected."""
-        relative_path = info.get("final_path") or info["file"]
-        base_folder = tagger.MUSIC_FOLDER
-        if not os.path.isabs(base_folder):
-            base_folder = os.path.join(tagger.app_base_dir(), base_folder)
-
-        full_path = os.path.abspath(os.path.join(base_folder, relative_path))
+        full_path = self._resolve_full_path(info)
 
         if not os.path.exists(full_path):
             self._append_to_journal(f"Can't open location, file not found: '{full_path}'")
@@ -2903,8 +2913,7 @@ class TaggerTabMixin:
         suggested_artist = info["artist_override"] if info.get("artist_override") is not None else info.get("detected_artist")
         suggested_title = info["title_override"] if info.get("title_override") is not None else info.get("detected_title")
         if suggested_title:
-            acoustid_marker = " 🎧" if info.get("acoustid_identified") and info["title_override"] is None else ""
-            suggested_display = tagger.build_display_name(suggested_artist, suggested_title) + acoustid_marker
+            suggested_display = tagger.build_display_name(suggested_artist, suggested_title) + self._acoustid_marker(info)
         else:
             suggested_display = "(none)"
 
@@ -3008,12 +3017,12 @@ class TaggerTabMixin:
             new_value = edit_entry.get().strip()
             new_override = new_value if new_value else None
             if new_override != info.get(f"{field}_override"):
-                self._undo_stack.append(("edit", {
+                self._push_undo("edit", {
                     "info": info, "field": field,
                     "old_override": info.get(f"{field}_override"),
                     "old_override_is_manual": info.get(f"{field}_override_is_manual"),
                     "old_fix_pending": info.get("fix_pending"),
-                }))
+                })
             info[f"{field}_override"] = new_override
             info[f"{field}_override_is_manual"] = bool(new_value)
             edit_entry.destroy()
