@@ -122,12 +122,12 @@ class SettingsTabMixin:
         # reassigned on every theme switch.
         self.dev_credit_label = ttk.Label(
             credit_frame, text="Developed by ", foreground=MUTED_TEXT_COLOR, font=("TkDefaultFont", 8, "bold"),
-            padding=0,
+            style="Credit.TLabel",
         )
         self.dev_credit_label.pack(side="left")
         self.kevz_credit_label = ttk.Label(
             credit_frame, text="KEVZ", foreground=MUTED_TEXT_COLOR, font=("TkDefaultFont", 8, "bold"), cursor="hand2",
-            padding=0,
+            style="Credit.TLabel",
         )
         self.kevz_credit_label.pack(side="left")
         self.kevz_credit_label.bind("<Button-1>", self._open_kevz_instagram)

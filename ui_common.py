@@ -171,12 +171,15 @@ DARK_COLORS = {
     "muted_fg": DARK_MUTED_TEXT_COLOR,
 }
 
-# Off-white ("blanc casse") - mirrors DARK_COLORS key-for-key so
-# _apply_theme can treat both palettes identically. entry_bg (panels) is a
-# touch brighter than bg (the plain window) the same way dark's entry_bg is
-# a touch brighter than its bg, just at the opposite end of the scale.
+# Cool neutral off-white - mirrors DARK_COLORS key-for-key so _apply_theme
+# can treat both palettes identically. entry_bg (panels) is a touch
+# brighter than bg (the plain window) the same way dark's entry_bg is a
+# touch brighter than its bg, just at the opposite end of the scale.
+# A first version of this used a warm cream/beige ("blanc casse", #F2EFE8
+# etc.) - Kevin found it looked yellowish, so this is a grey-leaning
+# neutral instead (no red/yellow channel bias).
 LIGHT_COLORS = {
-    "bg": "#F2EFE8",
+    "bg": "#F0F1F3",
     "fg": "#1c1c1c",
     "entry_bg": "#FFFFFF",
     "entry_fg": "#1c1c1c",
@@ -184,18 +187,18 @@ LIGHT_COLORS = {
     "select_fg": "#1a1a1a",
     "tree_bg": "#FFFFFF",
     "tree_fg": "#1c1c1c",
-    "tree_odd_row": "#F2EFE8",
-    "tree_heading_bg": "#E8E3D8",
+    "tree_odd_row": "#F0F1F3",
+    "tree_heading_bg": "#E3E5E9",
     "listbox_bg": "#FFFFFF",
     "listbox_fg": "#1c1c1c",
     "journal_bg": "#FFFFFF",
     "journal_fg": "#333333",
-    "progress_track": "#E8E3D8",
+    "progress_track": "#E3E5E9",
     "progress_fill": "#4a90d9",
     "progress_text": "#1a1a1a",
     "menu_bg": "#FFFFFF",
     "menu_fg": "#1c1c1c",
-    "border": "#C9C2B2",
+    "border": "#CDD1D6",
     "muted_fg": MUTED_TEXT_COLOR,
 }
 

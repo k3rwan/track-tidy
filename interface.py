@@ -890,6 +890,15 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
         style.configure(".", background=colors["bg"], foreground=colors["fg"])
         style.configure("TFrame", background=colors["bg"])
         style.configure("TLabel", background=colors["bg"], foreground=colors["fg"])
+        # Plain TLabel bakes in ~2px of padding on each side (from clam's
+        # Label.border/Label.padding wrapper elements) that the widget's own
+        # "padding" option can't override - invisible for a single label,
+        # but it doubled up as a visible extra gap ("Developed by " | "KEVZ")
+        # when two labels sit side by side to make only the second one
+        # clickable. Stripping the layout down to the bare label element
+        # removes that baked-in padding entirely.
+        style.layout("Credit.TLabel", [("Label.label", {"sticky": "nswe"})])
+        style.configure("Credit.TLabel", background=colors["bg"])
         # No border at all - panels are set apart from the plain window
         # background by color contrast (entry_bg vs bg) rather than a
         # drawn line, per the "no old-Windows bevels" design.
