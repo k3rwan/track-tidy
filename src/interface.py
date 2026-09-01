@@ -296,14 +296,12 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
         self.auto_convert_var = tk.BooleanVar(value=saved_settings.get("auto_convert_mp3", False))
         self.auto_convert_wav_aiff_var = tk.BooleanVar(value=saved_settings.get("auto_convert_wav_to_aiff", True))
         self.fix_track_file_name_var = tk.BooleanVar(value=saved_settings.get("fix_track_file_name", True))
-        self.use_spotify_var = tk.BooleanVar(value=saved_settings.get("use_spotify", False))
         self.show_log_var = tk.BooleanVar(value=saved_settings.get("show_log_section", False))
         self.use_telemetry_var = tk.BooleanVar(value=saved_settings.get("send_usage_telemetry", True))
         self._tagger_resize_pending = False
         tagger.AUTO_CONVERT_MP3 = self.auto_convert_var.get()
         tagger.AUTO_CONVERT_WAV_TO_AIFF = self.auto_convert_wav_aiff_var.get()
         tagger.FIX_TRACK_FILE_NAME = self.fix_track_file_name_var.get()
-        tagger.USE_SPOTIFY = self.use_spotify_var.get()
         tagger.SEND_USAGE_TELEMETRY = self.use_telemetry_var.get()
 
         self._build_interface()
@@ -314,6 +312,8 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
         if self.folder_variable.get():
             self._sync_all_folder_pickers(self.folder_variable.get())
         self._setup_drag_and_drop()
+        self._setup_extractor_drag_and_drop()
+        self._setup_quality_drag_and_drop()
         self._adjust_window_height()
         self._apply_theme(self._resolve_theme_choice(self.theme_var.get()))
         # Warm-up pass: the very first paint (before the window is ever
@@ -1220,14 +1220,12 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
 
     def _check_source_health_on_startup(self):
         """Runs two background checks at most once every 24h (not every
-        single launch - these force a fresh SoundCloud/Spotify token
-        request each time against a real, limited rate limit, so re-
-        running this on every relaunch was pure waste on top of normal
-        scanning usage; skipped entirely for Spotify while it's turned
-        off, see tagger.check_source_credentials): whether the shared
-        SoundCloud/Spotify/AcoustID credentials still authenticate, and
-        whether iTunes/Spotify's own domains are reachable at all (a
-        restrictive firewall/network filter blocking just those, while
+        single launch - these force a fresh SoundCloud token request each
+        time against a real, limited rate limit, so re-running this on
+        every relaunch was pure waste on top of normal scanning usage):
+        whether the shared SoundCloud/AcoustID credentials still
+        authenticate, and whether iTunes' own domain is reachable at all
+        (a restrictive firewall/network filter blocking just that, while
         general internet access still works, would otherwise look
         identical to "nothing found" with no explanation)."""
         last_checked = tagger.load_settings().get("last_source_health_check", 0)
@@ -1361,6 +1359,8 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
         quality_tab = ttk.Frame(self.notebook)
         soundcloud_tab = ttk.Frame(self.notebook)
         self.tagger_tab = tagger_tab
+        self.extractor_tab = extractor_tab
+        self.quality_tab = quality_tab
         self.notebook.add(tagger_tab, text="Tagger")
         self.notebook.add(extractor_tab, text="Extractor")
         self.notebook.add(quality_tab, text="Quality")
@@ -1646,21 +1646,6 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
                         )
                         self._notify_rate_limited("iTunes")
 
-                elif message_type == "spotify_rate_limited":
-                    # Logged only, no popup (unlike the other 3 sources
-                    # below) - per request, this one was showing up too
-                    # often to be worth interrupting the user for; Spotify
-                    # is the last-resort source anyway (see USE_SPOTIFY),
-                    # so the scan just keeps going on iTunes/SoundCloud
-                    # without it.
-                    if not self.spotify_rate_limit_warned:
-                        self.spotify_rate_limit_warned = True
-                        self._append_to_journal(
-                            "Spotify's request limit has been reached - no cover will be fetched from it "
-                            "for the rest of this scan."
-                        )
-                        self._notify_rate_limited("Spotify")
-
                 elif message_type == "acoustid_rate_limited":
                     if not self.acoustid_rate_limit_warned:
                         self.acoustid_rate_limit_warned = True
@@ -1724,7 +1709,7 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
                     self._update_progress_bar(self.extract_progress_canvas, fraction, f"{round(fraction * 100)} %")
 
                 elif message_type == "extract_done":
-                    folder, moved_count, removed_count, cancelled, error = content
+                    folder, moved_count, removed_count, failed_count, cancelled, error = content
                     self.extract_browse_button.configure(state="normal")
                     self.extract_button.configure(text="Extract", command=self._start_extraction, state="normal")
                     self.extract_reset_button.configure(state="normal")
@@ -1752,6 +1737,23 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
                             open_with_default_app(folder)
                         except Exception:
                             pass
+
+                    # A file the OS refused to move (permission error, open
+                    # in another program...) used to only ever show up in
+                    # the log, which is hidden by default - easy to miss and
+                    # looks like the file was silently ignored. Same
+                    # "surface it, don't just log it" fix as Tagger's own
+                    # _show_processing_failures_dialog, shown regardless of
+                    # error/cancelled state since some files can still fail
+                    # even on an otherwise-successful or cancelled run.
+                    if failed_count:
+                        unit = "file" if failed_count == 1 else "files"
+                        messagebox.showwarning(
+                            "Some files could not be moved",
+                            f"{failed_count} {unit} could not be moved - likely in use by another "
+                            "program, or a permissions issue. See the log for details.",
+                            parent=self.window,
+                        )
 
                 elif message_type == "quality_scan_progress":
                     # Only the total is kept - the bar itself tracks how

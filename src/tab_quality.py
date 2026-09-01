@@ -208,7 +208,79 @@ class QualityTabMixin:
         if folder:
             self._sync_all_folder_pickers(folder)
 
-    def _start_quality_scan(self):
+    def _setup_quality_drag_and_drop(self):
+        """Same drag-and-drop as the Tagger tab (see _setup_drag_and_drop)
+        for this one - scoped to the Quality tab's own widgets so a drop
+        landing here (the tab actually visible under the cursor) analyzes
+        the dropped folder in Quality instead of falling through to
+        Tagger's own window/notebook-level registration. Silently does
+        nothing if tkinterdnd2 isn't installed."""
+        try:
+            from tkinterdnd2 import DND_FILES
+        except ImportError:
+            return
+
+        for widget in (
+            self.quality_tab, self.quality_table_frame, self.quality_table,
+            *self.quality_empty_state_widgets,
+        ):
+            try:
+                widget.drop_target_register(DND_FILES)
+                widget.dnd_bind("<<Drop>>", self._on_quality_files_dropped)
+            except Exception:
+                pass  # not fatal - the app works fine without drag-and-drop
+
+    def _on_quality_files_dropped(self, event):
+        # A Quality analysis already in progress locks every other tab
+        # (see _set_tabs_locked), but this tab itself stays reachable and
+        # its own drop targets stay registered - without this check, a
+        # drop here mid-analysis could restart it against a different
+        # folder while the background thread is still using the old one.
+        if str(self.quality_browse_button.cget("state")) == "disabled":
+            self._append_to_journal("Ignored dropped file(s) - wait for the current analysis to finish first.")
+            return
+
+        raw_paths = self.window.tk.splitlist(event.data)
+        if not raw_paths:
+            return
+
+        paths = [os.path.normpath(p.strip("{}")) for p in raw_paths]
+
+        if os.path.isdir(paths[0]):
+            self._sync_all_folder_pickers(paths[0])
+            self._start_quality_scan()
+            return
+
+        # One or more individual files dropped: analyze just those, not
+        # everything else sitting in the same folder - same behavior as
+        # Tagger's own _start_multi_file_scan (real report: an earlier
+        # version of this always fell back to analyzing the whole parent
+        # folder, unlike Tagger's equivalent drop).
+        valid_paths = [
+            path for path in paths
+            if os.path.isfile(path) and path.lower().endswith(tagger.SUPPORTED_EXTENSIONS)
+        ]
+        if not valid_paths:
+            return
+
+        folder = os.path.dirname(valid_paths[0])
+        same_folder_paths = []
+        for path in valid_paths:
+            if os.path.dirname(path) != folder:
+                self._append_to_journal(
+                    f"Ignored '{os.path.basename(path)}' - dropped from a different folder than the rest."
+                )
+                continue
+            same_folder_paths.append(path)
+
+        self._sync_all_folder_pickers(folder)
+        self._start_quality_scan(explicit_files=same_folder_paths)
+
+    def _start_quality_scan(self, explicit_files=None):
+        """explicit_files, if given, analyzes only those specific files
+        (mirrors Tagger's own explicit_files scan) instead of every
+        supported file in the folder - used by _on_quality_files_dropped
+        when the user drops individual file(s) rather than a folder."""
         folder = self.quality_folder_var.get().strip()
         if not folder or not os.path.isdir(folder):
             messagebox.showwarning("Missing folder", "Please choose a valid folder first.", parent=self.window)
@@ -237,16 +309,32 @@ class QualityTabMixin:
         self._set_tabs_locked(True)
 
         if not self.quality_progress_canvas.winfo_ismapped():
-            self.quality_progress_canvas.pack(fill="x", padx=10, pady=(0, 5), before=self.quality_table_frame)
+            # Bottom of the tab, below the table - same placement as Tagger's
+            # own progress_canvas (in launch_frame) for consistency across
+            # tabs. The 22px bottom margin (not the usual 5-10px) matches
+            # Tagger's own launch_frame - the "vX.Y" version label is
+            # place()'d at the window's bottom-right corner, independent of
+            # any tab's layout, and would otherwise overlap this full-width
+            # bar's right edge.
+            self.quality_progress_canvas.pack(fill="x", padx=10, pady=(0, 22))
+            # Was missing here even before this bottom-placement change -
+            # without it the window never grows to make room, so the bar
+            # silently had nowhere to render (quality_table_frame's Treeview
+            # has a real minimum height, unlike a plain Frame, so pack can't
+            # just shrink it to free up space on its own). _reset_quality
+            # already calls this on the way back down after pack_forget();
+            # this is that call's missing counterpart on the way up. Same
+            # pattern as Tagger's own _show_scan_progress_bar.
+            self._adjust_window_height()
         self._update_progress_bar(self.quality_progress_canvas, 0, "0 %")
 
-        self._run_in_background(self._run_quality_scan, folder)
+        self._run_in_background(self._run_quality_scan, folder, explicit_files)
 
     def _request_quality_cancel(self):
         self.quality_cancel_requested.set()
         self.quality_scan_button.configure(state="disabled")
 
-    def _run_quality_scan(self, folder):
+    def _run_quality_scan(self, folder, explicit_files=None):
         try:
             reporter_name = getpass.getuser()
         except Exception:
@@ -264,7 +352,7 @@ class QualityTabMixin:
         try:
             results = tagger.analyze_folder_quality(
                 folder, log=self._append_to_journal, on_progress=on_progress, on_result=on_result,
-                should_cancel=self.quality_cancel_requested.is_set,
+                should_cancel=self.quality_cancel_requested.is_set, only_files=explicit_files,
             )
             cancelled = self.quality_cancel_requested.is_set()
             tagger.send_quality_scan_report(
@@ -332,6 +420,17 @@ class QualityTabMixin:
         self.quality_summary_red_var.set(f"● {self._quality_scan_counts[tagger.QUALITY_RED]}")
         if not self.quality_summary_frame.winfo_ismapped():
             self.quality_summary_frame.pack(fill="x", padx=10, pady=(0, 5), before=self.quality_table_frame)
+            # Same missing-call bug as the progress bar's own pack() had
+            # (see _start_quality_scan) - without this the window never
+            # grows to make room, and since this strip and the progress
+            # bar can both appear during the same real scan (as soon as
+            # the first result with a verdict comes in), they end up
+            # competing for space in a window only large enough for
+            # whichever one got adjusted for - real report: the progress
+            # bar disappeared again in actual use once this strip showed
+            # up, despite working fine in a quick synthetic test that
+            # never got far enough into a scan to trigger this strip too.
+            self._adjust_window_height()
 
     def _on_quality_verdict_heading_click(self):
         """Cycles the dot column through: 1st click = worst (red) on top,
@@ -339,18 +438,31 @@ class QualityTabMixin:
         scan/arrival order - state tracked in _quality_verdict_sort_state,
         reset on every new scan since it no longer means anything once the
         rows themselves are gone."""
+        if not self.quality_table.get_children(""):
+            return
+        self._apply_quality_sort_state((self._quality_verdict_sort_state + 1) % 3)
+
+    def _apply_quality_sort_state(self, state):
+        """Reorders the table per `state` (0 = original scan/arrival order,
+        1 = worst-first, 2 = best-first) and records it in
+        _quality_verdict_sort_state, so a later click on the heading
+        continues the same 3-state cycle from here instead of restarting
+        it. Shared by _on_quality_verdict_heading_click (manual) and
+        _finalize_quality_scan (automatic worst-first once a scan ends -
+        results used to just sit in scan/arrival order, leaving the tracks
+        that most need attention scattered instead of surfaced first)."""
         children = self.quality_table.get_children("")
         if not children:
             return
         if self._quality_default_row_order is None:
             self._quality_default_row_order = list(children)
 
-        self._quality_verdict_sort_state = (self._quality_verdict_sort_state + 1) % 3
+        self._quality_verdict_sort_state = state
 
-        if self._quality_verdict_sort_state == 0:
+        if state == 0:
             ordered = [iid for iid in self._quality_default_row_order if self.quality_table.exists(iid)]
         else:
-            rank_map = self._QUALITY_SORT_RANKS[self._quality_verdict_sort_state]
+            rank_map = self._QUALITY_SORT_RANKS[state]
 
             def sort_key(iid):
                 tags = self.quality_table.item(iid, "tags")
@@ -405,12 +517,43 @@ class QualityTabMixin:
         )
         self.quality_reset_button.configure(state="normal")
         self.quality_progress_canvas.pack_forget()
+        # Matches Tagger's own _finalize_processing (tab_tagger.py) - without
+        # this the window stays at its grown size, leaving blank space where
+        # the bar used to be until the user clicks Reset.
+        self._adjust_window_height()
         self._set_tabs_locked(False)
+
+        # Surfaces the tracks that most need a listen first, instead of
+        # leaving them scattered in scan order - same rank order as the
+        # verdict heading's own first click (see _apply_quality_sort_state).
+        # Deferred slightly past the last row's own flash-in animation
+        # (~200ms - ROW_FLASH_STEPS * ROW_FLASH_STEP_MS, see
+        # _flash_new_row): that row's tags are temporarily replaced by a
+        # transient flash tag for the animation's duration, so sorting
+        # immediately could catch it with its verdict tag not yet restored
+        # and bury it in the "unranked" tail - nothing re-sorts once the
+        # flash settles, so it would stay stuck there.
+        self.window.after(250, lambda: self._apply_quality_sort_state(1))
 
         if error:
             messagebox.showerror("Analysis error", error, parent=self.window)
         elif cancelled:
             self._append_to_journal(f"Quality analysis cancelled - {len(results)} track(s) analyzed so far.")
+
+        # A file that couldn't be analyzed at all (decode failure, too
+        # short) used to only ever show up as a "❓" row or a line in the
+        # log, which is hidden by default - easy to miss and looks like
+        # the file was silently ignored. Same "surface it, don't just log
+        # it" fix as Tagger's own _show_processing_failures_dialog.
+        unanalyzable_count = sum(1 for r in results if r.get("verdict") is None)
+        if unanalyzable_count:
+            unit = "file" if unanalyzable_count == 1 else "files"
+            messagebox.showwarning(
+                "Some files could not be analyzed",
+                f"{unanalyzable_count} {unit} could not be analyzed - likely a decode failure "
+                "or a file too short to measure. See the log for details.",
+                parent=self.window,
+            )
 
     def _on_quality_row_double_click(self, event):
         item_id = self.quality_table.identify_row(event.y)
@@ -429,7 +572,17 @@ class QualityTabMixin:
     def _show_quality_context_menu(self, event):
         """Right-click on a Quality row - mirrors the Tagger table's own
         context menu (_show_context_menu), just with the one action that
-        actually applies here."""
+        actually applies here.
+
+        Deliberately always enabled (no pre-check of os.path.isfile here,
+        unlike an earlier version) - the file's existence is checked once,
+        at the moment the action actually runs, in
+        _open_quality_file_location itself. Checking it again up front to
+        decide whether to gray out the item was redundant, and if that
+        earlier check ever disagreed with the one at click time (a file
+        appearing right after the row was drawn, a slow/flaky path), the
+        menu item would sit permanently grayed out with no way to retry -
+        indistinguishable from "the whole feature is broken"."""
         item_id = self.quality_table.identify_row(event.y)
         if not item_id:
             return
@@ -438,20 +591,25 @@ class QualityTabMixin:
         file_path = self.quality_row_paths.get(item_id)
         menu = self._make_themed_menu(self.window)
         menu.add_command(
-            label="Open file location",
-            command=lambda: self._open_quality_file_location(file_path),
-            state="normal" if file_path and os.path.isfile(file_path) else "disabled",
+            label="Open file location", command=lambda: self._open_quality_file_location(file_path),
         )
         menu.tk_popup(event.x_root, event.y_root)
 
     def _open_quality_file_location(self, file_path):
         if not file_path or not os.path.isfile(file_path):
             self._append_to_journal(f"Can't open location, file not found: '{file_path}'")
+            messagebox.showwarning(
+                "File not found",
+                "This file isn't available anymore (moved, renamed, or deleted since the scan) - "
+                "run a new analysis to refresh the results.",
+                parent=self.window,
+            )
             return
         try:
             reveal_in_file_manager(file_path)
         except Exception as error:
             self._append_to_journal(f"Error opening file location: {error}")
+            messagebox.showerror("Could not open file location", str(error), parent=self.window)
 
     def _show_quality_spectrogram_dialog(self, file_path):
         dialog = tk.Toplevel(self.window)

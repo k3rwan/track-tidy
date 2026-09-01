@@ -42,15 +42,17 @@ import contextlib
 import os
 import subprocess
 import sys
+import tempfile
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(REPO_ROOT, "src"))
 
 import tkinter as tk
 from PIL import ImageGrab
 
 import interface
+import track_tidy as tagger
 
 if sys.platform != "win32":
     import signal
@@ -125,7 +127,7 @@ def check_direct_launch():
     same way the desktop launcher .bat does) is the only way to actually
     catch that."""
     process = subprocess.Popen(
-        [sys.executable, "interface.py"], cwd=REPO_ROOT,
+        [sys.executable, os.path.join("src", "interface.py")], cwd=REPO_ROOT,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     time.sleep(3)
@@ -133,10 +135,10 @@ def check_direct_launch():
     if still_running:
         process.terminate()
         process.wait(timeout=5)
-        print("OK   direct launch (python interface.py) stayed up")
+        print("OK   direct launch (python src/interface.py) stayed up")
         return None
     _, stderr = process.communicate()
-    return f"direct launch (python interface.py) exited early:\n{stderr}"
+    return f"direct launch (python src/interface.py) exited early:\n{stderr}"
 
 
 def check_tagger_row_logic(app):
@@ -211,6 +213,264 @@ def check_tagger_row_logic(app):
     app._apply_table_filter()
 
 
+def check_quality_row_logic(app):
+    """Regression guard for two real reports: (1) analysis results used to
+    just sit in scan/arrival order, leaving the tracks that most need a
+    listen (red/orange) scattered instead of surfaced first - fixed by
+    auto-sorting worst-first once a scan ends (_apply_quality_sort_state);
+    (2) a file Quality couldn't analyze at all only ever showed up as a
+    "❓" row or a line in the hidden-by-default log, easy to miss - fixed
+    by also showing a popup. Patches messagebox.showwarning so the popup
+    doesn't block this script waiting for a real click - it only asserts
+    that the popup call happened with the right count, not that a human
+    saw it."""
+    import tkinter.messagebox as messagebox
+
+    app.quality_last_scanned_folder = tempfile.gettempdir()
+    app.quality_row_paths = {}
+    app._quality_scan_counts = {tagger.QUALITY_GREEN: 0, tagger.QUALITY_ORANGE: 0, tagger.QUALITY_RED: 0}
+    app._quality_verdict_sort_state = 0
+    app._quality_default_row_order = None
+
+    for row in app.quality_table.get_children():
+        app.quality_table.delete(row)
+
+    # Inserted in a deliberately "wrong" order (green, red, orange, then an
+    # unanalyzable one) so a real reorder is required to pass.
+    results = [
+        {"file": "a_green.mp3", "format": "MP3", "verdict": tagger.QUALITY_GREEN, "bitrate_kbps": 320, "lufs": -10},
+        {"file": "b_red.mp3", "format": "MP3", "verdict": tagger.QUALITY_RED, "bitrate_kbps": 128, "lufs": -8},
+        {"file": "c_orange.mp3", "format": "MP3", "verdict": tagger.QUALITY_ORANGE, "bitrate_kbps": 192, "lufs": -9},
+        {"file": "d_unknown.mp3", "format": "MP3", "verdict": None, "bitrate_kbps": None, "lufs": None},
+    ]
+    for result in results:
+        app._add_quality_row(result)
+    pump(app.window, 0.5)  # let each row's flash-in animation finish (see _flash_new_row)
+
+    captured = []
+    original_showwarning = messagebox.showwarning
+    try:
+        messagebox.showwarning = lambda title, msg, **kw: captured.append((title, msg))
+
+        app._finalize_quality_scan((results, False, None))
+        pump(app.window, 0.5)  # the sort itself is deferred past the flash window - see _finalize_quality_scan
+
+        order = [app.quality_table.item(iid, "values")[0] for iid in app.quality_table.get_children()]
+        expected = ["b_red.mp3", "c_orange.mp3", "a_green.mp3", "d_unknown.mp3"]
+        if order != expected:
+            raise AssertionError(f"expected worst-first order {expected}, got {order}")
+
+        if len(captured) != 1 or "1 file" not in captured[0][1]:
+            raise AssertionError(f"expected exactly one 'could not be analyzed' popup, got {captured}")
+    finally:
+        messagebox.showwarning = original_showwarning
+
+
+def check_quality_progress_bar_placement(app):
+    """Regression guard for two real bugs found while moving Quality's
+    progress bar to the bottom of the tab (to match Tagger's own
+    placement):
+
+    1. _start_quality_scan packed the canvas but never called
+       _adjust_window_height() afterwards, unlike Tagger's
+       _show_scan_progress_bar (tab_tagger.py) and unlike Quality's own
+       _reset_quality, which already called it on the way back down.
+       quality_table_frame's Treeview has a real minimum height (unlike
+       a plain Frame), so pack couldn't shrink it to free up space on
+       its own - the window needed to actually grow, which never
+       happened, so the bar had nowhere to render at all (not just in
+       the wrong place - genuinely invisible).
+
+    2. Fixing #1 alone still wasn't enough in real use: once a real scan
+       produces its first verdict, _update_quality_summary_strip() packs
+       ANOTHER new widget (the green/orange/red counts, between the
+       buttons and the table) with the exact same missing-adjustment
+       bug - real report: the bar disappeared again in actual use once
+       that strip showed up, competing for space in a window that was
+       only grown to fit the bar alone. Triggered directly here (rather
+       than waiting on a real background scan, which an earlier version
+       of this test did - real ffmpeg analysis + threading made it slow
+       and, on a loaded CI runner, occasionally hang outright).
+    """
+    tmp_dir = tempfile.mkdtemp()
+
+    app._reset_quality()
+    pump(app.window, 0.1)
+    if app.quality_progress_canvas.winfo_ismapped():
+        raise AssertionError("progress bar should start out hidden")
+    height_before = app.window.winfo_height()
+
+    # Stub out the actual background analysis (real ffmpeg + threading -
+    # unnecessary here and, on a slower/loaded CI runner, a source of
+    # flaky timing) so _start_quality_scan's own synchronous pack/resize
+    # logic - the thing that actually had the bug - can be checked
+    # directly and deterministically, the same way check_quality_row_logic
+    # above drives _add_quality_row/_finalize_quality_scan directly rather
+    # than waiting on a real scan.
+    original_run_scan = app._run_quality_scan
+    app._run_quality_scan = lambda *a, **kw: None
+    try:
+        app.quality_folder_var.set(tmp_dir)
+        app._start_quality_scan()
+        pump(app.window, 0.2)
+
+        if not app.quality_progress_canvas.winfo_ismapped():
+            raise AssertionError("progress bar never became visible after starting a scan")
+        if app.quality_progress_canvas.winfo_width() <= 1:
+            raise AssertionError(f"progress bar has no real width ({app.quality_progress_canvas.winfo_width()}px) - never laid out")
+        if app.window.winfo_height() <= height_before:
+            raise AssertionError("window should grow to make room for the progress bar")
+
+        canvas_top = app.quality_progress_canvas.winfo_rooty()
+        table_bottom = app.quality_table_frame.winfo_rooty() + app.quality_table_frame.winfo_height()
+        if canvas_top < table_bottom:
+            raise AssertionError("progress bar should sit BELOW the table (Tagger's placement), not above/inside it")
+
+        # Directly trigger the summary strip's own pack() (bug #2 above) -
+        # this is what a real scan's first verdict does, without needing
+        # to wait for one.
+        app._quality_scan_counts = {tagger.QUALITY_GREEN: 1, tagger.QUALITY_ORANGE: 0, tagger.QUALITY_RED: 0}
+        app._update_quality_summary_strip()
+        pump(app.window, 0.1)
+        if not app.quality_summary_frame.winfo_ismapped():
+            raise AssertionError("summary strip never appeared")
+        if not app.quality_progress_canvas.winfo_ismapped() or app.quality_progress_canvas.winfo_width() <= 1:
+            raise AssertionError("progress bar was pushed out once the summary strip appeared alongside it")
+    finally:
+        app._run_quality_scan = original_run_scan
+        # _start_quality_scan disabled these for the run and _reset_quality
+        # doesn't re-enable them itself (normally only called once a scan
+        # has already finished and re-enabled them via
+        # _finalize_quality_scan - bypassed here since the scan itself was
+        # stubbed to a no-op) - leaving them disabled would leak into
+        # whichever check runs next (e.g. check_quality_drag_and_drop's
+        # own quality_browse_button state check).
+        app.quality_browse_button.configure(state="normal")
+        app.quality_reset_button.configure(state="normal")
+        app._set_tabs_locked(False)  # _start_quality_scan locks tab-switching too
+        app._reset_quality()
+        pump(app.window, 0.1)
+
+    if app.quality_progress_canvas.winfo_ismapped():
+        raise AssertionError("progress bar should be hidden again after _reset_quality")
+    if app.window.winfo_height() != height_before:
+        raise AssertionError("window should shrink back to its original height after _reset_quality")
+
+
+def check_quality_drag_and_drop(app):
+    """Regression guard for the Quality tab's drag-and-drop, added to
+    match the Tagger tab's own (a folder or file dropped while viewing
+    Quality now analyzes it there, instead of only Tagger's window-level
+    registration ever reacting to a drop) - including a real report that
+    an earlier version of this always analyzed the WHOLE parent folder
+    even when a single file was dropped, unlike Tagger's own drop, which
+    tags just the file(s) actually dropped. Calls the drop handler
+    directly with a synthetic event rather than a simulated OS-level
+    drop (unreliable in CI/sandboxes - see CLAUDE.md), so this checks the
+    handler's own logic: folder resolution, explicit-file-list scanning,
+    syncing the other tabs' folder fields, and the "ignore while a scan
+    is running" guard."""
+    tmp_dir = tempfile.mkdtemp()
+
+    class FakeEvent:
+        pass
+
+    scan_calls = []  # each entry: (folder, explicit_files)
+    original_start = app._start_quality_scan
+    try:
+        app._start_quality_scan = lambda explicit_files=None: scan_calls.append(
+            (app.quality_folder_var.get(), explicit_files)
+        )
+
+        event = FakeEvent()
+        event.data = "{" + tmp_dir + "}"
+        app._on_quality_files_dropped(event)
+        if scan_calls != [(tmp_dir, None)]:
+            raise AssertionError(f"expected the dropped folder to start a whole-folder scan, got {scan_calls}")
+        if app.extract_folder_var.get() != tmp_dir or app.folder_variable.get() != tmp_dir:
+            raise AssertionError("dropping onto Quality should sync Tagger/Extractor's folder fields too")
+
+        # Dropping a single FILE must analyze just that file, not the
+        # whole folder it lives in.
+        fake_file = os.path.join(tmp_dir, "track.mp3")
+        with open(fake_file, "wb") as f:
+            f.write(b"x")
+        scan_calls.clear()
+        event2 = FakeEvent()
+        event2.data = "{" + fake_file + "}"
+        app._on_quality_files_dropped(event2)
+        if scan_calls != [(tmp_dir, [fake_file])]:
+            raise AssertionError(f"expected a single-file scan of just that file, got {scan_calls}")
+
+        # A drop while a scan is already running must be ignored.
+        app.quality_browse_button.configure(state="disabled")
+        try:
+            scan_calls.clear()
+            app.quality_folder_var.set("SHOULD_NOT_CHANGE")
+            app._on_quality_files_dropped(event)
+            if scan_calls or app.quality_folder_var.get() != "SHOULD_NOT_CHANGE":
+                raise AssertionError("drop should be ignored while a quality scan is running")
+        finally:
+            app.quality_browse_button.configure(state="normal")
+    finally:
+        app._start_quality_scan = original_start
+
+
+def check_extractor_drag_and_drop(app):
+    """Regression guard: the Extractor tab had NO drag-and-drop of its
+    own (unlike Tagger and, since the previous fix, Quality), so a drop
+    while viewing it fell through to Tagger's window/notebook-level
+    registration and silently started a Tagger scan instead - the exact
+    same bug already found and fixed for Quality, just not yet noticed
+    here. Also checks the deliberate difference from Tagger/Quality: a
+    drop only fills the folder field, it does NOT auto-start the
+    extraction (which moves files on disk with no review step first,
+    unlike a scan/analysis)."""
+    tmp_dir = tempfile.mkdtemp()
+
+    class FakeEvent:
+        pass
+
+    extract_calls = []
+    original_start = app._start_extraction
+    try:
+        app._start_extraction = lambda: extract_calls.append(True)
+
+        event = FakeEvent()
+        event.data = "{" + tmp_dir + "}"
+        app._on_extractor_files_dropped(event)
+        if app.extract_folder_var.get() != tmp_dir:
+            raise AssertionError(f"expected the dropped folder to fill the field, got {app.extract_folder_var.get()!r}")
+        if app.quality_folder_var.get() != tmp_dir or app.folder_variable.get() != tmp_dir:
+            raise AssertionError("dropping onto Extractor should sync Tagger/Quality's folder fields too")
+        if extract_calls:
+            raise AssertionError("a drop must not auto-start the extraction (it moves files on disk)")
+
+        # Dropping a FILE resolves to its containing folder (extraction is
+        # inherently folder-scoped - there's no per-file equivalent).
+        fake_file = os.path.join(tmp_dir, "track.mp3")
+        with open(fake_file, "wb") as f:
+            f.write(b"x")
+        app.extract_folder_var.set("")
+        event2 = FakeEvent()
+        event2.data = "{" + fake_file + "}"
+        app._on_extractor_files_dropped(event2)
+        if app.extract_folder_var.get() != tmp_dir:
+            raise AssertionError(f"expected a dropped file to resolve to its folder, got {app.extract_folder_var.get()!r}")
+
+        # A drop while an extraction is already running must be ignored.
+        app.extract_browse_button.configure(state="disabled")
+        try:
+            app.extract_folder_var.set("SHOULD_NOT_CHANGE")
+            app._on_extractor_files_dropped(event)
+            if app.extract_folder_var.get() != "SHOULD_NOT_CHANGE":
+                raise AssertionError("drop should be ignored while an extraction is running")
+        finally:
+            app.extract_browse_button.configure(state="normal")
+    finally:
+        app._start_extraction = original_start
+
+
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -239,6 +499,36 @@ def main():
     except Exception as error:
         failures.append(f"tagger row logic: {error}")
         print(f"FAIL tagger row logic: {error}")
+
+    try:
+        app.notebook.select(2)  # Quality tab
+        pump(root, 0.3)
+        check_quality_row_logic(app)
+        print("OK   quality row auto-sort/unanalyzable-popup logic")
+    except Exception as error:
+        failures.append(f"quality row logic: {error}")
+        print(f"FAIL quality row logic: {error}")
+
+    try:
+        check_quality_progress_bar_placement(app)
+        print("OK   quality progress bar placement/visibility")
+    except Exception as error:
+        failures.append(f"quality progress bar placement: {error}")
+        print(f"FAIL quality progress bar placement: {error}")
+
+    try:
+        check_quality_drag_and_drop(app)
+        print("OK   quality tab drag-and-drop")
+    except Exception as error:
+        failures.append(f"quality drag-and-drop: {error}")
+        print(f"FAIL quality drag-and-drop: {error}")
+
+    try:
+        check_extractor_drag_and_drop(app)
+        print("OK   extractor tab drag-and-drop")
+    except Exception as error:
+        failures.append(f"extractor drag-and-drop: {error}")
+        print(f"FAIL extractor drag-and-drop: {error}")
 
     for theme in ("dark", "light"):
         app._apply_theme(theme)

@@ -58,7 +58,7 @@ jobs:
         # job never makes a real network call, just needs the file to
         # exist so load_default_credentials() has something to read.
         run: |
-          jq -n '{soundcloud_client_id: "ci-placeholder", soundcloud_client_secret: "ci-placeholder", spotify_client_id: "ci-placeholder", spotify_client_secret: "ci-placeholder", discord_webhook_url: "https://discord.com/api/webhooks/0/ci-placeholder", acoustid_api_key: "ci-placeholder", discord_bot_token: "ci-placeholder"}' > default_credentials.json
+          jq -n '{soundcloud_client_id: "ci-placeholder", soundcloud_client_secret: "ci-placeholder", discord_webhook_url: "https://discord.com/api/webhooks/0/ci-placeholder", acoustid_api_key: "ci-placeholder", discord_bot_token: "ci-placeholder"}' > default_credentials.json
 
       - name: Run GUI smoke test
         run: |

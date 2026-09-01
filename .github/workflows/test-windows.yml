@@ -50,7 +50,7 @@ jobs:
         # mocked in every test that cares). Written via python -c instead
         # of hand-rolled PowerShell JSON string escaping.
         run: |
-          python -c "import json; json.dump({'soundcloud_client_id': 'ci-placeholder', 'soundcloud_client_secret': 'ci-placeholder', 'spotify_client_id': 'ci-placeholder', 'spotify_client_secret': 'ci-placeholder', 'discord_webhook_url': 'https://discord.com/api/webhooks/0/ci-placeholder', 'acoustid_api_key': 'ci-placeholder', 'discord_bot_token': 'ci-placeholder'}, open('default_credentials.json', 'w'))"
+          python -c "import json; json.dump({'soundcloud_client_id': 'ci-placeholder', 'soundcloud_client_secret': 'ci-placeholder', 'discord_webhook_url': 'https://discord.com/api/webhooks/0/ci-placeholder', 'acoustid_api_key': 'ci-placeholder', 'discord_bot_token': 'ci-placeholder'}, open('default_credentials.json', 'w'))"
 
       - name: Ensure ffmpeg is on PATH
         # Some tests (WAV RIFF INFO tag writing) silently behave

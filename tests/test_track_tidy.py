@@ -14,13 +14,14 @@ import subprocess
 import time
 import threading
 import unittest
+import unittest.mock
 import tempfile
 import keyring
 import keyring.backend
 import numpy as np
 from PIL import Image
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 import track_tidy as tagger
 
 
@@ -1360,12 +1361,49 @@ class ListAudioFilesTests(unittest.TestCase):
             set(tagger.list_audio_files()), {"Song.mp3", "Track.wav", "Other.flac", "Track.m4a"},
         )
 
-    def test_excludes_non_taggable_formats_when_auto_convert_disabled(self):
-        # WAV and FLAC can both be tagged directly (no conversion needed),
-        # so they stay included either way - only M4A (needs converting to
-        # be taggable at all) drops out when auto-convert is off.
+    def test_includes_m4a_even_when_auto_convert_disabled(self):
+        # WAV and FLAC can both be tagged directly (no conversion needed).
+        # M4A can't be tagged directly either, but it's common enough
+        # (iTunes/Apple Music purchases) that it always converts to MP3
+        # regardless of the auto-convert setting (see
+        # _resolve_conversion_target) - unlike AAC/OGG/WMA/opus, which do
+        # still need auto-convert on to show up at all.
         tagger.AUTO_CONVERT_MP3 = False
-        self.assertEqual(set(tagger.list_audio_files()), {"Song.mp3", "Track.wav", "Other.flac"})
+        self.assertEqual(
+            set(tagger.list_audio_files()), {"Song.mp3", "Track.wav", "Other.flac", "Track.m4a"},
+        )
+
+
+class ResolveConversionTargetTests(unittest.TestCase):
+    def setUp(self):
+        self._original_auto_convert_mp3 = tagger.AUTO_CONVERT_MP3
+        self._original_auto_convert_wav = tagger.AUTO_CONVERT_WAV_TO_AIFF
+
+    def tearDown(self):
+        tagger.AUTO_CONVERT_MP3 = self._original_auto_convert_mp3
+        tagger.AUTO_CONVERT_WAV_TO_AIFF = self._original_auto_convert_wav
+
+    def test_m4a_always_converts_to_mp3_regardless_of_settings(self):
+        tagger.AUTO_CONVERT_MP3 = False
+        self.assertEqual(tagger._resolve_conversion_target("Track.m4a"), "mp3")
+        tagger.AUTO_CONVERT_MP3 = True
+        self.assertEqual(tagger._resolve_conversion_target("Track.m4a"), "mp3")
+
+    def test_mp3_never_converts(self):
+        tagger.AUTO_CONVERT_MP3 = True
+        self.assertIsNone(tagger._resolve_conversion_target("Track.mp3"))
+
+    def test_wav_follows_wav_to_aiff_setting_when_mp3_auto_convert_is_off(self):
+        tagger.AUTO_CONVERT_MP3 = False
+        tagger.AUTO_CONVERT_WAV_TO_AIFF = True
+        self.assertEqual(tagger._resolve_conversion_target("Track.wav"), "aiff")
+        tagger.AUTO_CONVERT_WAV_TO_AIFF = False
+        self.assertIsNone(tagger._resolve_conversion_target("Track.wav"))
+
+    def test_auto_convert_mp3_wins_over_wav_to_aiff(self):
+        tagger.AUTO_CONVERT_MP3 = True
+        tagger.AUTO_CONVERT_WAV_TO_AIFF = True
+        self.assertEqual(tagger._resolve_conversion_target("Track.wav"), "mp3")
 
 
 class ExtractAudioFilesTests(unittest.TestCase):
@@ -1388,9 +1426,10 @@ class ExtractAudioFilesTests(unittest.TestCase):
         self._touch("Album", "Sub", "Track2.wav")
         self._touch("AlreadyHere.mp3")
 
-        moved = tagger.extract_audio_files(self.root)
+        moved, failed = tagger.extract_audio_files(self.root)
 
         self.assertEqual(moved, 2)
+        self.assertEqual(failed, 0)
         self.assertEqual(
             set(os.listdir(self.root)) - {"Album"},
             {"Track1.mp3", "Track2.wav", "AlreadyHere.mp3"},
@@ -1401,9 +1440,28 @@ class ExtractAudioFilesTests(unittest.TestCase):
         self._touch("B", "Track2.mp3")
         self._touch("C", "Track3.mp3")
 
-        moved = tagger.extract_audio_files(self.root, should_cancel=lambda: True)
+        moved, failed = tagger.extract_audio_files(self.root, should_cancel=lambda: True)
 
         self.assertEqual(moved, 0)
+        self.assertEqual(failed, 0)
+
+    def test_reports_failed_moves_without_stopping_the_rest(self):
+        self._touch("A", "Track1.mp3")
+        self._touch("A", "Track2.mp3")
+
+        real_move = shutil.move
+
+        def flaky_move(src, dst):
+            if "Track1" in src:
+                raise PermissionError("file is in use")
+            return real_move(src, dst)
+
+        with unittest.mock.patch("track_tidy.shutil.move", side_effect=flaky_move):
+            moved, failed = tagger.extract_audio_files(self.root)
+
+        self.assertEqual(moved, 1)
+        self.assertEqual(failed, 1)
+        self.assertIn("Track2.mp3", os.listdir(self.root))
 
     def test_remove_empty_subfolders_removes_only_empty_ones(self):
         os.makedirs(os.path.join(self.root, "Empty1"))
@@ -1897,6 +1955,51 @@ class ProcessFilesTests(unittest.TestCase):
         self.assertIn("Daft Punk - One More Time.mp3", remaining_files)
         # The corrupted file is left alone (not silently deleted/renamed).
         self.assertIn("corrupted.mp3", remaining_files)
+
+    def test_explicitly_cleared_artist_is_written_as_empty(self):
+        # Real report: clearing the Artist/Title field entirely in the
+        # table and confirming used to silently write the OLD detected
+        # value back instead (artist_override="" or detected_artist"
+        # treats "" as falsy, same as never having overridden it at all).
+        good_path = os.path.join(self._tmp_dir.name, "track.mp3")
+        shutil.copy(self._good_source, good_path)
+
+        entry = self._make_plan_entry("track.mp3", "Old Artist", "Old Title")
+        entry["artist_override"] = ""
+
+        tagger.process_files([entry], log=lambda *_: None)
+
+        self.assertTrue(entry["processed"])
+        # FIX_TRACK_FILE_NAME (on by default) renames the file from the
+        # written tags - with artist empty, build_display_name() drops the
+        # "Artist - " prefix entirely, so this ends up as "Old Title.mp3".
+        final_path = os.path.join(self._tmp_dir.name, entry["final_path"])
+        audio = tagger.open_audio_file(final_path)
+        self.assertNotIn("TPE1", audio.tags)  # no artist frame at all, not "Old Artist"
+        self.assertEqual(str(audio.tags["TIT2"]), "Old Title")
+
+    def test_explicitly_cleared_title_is_skipped_not_reverted_to_the_old_value(self):
+        # Same bug as above, for Title - except a title is required to tag
+        # a file at all (see the "Missing title" skip), so the correct
+        # outcome here is a clean skip with a clear reason, not silently
+        # writing the old suggested title back.
+        good_path = os.path.join(self._tmp_dir.name, "track.mp3")
+        shutil.copy(self._good_source, good_path)
+
+        entry = self._make_plan_entry("track.mp3", "Old Artist", "Old Title")
+        entry["title_override"] = ""
+
+        results = []
+        tagger.process_files(
+            [entry], log=lambda *_: None,
+            on_file_processed=lambda ident, ok, reason=None: results.append((ident, ok, reason)),
+        )
+
+        self.assertEqual(results, [("track.mp3", False, "No title to write")])
+        self.assertTrue(entry["processed"])
+        # The file itself is left untouched - no "Old Title" got written.
+        audio = tagger.open_audio_file(good_path)
+        self.assertNotIn("TIT2", audio.tags)
 
 
 class SettingsPersistenceTests(unittest.TestCase):
@@ -2425,12 +2528,11 @@ class ScanCompleteNotificationTests(unittest.TestCase):
         tagger.requests.post = fake_post
         tagger.send_scan_complete_notification(
             reporter_name="someuser", number_new=5,
-            number_itunes=2, number_spotify=1, number_soundcloud=1, number_acoustid_used=1,
+            number_itunes=2, number_soundcloud=1, number_acoustid_used=1,
         )
 
         fields = captured["json"]["embeds"][0]["fields"]
         self.assertIn({"name": "iTunes matches", "value": "2", "inline": True}, fields)
-        self.assertIn({"name": "Spotify matches", "value": "1", "inline": True}, fields)
         self.assertIn({"name": "SoundCloud matches", "value": "1", "inline": True}, fields)
         self.assertIn({"name": "AcoustID fallback used", "value": "1", "inline": True}, fields)
 

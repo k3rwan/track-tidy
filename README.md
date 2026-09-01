@@ -25,7 +25,7 @@
 
 Point it at a folder and it:
 - Looks up the correct **artist, title, and cover art** for each track (iTunes,
-  Spotify, SoundCloud, and audio fingerprinting as a last resort for badly-named
+  SoundCloud, and audio fingerprinting as a last resort for badly-named
   files).
 - Writes the tags directly into the file - no more blank covers or
   "Track_Name (1).mp3" showing up in Rekordbox/Serato/etc.
@@ -41,8 +41,8 @@ Point it at a folder and it:
 
 Fair question for a random installer from someone you don't know - completely
 understand the hesitation. A few things that should help:
-- Track Tidy talks to the services it needs to do its job - iTunes, Spotify,
-  and SoundCloud (to look up artist/title/cover art), AcoustID (audio
+- Track Tidy talks to the services it needs to do its job - iTunes and
+  SoundCloud (to look up artist/title/cover art), AcoustID (audio
   fingerprinting, only used as a last resort when the filename alone doesn't
   give enough to search with), and GitHub (checking for updates). It never
   touches files outside the folder you point it at, and never uploads your
@@ -95,21 +95,21 @@ specific track that got tagged wrong.
 
 | File | Purpose |
 |---|---|
-| `track_tidy.py` | Core logic: filename parsing, tag reading/writing, format conversion, cover search (see the module docstring for the full breakdown) |
-| `interface.py` | Tkinter GUI on top of `track_tidy.py` |
+| `src/track_tidy.py` | Core logic: filename parsing, tag reading/writing, format conversion, cover search (see the module docstring for the full breakdown) |
+| `src/interface.py` | Tkinter GUI on top of `track_tidy.py` |
 
 ### Setup
 
 iTunes, SoundCloud, and AcoustID all work out of the box - no accounts or API
-keys to set up. Spotify (off by default, toggle in Settings) and the shared
-SoundCloud app both rely on the developer's own registered credentials, which
-aren't included in this source - building from source gives you an app with
-no shared defaults, same as an unconfigured user. See
+keys to set up. The shared SoundCloud app relies on the developer's own
+registered credentials, which aren't included in this source - building from
+source gives you an app with no shared defaults, same as an unconfigured
+user. See
 `load_default_credentials()`'s docstring in `track_tidy.py` if you want to
 supply your own via a local `default_credentials.json`.
 
 It also relies on `ffmpeg`/`fpcalc` (format conversion, AcoustID
-fingerprinting) being present next to the script - not included here, see
+fingerprinting) being present at the project root - not included here, see
 `find_ffmpeg()`/`find_fpcalc()`.
 
 ### Running from source
@@ -117,7 +117,7 @@ fingerprinting) being present next to the script - not included here, see
 ```bash
 python -m venv venv
 venv\Scripts\pip install -r requirements.txt
-venv\Scripts\python interface.py
+venv\Scripts\python src\interface.py
 ```
 
 ### License

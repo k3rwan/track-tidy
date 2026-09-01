@@ -47,10 +47,6 @@ class SettingsTabMixin:
             command=self._on_fix_track_file_name_changed,
         ).pack(anchor="w", padx=10, pady=(0, 0))
         ttk.Checkbutton(
-            behavior_frame, text="Use Spotify as a cover source", variable=self.use_spotify_var,
-            command=self._on_use_spotify_changed,
-        ).pack(anchor="w", padx=10, pady=(0, 0))
-        ttk.Checkbutton(
             behavior_frame, text="Show log section", variable=self.show_log_var,
             command=self._on_show_log_changed,
         ).pack(anchor="w", padx=10, pady=(0, 10))
@@ -183,12 +179,6 @@ class SettingsTabMixin:
         tagger.save_setting("fix_track_file_name", enabled)
         tagger.log_action(f"Fix track file name: {enabled}")
 
-    def _on_use_spotify_changed(self):
-        enabled = self.use_spotify_var.get()
-        tagger.USE_SPOTIFY = enabled
-        tagger.save_setting("use_spotify", enabled)
-        tagger.log_action(f"Use Spotify: {enabled}")
-
     def _on_use_telemetry_changed(self):
         enabled = self.use_telemetry_var.get()
         tagger.SEND_USAGE_TELEMETRY = enabled
@@ -215,13 +205,11 @@ class SettingsTabMixin:
         tagger.AUTO_CONVERT_MP3 = False
         tagger.AUTO_CONVERT_WAV_TO_AIFF = True
         tagger.FIX_TRACK_FILE_NAME = True
-        tagger.USE_SPOTIFY = False
         tagger.SEND_USAGE_TELEMETRY = True
 
         self.auto_convert_var.set(False)
         self.auto_convert_wav_aiff_var.set(True)
         self.fix_track_file_name_var.set(True)
-        self.use_spotify_var.set(False)
         self.use_telemetry_var.set(True)
 
         self.show_log_var.set(False)
