@@ -1724,7 +1724,7 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
                     self._update_progress_bar(self.extract_progress_canvas, fraction, f"{round(fraction * 100)} %")
 
                 elif message_type == "extract_done":
-                    folder, moved_count, removed_count, cancelled, error = content
+                    folder, moved_count, removed_count, failed_count, cancelled, error = content
                     self.extract_browse_button.configure(state="normal")
                     self.extract_button.configure(text="Extract", command=self._start_extraction, state="normal")
                     self.extract_reset_button.configure(state="normal")
@@ -1752,6 +1752,23 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
                             open_with_default_app(folder)
                         except Exception:
                             pass
+
+                    # A file the OS refused to move (permission error, open
+                    # in another program...) used to only ever show up in
+                    # the log, which is hidden by default - easy to miss and
+                    # looks like the file was silently ignored. Same
+                    # "surface it, don't just log it" fix as Tagger's own
+                    # _show_processing_failures_dialog, shown regardless of
+                    # error/cancelled state since some files can still fail
+                    # even on an otherwise-successful or cancelled run.
+                    if failed_count:
+                        unit = "file" if failed_count == 1 else "files"
+                        messagebox.showwarning(
+                            "Some files could not be moved",
+                            f"{failed_count} {unit} could not be moved - likely in use by another "
+                            "program, or a permissions issue. See the log for details.",
+                            parent=self.window,
+                        )
 
                 elif message_type == "quality_scan_progress":
                     # Only the total is kept - the bar itself tracks how

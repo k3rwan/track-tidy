@@ -2875,12 +2875,18 @@ class TaggerTabMixin:
 
         if not os.path.exists(full_path):
             self._append_to_journal(f"Can't open location, file not found: '{full_path}'")
+            messagebox.showwarning(
+                "File not found",
+                "This file isn't available anymore (moved, renamed, or deleted since the scan).",
+                parent=self.window,
+            )
             return
 
         try:
             reveal_in_file_manager(full_path)
         except Exception as error:
             self._append_to_journal(f"Error opening file location: {error}")
+            messagebox.showerror("Could not open file location", str(error), parent=self.window)
 
     def _show_track_info(self, info):
         """Shows a read-only summary of everything known about this row -

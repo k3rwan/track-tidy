@@ -2368,6 +2368,13 @@ def extract_audio_files(root_folder, log=safe_print, on_progress=None, should_ca
     to every single move) - if it returns True, stops early and returns
     whatever was moved so far, same "cancel between units of work, not
     mid-write" approach as scan_files()'s should_cancel.
+
+    Returns (moved_count, failed_count) - a file the OS refuses to move
+    (permission error, in use by another program...) used to only ever
+    show up in the log, easy to miss since the log is hidden by default;
+    failed_count lets the caller surface it in a real popup instead (see
+    "extract_done" in interface.py), same idea as Tagger's own
+    _show_processing_failures_dialog.
     """
     root_abspath = os.path.abspath(root_folder)
 
@@ -2379,6 +2386,7 @@ def extract_audio_files(root_folder, log=safe_print, on_progress=None, should_ca
             total += sum(1 for name in files if name.lower().endswith(EXTRACTABLE_AUDIO_EXTENSIONS))
 
     moved_count = 0
+    failed_count = 0
     processed_count = 0
 
     for current_folder, _dirs, files in os.walk(root_folder):
@@ -2410,12 +2418,13 @@ def extract_audio_files(root_folder, log=safe_print, on_progress=None, should_ca
                 moved_count += 1
             except Exception as error:
                 log(f"  Error moving '{source_path}': {error}")
+                failed_count += 1
 
             processed_count += 1
             if on_progress:
                 on_progress(processed_count, total)
 
-    return moved_count
+    return moved_count, failed_count
 
 
 def remove_empty_subfolders(root_folder, log=safe_print, should_cancel=None):

@@ -339,18 +339,31 @@ class QualityTabMixin:
         scan/arrival order - state tracked in _quality_verdict_sort_state,
         reset on every new scan since it no longer means anything once the
         rows themselves are gone."""
+        if not self.quality_table.get_children(""):
+            return
+        self._apply_quality_sort_state((self._quality_verdict_sort_state + 1) % 3)
+
+    def _apply_quality_sort_state(self, state):
+        """Reorders the table per `state` (0 = original scan/arrival order,
+        1 = worst-first, 2 = best-first) and records it in
+        _quality_verdict_sort_state, so a later click on the heading
+        continues the same 3-state cycle from here instead of restarting
+        it. Shared by _on_quality_verdict_heading_click (manual) and
+        _finalize_quality_scan (automatic worst-first once a scan ends -
+        results used to just sit in scan/arrival order, leaving the tracks
+        that most need attention scattered instead of surfaced first)."""
         children = self.quality_table.get_children("")
         if not children:
             return
         if self._quality_default_row_order is None:
             self._quality_default_row_order = list(children)
 
-        self._quality_verdict_sort_state = (self._quality_verdict_sort_state + 1) % 3
+        self._quality_verdict_sort_state = state
 
-        if self._quality_verdict_sort_state == 0:
+        if state == 0:
             ordered = [iid for iid in self._quality_default_row_order if self.quality_table.exists(iid)]
         else:
-            rank_map = self._QUALITY_SORT_RANKS[self._quality_verdict_sort_state]
+            rank_map = self._QUALITY_SORT_RANKS[state]
 
             def sort_key(iid):
                 tags = self.quality_table.item(iid, "tags")
@@ -407,10 +420,37 @@ class QualityTabMixin:
         self.quality_progress_canvas.pack_forget()
         self._set_tabs_locked(False)
 
+        # Surfaces the tracks that most need a listen first, instead of
+        # leaving them scattered in scan order - same rank order as the
+        # verdict heading's own first click (see _apply_quality_sort_state).
+        # Deferred slightly past the last row's own flash-in animation
+        # (~200ms - ROW_FLASH_STEPS * ROW_FLASH_STEP_MS, see
+        # _flash_new_row): that row's tags are temporarily replaced by a
+        # transient flash tag for the animation's duration, so sorting
+        # immediately could catch it with its verdict tag not yet restored
+        # and bury it in the "unranked" tail - nothing re-sorts once the
+        # flash settles, so it would stay stuck there.
+        self.window.after(250, lambda: self._apply_quality_sort_state(1))
+
         if error:
             messagebox.showerror("Analysis error", error, parent=self.window)
         elif cancelled:
             self._append_to_journal(f"Quality analysis cancelled - {len(results)} track(s) analyzed so far.")
+
+        # A file that couldn't be analyzed at all (decode failure, too
+        # short) used to only ever show up as a "❓" row or a line in the
+        # log, which is hidden by default - easy to miss and looks like
+        # the file was silently ignored. Same "surface it, don't just log
+        # it" fix as Tagger's own _show_processing_failures_dialog.
+        unanalyzable_count = sum(1 for r in results if r.get("verdict") is None)
+        if unanalyzable_count:
+            unit = "file" if unanalyzable_count == 1 else "files"
+            messagebox.showwarning(
+                "Some files could not be analyzed",
+                f"{unanalyzable_count} {unit} could not be analyzed - likely a decode failure "
+                "or a file too short to measure. See the log for details.",
+                parent=self.window,
+            )
 
     def _on_quality_row_double_click(self, event):
         item_id = self.quality_table.identify_row(event.y)
@@ -429,7 +469,17 @@ class QualityTabMixin:
     def _show_quality_context_menu(self, event):
         """Right-click on a Quality row - mirrors the Tagger table's own
         context menu (_show_context_menu), just with the one action that
-        actually applies here."""
+        actually applies here.
+
+        Deliberately always enabled (no pre-check of os.path.isfile here,
+        unlike an earlier version) - the file's existence is checked once,
+        at the moment the action actually runs, in
+        _open_quality_file_location itself. Checking it again up front to
+        decide whether to gray out the item was redundant, and if that
+        earlier check ever disagreed with the one at click time (a file
+        appearing right after the row was drawn, a slow/flaky path), the
+        menu item would sit permanently grayed out with no way to retry -
+        indistinguishable from "the whole feature is broken"."""
         item_id = self.quality_table.identify_row(event.y)
         if not item_id:
             return
@@ -438,20 +488,25 @@ class QualityTabMixin:
         file_path = self.quality_row_paths.get(item_id)
         menu = self._make_themed_menu(self.window)
         menu.add_command(
-            label="Open file location",
-            command=lambda: self._open_quality_file_location(file_path),
-            state="normal" if file_path and os.path.isfile(file_path) else "disabled",
+            label="Open file location", command=lambda: self._open_quality_file_location(file_path),
         )
         menu.tk_popup(event.x_root, event.y_root)
 
     def _open_quality_file_location(self, file_path):
         if not file_path or not os.path.isfile(file_path):
             self._append_to_journal(f"Can't open location, file not found: '{file_path}'")
+            messagebox.showwarning(
+                "File not found",
+                "This file isn't available anymore (moved, renamed, or deleted since the scan) - "
+                "run a new analysis to refresh the results.",
+                parent=self.window,
+            )
             return
         try:
             reveal_in_file_manager(file_path)
         except Exception as error:
             self._append_to_journal(f"Error opening file location: {error}")
+            messagebox.showerror("Could not open file location", str(error), parent=self.window)
 
     def _show_quality_spectrogram_dialog(self, file_path):
         dialog = tk.Toplevel(self.window)

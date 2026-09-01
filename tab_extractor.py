@@ -165,7 +165,7 @@ class ExtractorTabMixin:
             self.message_queue.put(("extract_progress", (index, total)))
 
         try:
-            moved_count = tagger.extract_audio_files(
+            moved_count, failed_count = tagger.extract_audio_files(
                 folder, log=self._append_to_journal, on_progress=on_progress,
                 should_cancel=self.extract_cancel_requested.is_set,
             )
@@ -177,10 +177,10 @@ class ExtractorTabMixin:
                 reporter_name=reporter_name, moved_count=moved_count, removed_count=removed_count,
                 cancelled=cancelled,
             )
-            self.message_queue.put(("extract_done", (folder, moved_count, removed_count, cancelled, None)))
+            self.message_queue.put(("extract_done", (folder, moved_count, removed_count, failed_count, cancelled, None)))
         except Exception as error:
             tagger.send_extraction_report(reporter_name=reporter_name, error=str(error))
-            self.message_queue.put(("extract_done", (folder, 0, 0, False, str(error))))
+            self.message_queue.put(("extract_done", (folder, 0, 0, 0, False, str(error))))
 
     def _reset_extract(self):
         """Extractor has no persistent results table like Tagger/Quality -

@@ -14,6 +14,7 @@ import subprocess
 import time
 import threading
 import unittest
+import unittest.mock
 import tempfile
 import keyring
 import keyring.backend
@@ -1425,9 +1426,10 @@ class ExtractAudioFilesTests(unittest.TestCase):
         self._touch("Album", "Sub", "Track2.wav")
         self._touch("AlreadyHere.mp3")
 
-        moved = tagger.extract_audio_files(self.root)
+        moved, failed = tagger.extract_audio_files(self.root)
 
         self.assertEqual(moved, 2)
+        self.assertEqual(failed, 0)
         self.assertEqual(
             set(os.listdir(self.root)) - {"Album"},
             {"Track1.mp3", "Track2.wav", "AlreadyHere.mp3"},
@@ -1438,9 +1440,28 @@ class ExtractAudioFilesTests(unittest.TestCase):
         self._touch("B", "Track2.mp3")
         self._touch("C", "Track3.mp3")
 
-        moved = tagger.extract_audio_files(self.root, should_cancel=lambda: True)
+        moved, failed = tagger.extract_audio_files(self.root, should_cancel=lambda: True)
 
         self.assertEqual(moved, 0)
+        self.assertEqual(failed, 0)
+
+    def test_reports_failed_moves_without_stopping_the_rest(self):
+        self._touch("A", "Track1.mp3")
+        self._touch("A", "Track2.mp3")
+
+        real_move = shutil.move
+
+        def flaky_move(src, dst):
+            if "Track1" in src:
+                raise PermissionError("file is in use")
+            return real_move(src, dst)
+
+        with unittest.mock.patch("track_tidy.shutil.move", side_effect=flaky_move):
+            moved, failed = tagger.extract_audio_files(self.root)
+
+        self.assertEqual(moved, 1)
+        self.assertEqual(failed, 1)
+        self.assertIn("Track2.mp3", os.listdir(self.root))
 
     def test_remove_empty_subfolders_removes_only_empty_ones(self):
         os.makedirs(os.path.join(self.root, "Empty1"))

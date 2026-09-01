@@ -42,6 +42,7 @@ import contextlib
 import os
 import subprocess
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -51,6 +52,7 @@ import tkinter as tk
 from PIL import ImageGrab
 
 import interface
+import track_tidy as tagger
 
 if sys.platform != "win32":
     import signal
@@ -211,6 +213,59 @@ def check_tagger_row_logic(app):
     app._apply_table_filter()
 
 
+def check_quality_row_logic(app):
+    """Regression guard for two real reports: (1) analysis results used to
+    just sit in scan/arrival order, leaving the tracks that most need a
+    listen (red/orange) scattered instead of surfaced first - fixed by
+    auto-sorting worst-first once a scan ends (_apply_quality_sort_state);
+    (2) a file Quality couldn't analyze at all only ever showed up as a
+    "❓" row or a line in the hidden-by-default log, easy to miss - fixed
+    by also showing a popup. Patches messagebox.showwarning so the popup
+    doesn't block this script waiting for a real click - it only asserts
+    that the popup call happened with the right count, not that a human
+    saw it."""
+    import tkinter.messagebox as messagebox
+
+    app.quality_last_scanned_folder = tempfile.gettempdir()
+    app.quality_row_paths = {}
+    app._quality_scan_counts = {tagger.QUALITY_GREEN: 0, tagger.QUALITY_ORANGE: 0, tagger.QUALITY_RED: 0}
+    app._quality_verdict_sort_state = 0
+    app._quality_default_row_order = None
+
+    for row in app.quality_table.get_children():
+        app.quality_table.delete(row)
+
+    # Inserted in a deliberately "wrong" order (green, red, orange, then an
+    # unanalyzable one) so a real reorder is required to pass.
+    results = [
+        {"file": "a_green.mp3", "format": "MP3", "verdict": tagger.QUALITY_GREEN, "bitrate_kbps": 320, "lufs": -10},
+        {"file": "b_red.mp3", "format": "MP3", "verdict": tagger.QUALITY_RED, "bitrate_kbps": 128, "lufs": -8},
+        {"file": "c_orange.mp3", "format": "MP3", "verdict": tagger.QUALITY_ORANGE, "bitrate_kbps": 192, "lufs": -9},
+        {"file": "d_unknown.mp3", "format": "MP3", "verdict": None, "bitrate_kbps": None, "lufs": None},
+    ]
+    for result in results:
+        app._add_quality_row(result)
+    pump(app.window, 0.5)  # let each row's flash-in animation finish (see _flash_new_row)
+
+    captured = []
+    original_showwarning = messagebox.showwarning
+    try:
+        messagebox.showwarning = lambda title, msg, **kw: captured.append((title, msg))
+
+        app._finalize_quality_scan((results, False, None))
+        pump(app.window, 0.5)  # the sort itself is deferred past the flash window - see _finalize_quality_scan
+
+        order = [app.quality_table.item(iid, "values")[0] for iid in app.quality_table.get_children()]
+        expected = ["b_red.mp3", "c_orange.mp3", "a_green.mp3", "d_unknown.mp3"]
+        if order != expected:
+            raise AssertionError(f"expected worst-first order {expected}, got {order}")
+
+        if len(captured) != 1 or "1 file" not in captured[0][1]:
+            raise AssertionError(f"expected exactly one 'could not be analyzed' popup, got {captured}")
+    finally:
+        messagebox.showwarning = original_showwarning
+
+
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -239,6 +294,15 @@ def main():
     except Exception as error:
         failures.append(f"tagger row logic: {error}")
         print(f"FAIL tagger row logic: {error}")
+
+    try:
+        app.notebook.select(2)  # Quality tab
+        pump(root, 0.3)
+        check_quality_row_logic(app)
+        print("OK   quality row auto-sort/unanalyzable-popup logic")
+    except Exception as error:
+        failures.append(f"quality row logic: {error}")
+        print(f"FAIL quality row logic: {error}")
 
     for theme in ("dark", "light"):
         app._apply_theme(theme)
