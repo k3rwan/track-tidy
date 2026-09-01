@@ -3,16 +3,16 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/k3rwan/track-tidy/releases/download/0.28/Track-Tidy-Setup-0.28.exe"><img src="https://img.shields.io/badge/Download-0078D6?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iI2ZmZmZmZiIgZD0iTTMgM2g4LjV2OC41SDN6bTkuNSAwSDIxdjguNWgtOC41ek0zIDEyLjVoOC41VjIxSDN6bTkuNSAwSDIxVjIxaC04LjV6Ii8+PC9zdmc+" alt="Download for Windows"></a>
+  <a href="https://github.com/k3rwan/track-tidy/releases/download/0.28.2/Track-Tidy-Setup-0.28.2.exe"><img src="https://img.shields.io/badge/Download-0078D6?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iI2ZmZmZmZiIgZD0iTTMgM2g4LjV2OC41SDN6bTkuNSAwSDIxdjguNWgtOC41ek0zIDEyLjVoOC41VjIxSDN6bTkuNSAwSDIxVjIxaC04LjV6Ii8+PC9zdmc+" alt="Download for Windows"></a>
   &nbsp;
   <a href="https://github.com/k3rwan/track-tidy/releases/download/0.26.3/Track-Tidy-Setup-0.26.3.dmg"><img src="https://img.shields.io/badge/Download-000000?style=for-the-badge&logo=apple" alt="Download for macOS"></a>
 </p>
 <p align="center">
-  <sub>Windows 0.28, macOS 0.26.3 - see <a href="../../releases/latest">Releases</a> for older versions.</sub>
+  <sub>Windows 0.28.2, macOS 0.26.3 - see <a href="../../releases/latest">Releases</a> for older versions.</sub>
 </p>
 
 <p align="center">
-  <a href="https://www.virustotal.com/gui/file/36857d8adc196f1b0a8efc66ff836700e6460b62084985ded7b4399f451d7e1b/detection"><img src="https://img.shields.io/badge/Scanned%20on-VirusTotal-brightgreen?style=for-the-badge&logo=virustotal&logoColor=white" alt="Scanned on VirusTotal - view full report"></a>
+  <a href="https://www.virustotal.com/gui/file/f549d006481d6549231a90fb939523212ebe6b711891ec09af8d2368c1975c39/detection"><img src="https://img.shields.io/badge/Scanned%20on-VirusTotal-brightgreen?style=for-the-badge&logo=virustotal&logoColor=white" alt="Scanned on VirusTotal - view full report"></a>
 </p>
 
 > ⭐ If Track Tidy is useful to you, consider starring the repo - it's free and helps other DJs find it.

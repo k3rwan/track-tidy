@@ -3,12 +3,18 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.29]
+## [0.28.2] (Windows only)
 
 ### Removed
 - The "Send anonymous usage telemetry" Settings checkbox. Usage
   telemetry (install/scan/no-cover/rate-limit pings) is now always on,
   with no user-facing way to disable it.
+
+### Fixed
+- Disabled UPX compression in the PyInstaller build - a well-known
+  antivirus false-positive trigger. Cut VirusTotal flags on this build
+  from 4/75 (0.28) to 3/75, all generic/heuristic, no real signature
+  match.
 
 ## [0.28]
 
