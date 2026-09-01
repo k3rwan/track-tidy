@@ -264,6 +264,7 @@ class QualityTabMixin:
             return
 
         folder = os.path.dirname(valid_paths[0])
+        already_analyzed = set(self.quality_row_paths.values()) if folder == self.quality_last_scanned_folder else set()
         same_folder_paths = []
         for path in valid_paths:
             if os.path.dirname(path) != folder:
@@ -271,7 +272,13 @@ class QualityTabMixin:
                     f"Ignored '{os.path.basename(path)}' - dropped from a different folder than the rest."
                 )
                 continue
+            if path in already_analyzed:
+                self._append_to_journal(f"Ignored '{os.path.basename(path)}' - already in the table.")
+                continue
             same_folder_paths.append(path)
+
+        if not same_folder_paths:
+            return
 
         self._sync_all_folder_pickers(folder)
         self._start_quality_scan(explicit_files=same_folder_paths)
@@ -280,23 +287,32 @@ class QualityTabMixin:
         """explicit_files, if given, analyzes only those specific files
         (mirrors Tagger's own explicit_files scan) instead of every
         supported file in the folder - used by _on_quality_files_dropped
-        when the user drops individual file(s) rather than a folder."""
+        when the user drops individual file(s) rather than a folder.
+
+        Dropping one or more extra files into an already-analyzed folder
+        (explicit_files given AND it's the same folder) is an INCREMENTAL
+        add, not a fresh scan - real report: this used to unconditionally
+        wipe the table/counts/sort state first, so adding one track to
+        Quality threw away every already-analyzed row instead of just
+        appending to them, unlike Tagger's equivalent drop."""
         folder = self.quality_folder_var.get().strip()
         if not folder or not os.path.isdir(folder):
             messagebox.showwarning("Missing folder", "Please choose a valid folder first.", parent=self.window)
             return
 
-        for row in self.quality_table.get_children():
-            self.quality_table.delete(row)
+        is_incremental_add = explicit_files is not None and folder == self.quality_last_scanned_folder
+        if not is_incremental_add:
+            for row in self.quality_table.get_children():
+                self.quality_table.delete(row)
+            self.quality_row_paths = {}
+            self._quality_scan_counts = {tagger.QUALITY_GREEN: 0, tagger.QUALITY_ORANGE: 0, tagger.QUALITY_RED: 0}
+            self._quality_verdict_sort_state = 0  # a fresh scan invalidates any prior sort
+            self._quality_default_row_order = None
         self._update_quality_empty_state_hint()
         self.quality_summary_frame.pack_forget()
         self.quality_last_scanned_folder = folder
-        self.quality_row_paths = {}
-        self._quality_scan_counts = {tagger.QUALITY_GREEN: 0, tagger.QUALITY_ORANGE: 0, tagger.QUALITY_RED: 0}
         self._pending_quality_reveals = []  # results queued for _reveal_next_quality_row
         self._pending_quality_scan_done = None  # held until reveals catch up
-        self._quality_verdict_sort_state = 0  # a fresh scan invalidates any prior sort
-        self._quality_default_row_order = None
         self._quality_scan_total = 0  # set once the first "quality_scan_progress" message arrives
 
         self.quality_browse_button.configure(state="disabled")

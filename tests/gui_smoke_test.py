@@ -357,6 +357,54 @@ def check_quality_progress_bar_placement(app):
         raise AssertionError("window should shrink back to its original height after _reset_quality")
 
 
+def check_quality_incremental_add(app):
+    """Regression guard for a real report: dropping one more track into an
+    already-analyzed Quality folder wiped every existing row first,
+    instead of just adding to them - _start_quality_scan unconditionally
+    cleared the table/counts/sort state on every call, whether it was a
+    fresh folder scan or just one more file dropped onto the same
+    folder. Fixed by only resetting when explicit_files is absent (a
+    real fresh scan) or the folder actually changed."""
+    tmp_dir = tempfile.mkdtemp()
+
+    app._reset_quality()
+    pump(app.window, 0.1)
+    app.quality_folder_var.set(tmp_dir)
+    app.quality_last_scanned_folder = tmp_dir
+    app._add_quality_row({
+        "file": "existing.mp3", "format": "MP3", "verdict": tagger.QUALITY_GREEN,
+        "bitrate_kbps": 320, "lufs": -10,
+    })
+    pump(app.window, 0.3)
+
+    original_run_scan = app._run_quality_scan
+    app._run_quality_scan = lambda *a, **kw: None  # avoid a real background analysis
+    try:
+        app._start_quality_scan(explicit_files=[os.path.join(tmp_dir, "new.mp3")])
+        pump(app.window, 0.1)
+        rows = app.quality_table.get_children()
+        if len(rows) != 1:
+            raise AssertionError(f"expected the existing row to survive an incremental add, got {len(rows)} row(s)")
+        if app.quality_table.item(rows[0], "values")[0] != "existing.mp3":
+            raise AssertionError("the surviving row isn't the pre-existing one - table was rebuilt, not appended to")
+
+        # A scan with NO explicit_files (a real fresh "Analyze" click) must
+        # still reset - only the incremental-drop path should preserve rows.
+        app._finalize_quality_scan(([], False, None))
+        pump(app.window, 0.1)
+        app._start_quality_scan()
+        pump(app.window, 0.1)
+        if app.quality_table.get_children():
+            raise AssertionError("a fresh whole-folder scan should still clear previous rows")
+    finally:
+        app._run_quality_scan = original_run_scan
+        app.quality_browse_button.configure(state="normal")
+        app.quality_reset_button.configure(state="normal")
+        app._set_tabs_locked(False)
+        app._reset_quality()
+        pump(app.window, 0.1)
+
+
 def check_quality_drag_and_drop(app):
     """Regression guard for the Quality tab's drag-and-drop, added to
     match the Tagger tab's own (a folder or file dropped while viewing
@@ -515,6 +563,13 @@ def main():
     except Exception as error:
         failures.append(f"quality progress bar placement: {error}")
         print(f"FAIL quality progress bar placement: {error}")
+
+    try:
+        check_quality_incremental_add(app)
+        print("OK   quality tab incremental add (drop doesn't reset existing rows)")
+    except Exception as error:
+        failures.append(f"quality incremental add: {error}")
+        print(f"FAIL quality incremental add: {error}")
 
     try:
         check_quality_drag_and_drop(app)
