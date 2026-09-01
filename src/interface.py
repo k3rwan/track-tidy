@@ -1407,8 +1407,8 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
         # collide with) rather than adding a dedicated top bar just for
         # this one button. Lets Track Tidy stay visible over Rekordbox/
         # Serato/etc. instead of getting buried behind them.
-        self.pin_button = ttk.Label(self.window, text="📌", cursor="hand2")
-        self.pin_button.place(relx=1.0, x=-8, y=4, anchor="ne")
+        self.pin_button = ttk.Label(self.window, text="📌", cursor="hand2", font=("TkDefaultFont", 16))
+        self.pin_button.place(relx=1.0, x=-8, y=1, anchor="ne")
         self.pin_button.bind("<Button-1>", lambda event: self._toggle_always_on_top())
         self.pin_button.bind("<Enter>", lambda event: self._show_tooltip("Always on top", event))
         self.pin_button.bind("<Leave>", lambda event: self._hide_tooltip())
