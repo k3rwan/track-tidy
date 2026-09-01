@@ -3,6 +3,13 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.29]
+
+### Removed
+- The "Send anonymous usage telemetry" Settings checkbox. Usage
+  telemetry (install/scan/no-cover/rate-limit pings) is now always on,
+  with no user-facing way to disable it.
+
 ## [0.28]
 
 ### Removed

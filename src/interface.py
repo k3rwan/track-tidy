@@ -297,12 +297,10 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
         self.auto_convert_wav_aiff_var = tk.BooleanVar(value=saved_settings.get("auto_convert_wav_to_aiff", True))
         self.fix_track_file_name_var = tk.BooleanVar(value=saved_settings.get("fix_track_file_name", True))
         self.show_log_var = tk.BooleanVar(value=saved_settings.get("show_log_section", False))
-        self.use_telemetry_var = tk.BooleanVar(value=saved_settings.get("send_usage_telemetry", True))
         self._tagger_resize_pending = False
         tagger.AUTO_CONVERT_MP3 = self.auto_convert_var.get()
         tagger.AUTO_CONVERT_WAV_TO_AIFF = self.auto_convert_wav_aiff_var.get()
         tagger.FIX_TRACK_FILE_NAME = self.fix_track_file_name_var.get()
-        tagger.SEND_USAGE_TELEMETRY = self.use_telemetry_var.get()
 
         self._build_interface()
         # Tagger's folder may already be pre-filled from a saved setting
