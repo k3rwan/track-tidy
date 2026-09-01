@@ -7,11 +7,12 @@ on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 - BPM and musical key estimation, shown as a second line under each
-  track's title in the Tagger table ("128 BPM · 8A", Camelot notation).
-  Runs automatically during a scan - toggle in Settings ("Detect
-  BPM/key when scanning") if it's slowing large-library scans down too
-  much. A from-scratch, dependency-free estimate (no librosa/essentia),
-  presented as a DJ-ballpark figure, not professional-grade accuracy.
+  track's title in the Tagger table ("(128 BPM - 8A)", Camelot
+  notation). Runs automatically during a scan - toggle in Settings
+  ("Detect BPM/key when scanning") if it's slowing large-library scans
+  down too much. A from-scratch, dependency-free estimate (no
+  librosa/essentia), presented as a DJ-ballpark figure, not
+  professional-grade accuracy.
 - Duplicate-track detection ("Find duplicates" button in Tagger) -
   fingerprints scanned tracks locally (no network call) and flags
   likely duplicates with a 🔁 marker and a highlighted row.
@@ -19,7 +20,9 @@ on [Keep a Changelog](https://keepachangelog.com/).
   now cleared on Apply by default - real downloads very often carry
   junk in these fields, which then clutters Rekordbox/Serato's browser
   columns. Six independent toggles in Settings ("Clear metadata on
-  Apply") if you'd rather keep one of them.
+  Apply") if you'd rather keep one of them. History's "Restore" now
+  puts these six fields back to their exact original values too,
+  instead of leaving whatever Apply cleared them to.
 
 ### Fixed
 - Embedded Windows version metadata (publisher, product name,

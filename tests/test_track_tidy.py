@@ -900,6 +900,7 @@ class FinishScanApplyChangesTests(unittest.TestCase):
             "current_title": None,
             "has_cover": False,
             "current_cover_bytes": None,
+            "current_extra_tags": {},
             "tags_already_present": False,
             "already_applied": already_applied,
         }
@@ -1697,6 +1698,76 @@ class RestoreHistoryEntryTests(unittest.TestCase):
         self.assertFalse(artist)
         self.assertFalse(title)
 
+    def test_restores_extra_tag_fields_when_logged(self):
+        """New behavior: restore also puts comment/album/track-number/
+        album-artist/composer/disc-number back to their pre-Apply values
+        (captured by read_extra_tag_fields, logged as old_extra_tags),
+        not just leave whatever Apply left there."""
+        from mutagen.id3 import COMM
+        audio = tagger.WAVE(self.file_path)
+        if audio.tags is None:
+            audio.add_tags()
+        audio.tags.add(COMM(encoding=3, lang="eng", desc="", text=["Downloaded from somewhere"]))
+        audio.save()
+        old_extra_tags = tagger.read_extra_tag_fields(self.file_path)
+        self.assertEqual(old_extra_tags["comment"], "Downloaded from somewhere")
+
+        # Simulates a real Apply run: overwrites artist/title and clears
+        # the extra fields (clear_extra_tags defaults to True).
+        tagger.write_tags(
+            self.file_path, "New Artist", "New Title", None, False,
+            update_title=True, update_artist=True, update_cover=False,
+        )
+        self.assertIsNone(tagger.read_extra_tag_fields(self.file_path)["comment"])
+
+        entry = {
+            "folder": self._tmp_dir.name,
+            "new_file": "Current Artist - Current Title.wav",
+            "old_artist": "Old Artist", "old_title": "Old Title",
+            "old_cover_b64": None,
+            "old_extra_tags": old_extra_tags,
+        }
+        restored_path = tagger.restore_history_entry(entry, log=lambda *_: None)
+
+        self.assertEqual(
+            tagger.read_extra_tag_fields(restored_path)["comment"], "Downloaded from somewhere"
+        )
+
+    def test_restore_leaves_extra_tags_alone_when_not_logged(self):
+        """Backward compatibility: an entry logged before old_extra_tags
+        existed (or one where nothing was captured) must not touch these
+        fields at all on restore - same as before this feature existed.
+
+        Uses a fresh mp3 rather than the WAV fixture from setUp() - a WAV
+        restore always rewrites the file via FFmpeg first (see
+        _write_wav_riff_info's own docstring: it remuxes and drops the
+        existing ID3 chunk entirely, comment included) before write_tags
+        ever gets a say, a pre-existing limitation unrelated to
+        extra_tag_values that would otherwise make this test fail for a
+        reason that has nothing to do with what it's actually checking."""
+        from mutagen.id3 import COMM
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        mp3_path = os.path.join(self._tmp_dir.name, "Current Artist - Current Title.mp3")
+        shutil.copy(os.path.join(project_root, "assets", "fart_low_bitrate.mp3"), mp3_path)
+
+        audio = tagger.MP3(mp3_path)
+        if audio.tags is None:
+            audio.add_tags()
+        audio.tags.add(COMM(encoding=3, lang="eng", desc="", text=["Whatever is there now"]))
+        audio.save()
+
+        entry = {
+            "folder": self._tmp_dir.name,
+            "new_file": "Current Artist - Current Title.mp3",
+            "old_artist": "Old Artist", "old_title": "Old Title",
+            "old_cover_b64": None,
+        }
+        restored_path = tagger.restore_history_entry(entry, log=lambda *_: None)
+
+        self.assertEqual(
+            tagger.read_extra_tag_fields(restored_path)["comment"], "Whatever is there now"
+        )
+
     def test_raises_filenotfound_when_file_missing(self):
         entry = {
             "folder": self._tmp_dir.name, "new_file": "Does Not Exist.mp3",
@@ -2016,6 +2087,104 @@ class ClearUnwantedTagFieldsTests(unittest.TestCase):
         # contract - not "" (that would mean a tag exists with empty text).
         _, artist, _, _ = tagger.read_current_info(self.flac_path)
         self.assertIsNone(artist)
+
+    def test_read_extra_tag_fields_id3(self):
+        self._seed_id3_fields(self.mp3_path)
+        values = tagger.read_extra_tag_fields(self.mp3_path)
+        self.assertEqual(values, {
+            "comment": "junk comment", "album": "Junk Album", "track_number": "3",
+            "album_artist": "Junk Album Artist", "composer": "Junk Composer", "disc_number": "1",
+        })
+
+    def test_read_extra_tag_fields_flac(self):
+        self._seed_flac_fields(self.flac_path)
+        values = tagger.read_extra_tag_fields(self.flac_path)
+        self.assertEqual(values, {
+            "comment": "junk comment", "album": "Junk Album", "track_number": "3",
+            "album_artist": "Junk Album Artist", "composer": "Junk Composer", "disc_number": "1",
+        })
+
+    def test_read_extra_tag_fields_none_when_absent(self):
+        """A file with no tags at all yet (mp3 fixture as shipped) reads
+        back as every field None, not KeyError/an exception."""
+        values = tagger.read_extra_tag_fields(self.mp3_path)
+        self.assertEqual(values, {
+            "comment": None, "album": None, "track_number": None,
+            "album_artist": None, "composer": None, "disc_number": None,
+        })
+
+    def test_read_extra_tag_fields_empty_for_unreadable_file(self):
+        """Graceful degradation (see the function's own docstring) - a file
+        mutagen can't parse at all returns {}, never raises."""
+        garbage_path = os.path.join(self._tmp_dir.name, "not_really_audio.mp3")
+        with open(garbage_path, "wb") as f:
+            f.write(b"not an mp3 file")
+        self.assertEqual(tagger.read_extra_tag_fields(garbage_path), {})
+
+    def test_extra_tag_values_restores_exact_originals_on_id3(self):
+        """The history-restore path (write_tags' extra_tag_values) - puts
+        every field back to its captured original, clearing the ones that
+        were absent rather than leaving Apply's clear in place."""
+        self._seed_id3_fields(self.mp3_path)
+        original_values = tagger.read_extra_tag_fields(self.mp3_path)
+        # Simulate Apply clearing everything (the default behavior).
+        tagger.write_tags(
+            self.mp3_path, "Artist", "Title", cover_image=None, force_remove_if_missing=False,
+            update_title=False, update_artist=False, update_cover=False, log=lambda *_: None,
+        )
+        self.assertEqual(self._id3_frames_present(self.mp3_path), set())
+        # Now restore using the values captured before Apply ran.
+        tagger.write_tags(
+            self.mp3_path, "Artist", "Title", cover_image=None, force_remove_if_missing=False,
+            update_title=False, update_artist=False, update_cover=False,
+            clear_extra_tags=False, extra_tag_values=original_values, log=lambda *_: None,
+        )
+        self.assertEqual(tagger.read_extra_tag_fields(self.mp3_path), original_values)
+
+    def test_extra_tag_values_restores_exact_originals_on_flac(self):
+        self._seed_flac_fields(self.flac_path)
+        original_values = tagger.read_extra_tag_fields(self.flac_path)
+        tagger.write_tags(
+            self.flac_path, "Artist", "Title", cover_image=None, force_remove_if_missing=False,
+            update_title=False, update_artist=False, update_cover=False, log=lambda *_: None,
+        )
+        self.assertEqual(self._flac_fields_present(self.flac_path), set())
+        tagger.write_tags(
+            self.flac_path, "Artist", "Title", cover_image=None, force_remove_if_missing=False,
+            update_title=False, update_artist=False, update_cover=False,
+            clear_extra_tags=False, extra_tag_values=original_values, log=lambda *_: None,
+        )
+        self.assertEqual(tagger.read_extra_tag_fields(self.flac_path), original_values)
+
+    def test_extra_tag_values_restores_absence_by_clearing(self):
+        """A field that had no value before Apply (None in old_values) must
+        end up cleared on restore too, not left however Apply/a later edit
+        left it - a real gap this closes, not just the mirror case above."""
+        self._seed_id3_fields(self.mp3_path)
+        original_values = tagger.read_extra_tag_fields(self.mp3_path)
+        # Only the comment had a real value before Apply in this scenario.
+        original_values = {**original_values, "album": None, "track_number": None}
+        tagger.write_tags(
+            self.mp3_path, "Artist", "Title", cover_image=None, force_remove_if_missing=False,
+            update_title=False, update_artist=False, update_cover=False,
+            clear_extra_tags=False, extra_tag_values=original_values, log=lambda *_: None,
+        )
+        self.assertEqual(self._id3_frames_present(self.mp3_path), {"COMM", "TPE2", "TCOM", "TPOS"})
+
+    def test_extra_tag_values_empty_dict_leaves_everything_alone(self):
+        """An empty dict (nothing captured - an old history entry, or an
+        unsupported format) must behave exactly like clear_extra_tags=False,
+        never clear anything."""
+        self._seed_id3_fields(self.mp3_path)
+        tagger.write_tags(
+            self.mp3_path, "Artist", "Title", cover_image=None, force_remove_if_missing=False,
+            update_title=False, update_artist=False, update_cover=False,
+            clear_extra_tags=False, extra_tag_values={}, log=lambda *_: None,
+        )
+        self.assertEqual(
+            self._id3_frames_present(self.mp3_path),
+            {"COMM", "TALB", "TRCK", "TPE2", "TCOM", "TPOS"},
+        )
 
 
 class ProcessFilesTests(unittest.TestCase):

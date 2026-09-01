@@ -67,7 +67,7 @@ from mutagen.mp3 import MP3
 from mutagen.wave import WAVE
 from mutagen.aiff import AIFF
 from mutagen.flac import FLAC, Picture
-from mutagen.id3 import TIT2, TPE1, APIC
+from mutagen.id3 import TIT2, TPE1, APIC, COMM, TALB, TRCK, TPE2, TCOM, TPOS
 
 
 def safe_print(text=""):
@@ -1185,7 +1185,8 @@ _HISTORY_FILE_LOCK = threading.Lock()
 
 
 def log_history_entry(old_file, new_file, old_artist, old_title, new_artist, new_title,
-                       cover_updated, converted, folder=None, old_cover_bytes=None, run_id=None):
+                       cover_updated, converted, folder=None, old_cover_bytes=None, run_id=None,
+                       old_extra_tags=None):
     """
     Appends one line of JSON to HISTORY_FILE for a file that was actually
     processed (tags written and/or renamed), keeping a permanent record of
@@ -1199,6 +1200,13 @@ def log_history_entry(old_file, new_file, old_artist, old_title, new_artist, new
     restore_history_entry() possible later - MUSIC_FOLDER itself isn't
     reliable for that since the user may since have scanned a different
     folder entirely.
+
+    old_extra_tags (from read_extra_tag_fields, captured at scan time before
+    Apply ever touched the file) is the comment/album/track-number/album-
+    artist/composer/disc-number values to put back on restore - None or {}
+    for an entry logged before this existed, or for a format
+    read_extra_tag_fields doesn't cover, in which case restore just leaves
+    those fields alone (see write_tags' extra_tag_values).
 
     run_id is shared by every entry logged from the same process_files()
     call (see there) - lets the History window group tracks from the same
@@ -1219,6 +1227,7 @@ def log_history_entry(old_file, new_file, old_artist, old_title, new_artist, new
         "cover_updated": cover_updated,
         "converted": converted,
         "old_cover_b64": base64.b64encode(old_cover_bytes).decode("ascii") if old_cover_bytes else None,
+        "old_extra_tags": old_extra_tags or {},
     }
     try:
         with _HISTORY_FILE_LOCK, open(HISTORY_FILE, "a", encoding="utf-8") as f:
@@ -1262,8 +1271,10 @@ def _find_file_by_name(folder, basename):
 
 def restore_history_entry(entry, log=safe_print, override_path=None):
     """
-    Restores a file's artist/title/cover to what they were before a previous
-    run changed them (a history.jsonl entry from load_history_entries()).
+    Restores a file's artist/title/cover (and, when logged, its comment/
+    album/track-number/album-artist/composer/disc-number - see
+    read_extra_tag_fields) to what they were before a previous run changed
+    them (a history.jsonl entry from load_history_entries()).
 
     Locates the file via the entry's own logged folder + its current
     (new_file) relative path - NOT the global MUSIC_FOLDER, since the user
@@ -1345,12 +1356,14 @@ def restore_history_entry(entry, log=safe_print, override_path=None):
         # delall branch), not skip touching it and leave Apply's tags in
         # place - a real user-reported bug (fixed 2026-08-22).
         update_title=True, update_artist=True, update_cover=True,
-        # Nothing was ever logged for comment/album/track-number/album-
-        # artist/composer/disc-number (history.jsonl only keeps old
-        # artist/title/cover), so there's no value to restore these
-        # fields TO - leave whatever's currently in the file alone
-        # rather than either re-clearing or fabricating something.
+        # Puts comment/album/track-number/album-artist/composer/disc-number
+        # back to their exact pre-Apply values (captured by
+        # read_extra_tag_fields at scan time, see log_history_entry) -
+        # falls back to leaving them alone (clear_extra_tags=False) for an
+        # entry logged before this existed, or a format not covered (see
+        # write_tags' extra_tag_values docstring).
         clear_extra_tags=False,
+        extra_tag_values=entry.get("old_extra_tags") or {},
         log=log,
     )
     log(f"  Restored tags on: '{full_path}'")
@@ -2354,6 +2367,67 @@ def read_current_info(file_path):
     return has_cover, current_artist, current_title, cover_bytes
 
 
+# (canonical key, ID3 frame id, Vorbis comment key) - shared between
+# read_extra_tag_fields (captures the "old" values before Apply touches
+# them), _clear_unwanted_tag_fields (wipes them per the CLEAR_*_TAG
+# settings) and _restore_extra_tag_fields (puts the captured values back
+# on a history restore).
+_EXTRA_TAG_FIELD_SPECS = (
+    ("comment", "COMM", "comment"),
+    ("album", "TALB", "album"),
+    ("track_number", "TRCK", "tracknumber"),
+    ("album_artist", "TPE2", "albumartist"),
+    ("composer", "TCOM", "composer"),
+    ("disc_number", "TPOS", "discnumber"),
+)
+
+
+def read_extra_tag_fields(file_path):
+    """
+    READ-ONLY read of the comment/album/track-number/album-artist/composer/
+    disc-number fields _clear_unwanted_tag_fields() strips on Apply (see its
+    own docstring) - captured at scan time, before Apply ever touches the
+    file, so restore_history_entry() can put back the EXACT original values
+    later (via _restore_extra_tag_fields) instead of leaving whatever's
+    currently in the file alone.
+
+    Only implemented for the two tag systems _clear_unwanted_tag_fields()
+    itself handles (ID3 for mp3/wav/aiff, Vorbis comments for flac) -
+    returns {} for every other format (m4a/mpeg get force-converted to mp3
+    before Apply ever writes to them - see _resolve_conversion_target - so
+    there's no ID3 frame set on the pre-conversion file to attribute to the
+    post-conversion one anyway). An empty dict means "nothing captured",
+    which write_tags' extra_tag_values treats as "leave these fields
+    alone" on restore - graceful degradation for a format this doesn't
+    cover, not a wrong answer.
+    """
+    try:
+        audio = MutagenFile(file_path)
+    except Exception:
+        return {}
+
+    if audio is None or audio.tags is None:
+        return {}
+
+    tags = audio.tags
+    try:
+        if isinstance(audio, FLAC):
+            return {
+                key: (str(tags[vorbis_key][0]) if tags.get(vorbis_key) else None)
+                for key, _frame, vorbis_key in _EXTRA_TAG_FIELD_SPECS
+            }
+        if hasattr(tags, "getall"):
+            values = {}
+            for key, frame, _vorbis_key in _EXTRA_TAG_FIELD_SPECS:
+                frames = tags.getall(frame)
+                values[key] = str(frames[0].text[0]) if frames and frames[0].text else None
+            return values
+    except Exception:
+        return {}
+
+    return {}
+
+
 EXTRACTABLE_AUDIO_EXTENSIONS = SUPPORTED_EXTENSIONS + (".alac",)
 
 
@@ -2959,6 +3033,7 @@ def _prepare_scan(file_name, log=safe_print, on_new_mention=None, history_lookup
         on_new_mention(fuviclan_mention)
 
     has_cover, current_artist, current_title, current_cover_bytes = read_current_info(full_path)
+    current_extra_tags = read_extra_tag_fields(full_path)
     needs_conversion = not file_name.lower().endswith(".mp3")
 
     detected_artist, detected_title, tags_already_present = resolve_artist_title(
@@ -2999,6 +3074,7 @@ def _prepare_scan(file_name, log=safe_print, on_new_mention=None, history_lookup
         "current_artist": current_artist,
         "current_title": current_title,
         "current_cover_bytes": current_cover_bytes,
+        "current_extra_tags": current_extra_tags,
         "needs_conversion": needs_conversion,
         "detected_artist": detected_artist,
         "detected_title": detected_title,
@@ -3165,6 +3241,7 @@ def _finish_scan(prepared, match_result, cover_source, log=safe_print):
         "found_cover_image": found_cover_image,
         "cover_source": cover_source,
         "current_cover_bytes": prepared["current_cover_bytes"],
+        "current_extra_tags": prepared["current_extra_tags"],
         "title_override": None,
         "artist_override": None,
         "duplicate_of": None,
@@ -5087,9 +5164,51 @@ def _clear_unwanted_tag_fields(tags, is_flac):
             tags.delall("TPOS")
 
 
+# Simple ID3 text-frame classes (encoding + text, like TIT2/TPE1) for every
+# _EXTRA_TAG_FIELD_SPECS frame except COMM, which additionally needs a
+# lang/desc pair - restore_history_entry() only ever captured the comment's
+# TEXT (see read_extra_tag_fields), so it's rebuilt with the same lang/desc
+# ("eng"/"") this app would use if it ever wrote a comment itself.
+_ID3_EXTRA_TEXT_FRAME_CLASSES = {"TALB": TALB, "TRCK": TRCK, "TPE2": TPE2, "TCOM": TCOM, "TPOS": TPOS}
+
+
+def _restore_extra_tag_fields(tags, is_flac, old_values):
+    """
+    Sets comment/album/track-number/album-artist/composer/disc-number back
+    to their EXACT pre-Apply values (old_values, from log_history_entry's
+    old_extra_tags - see read_extra_tag_fields) - used by
+    restore_history_entry() via write_tags' extra_tag_values instead of
+    _clear_unwanted_tag_fields()'s always-clear behavior, since a restore
+    should put the file back exactly how it was, not blank these fields the
+    way a fresh Apply does.
+
+    old_values is expected to carry all six keys (or be empty - see
+    write_tags' extra_tag_values docstring for why an empty dict never
+    reaches this function). A value of None/"" for a key means the field
+    was absent before Apply, so it's cleared here too, not skipped.
+    """
+    if is_flac:
+        for key, _frame, vorbis_key in _EXTRA_TAG_FIELD_SPECS:
+            value = old_values.get(key)
+            if value:
+                tags[vorbis_key] = [value]
+            elif vorbis_key in tags:
+                del tags[vorbis_key]
+    else:
+        for key, frame, _vorbis_key in _EXTRA_TAG_FIELD_SPECS:
+            value = old_values.get(key)
+            if not value:
+                tags.delall(frame)
+            elif frame == "COMM":
+                tags.delall("COMM")
+                tags.add(COMM(encoding=3, lang="eng", desc="", text=[value]))
+            else:
+                tags.setall(frame, [_ID3_EXTRA_TEXT_FRAME_CLASSES[frame](encoding=3, text=[value])])
+
+
 def write_tags(file_path, artist, title, cover_image, force_remove_if_missing,
                 update_title=True, update_artist=True, update_cover=True,
-                clear_extra_tags=True, log=safe_print):
+                clear_extra_tags=True, extra_tag_values=None, log=safe_print):
     """
     Writes the chosen tags:
     - update_title / update_artist: True to write, False to leave as-is
@@ -5098,9 +5217,15 @@ def write_tags(file_path, artist, title, cover_image, force_remove_if_missing,
     - clear_extra_tags: True to also strip comment/album/track-number/
       album-artist/composer/disc-number per the CLEAR_*_TAG settings
       (see _clear_unwanted_tag_fields) - False for an unchecked row
-      (nothing about it should change) or a history restore (there's
-      nothing logged to restore these fields TO, so leaving them alone
-      is the only sensible behavior either way).
+      (nothing about it should change).
+    - extra_tag_values: when given a non-empty dict (from
+      log_history_entry's old_extra_tags, via restore_history_entry), sets
+      those six fields back to their EXACT pre-Apply values instead of
+      either clearing or leaving them alone - takes priority over
+      clear_extra_tags entirely. An empty dict (nothing was captured - an
+      old history entry, or a format read_extra_tag_fields doesn't cover)
+      falls back to leaving these fields untouched, same as
+      clear_extra_tags=False.
     """
     if file_path.lower().endswith(".wav") and (update_title or update_artist):
         _write_wav_riff_info(file_path, artist, title, update_artist, update_title, log=log)
@@ -5145,7 +5270,9 @@ def write_tags(file_path, artist, title, cover_image, force_remove_if_missing,
                 audio.clear_pictures()
             # otherwise: leave the existing cover untouched
 
-        if clear_extra_tags:
+        if extra_tag_values:
+            _restore_extra_tag_fields(tags, is_flac=True, old_values=extra_tag_values)
+        elif clear_extra_tags:
             _clear_unwanted_tag_fields(tags, is_flac=True)
     else:
         tags = audio.tags
@@ -5169,7 +5296,9 @@ def write_tags(file_path, artist, title, cover_image, force_remove_if_missing,
                 tags.delall("APIC")
             # otherwise: leave the existing cover untouched
 
-        if clear_extra_tags:
+        if extra_tag_values:
+            _restore_extra_tag_fields(tags, is_flac=False, old_values=extra_tag_values)
+        elif clear_extra_tags:
             _clear_unwanted_tag_fields(tags, is_flac=False)
 
     save_audio(audio)
@@ -5373,6 +5502,7 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
                     folder=os.path.abspath(MUSIC_FOLDER) if MUSIC_FOLDER else None,
                     old_cover_bytes=info.get("current_cover_bytes") if info.get("has_cover") else None,
                     run_id=run_id,
+                    old_extra_tags=info.get("current_extra_tags"),
                 )
 
             if update_cover and cover_image:
