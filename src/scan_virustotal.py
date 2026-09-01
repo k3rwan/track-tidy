@@ -3,7 +3,7 @@ Uploads a built installer to VirusTotal, waits for the scan to finish, and
 prints the detection ratio + permalink - the automated replacement for
 manually dragging the file into virustotal.com after each release.
 
-Usage: python scan_virustotal.py path/to/Track-Tidy-Setup-X.Y.exe
+Usage: python src/scan_virustotal.py path/to/Track-Tidy-Setup-X.Y.exe
 
 Reads the API key from release_secrets.json (gitignored, local-only - see
 that file's comment in .gitignore for why this is kept separate from
@@ -26,7 +26,11 @@ MAX_POLL_ATTEMPTS = 40  # up to 10 minutes
 
 
 def load_api_key():
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "release_secrets.json")
+    # This file lives in src/, one level below the project root where
+    # release_secrets.json actually sits (same reasoning as
+    # app_base_dir()/resource_path() in track_tidy.py/ui_common.py).
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(project_root, "release_secrets.json")
     with open(path, "r", encoding="utf-8") as f:
         secrets = json.load(f)
     api_key = secrets.get("virustotal_api_key")

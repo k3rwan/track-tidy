@@ -53,11 +53,14 @@ def resource_path(filename):
     Locates a bundled resource (icon, sound...) whether running as a normal
     script or as a PyInstaller-frozen .exe (which extracts data files to a
     temporary folder, sys._MEIPASS, different from the .exe's own location).
+    When running from source (unfrozen), this file lives in src/, one level
+    below the project root where assets/ actually sits - hence the extra
+    dirname() to go back up out of src/.
     """
     if getattr(sys, "frozen", False):
         base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
     else:
-        base = os.path.dirname(os.path.abspath(__file__))
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, filename)
 
 # Accent used for every clickable link/info-icon/toggle label across the 4

@@ -45,8 +45,8 @@ import sys
 import tempfile
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(REPO_ROOT, "src"))
 
 import tkinter as tk
 from PIL import ImageGrab
@@ -127,7 +127,7 @@ def check_direct_launch():
     same way the desktop launcher .bat does) is the only way to actually
     catch that."""
     process = subprocess.Popen(
-        [sys.executable, "interface.py"], cwd=REPO_ROOT,
+        [sys.executable, os.path.join("src", "interface.py")], cwd=REPO_ROOT,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     time.sleep(3)
@@ -135,10 +135,10 @@ def check_direct_launch():
     if still_running:
         process.terminate()
         process.wait(timeout=5)
-        print("OK   direct launch (python interface.py) stayed up")
+        print("OK   direct launch (python src/interface.py) stayed up")
         return None
     _, stderr = process.communicate()
-    return f"direct launch (python interface.py) exited early:\n{stderr}"
+    return f"direct launch (python src/interface.py) exited early:\n{stderr}"
 
 
 def check_tagger_row_logic(app):

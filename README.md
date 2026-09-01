@@ -95,8 +95,8 @@ specific track that got tagged wrong.
 
 | File | Purpose |
 |---|---|
-| `track_tidy.py` | Core logic: filename parsing, tag reading/writing, format conversion, cover search (see the module docstring for the full breakdown) |
-| `interface.py` | Tkinter GUI on top of `track_tidy.py` |
+| `src/track_tidy.py` | Core logic: filename parsing, tag reading/writing, format conversion, cover search (see the module docstring for the full breakdown) |
+| `src/interface.py` | Tkinter GUI on top of `track_tidy.py` |
 
 ### Setup
 
@@ -109,7 +109,7 @@ no shared defaults, same as an unconfigured user. See
 supply your own via a local `default_credentials.json`.
 
 It also relies on `ffmpeg`/`fpcalc` (format conversion, AcoustID
-fingerprinting) being present next to the script - not included here, see
+fingerprinting) being present at the project root - not included here, see
 `find_ffmpeg()`/`find_fpcalc()`.
 
 ### Running from source
@@ -117,7 +117,7 @@ fingerprinting) being present next to the script - not included here, see
 ```bash
 python -m venv venv
 venv\Scripts\pip install -r requirements.txt
-venv\Scripts\python interface.py
+venv\Scripts\python src\interface.py
 ```
 
 ### License

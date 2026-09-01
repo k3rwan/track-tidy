@@ -28,8 +28,8 @@ if [ ! -d "venv_build" ]; then
     exit 1
 fi
 
-if [ ! -f "interface.py" ]; then
-    echo "[ERROR] interface.py not found. Run this script from the project root."
+if [ ! -f "src/interface.py" ]; then
+    echo "[ERROR] src/interface.py not found. Run this script from the project root."
     exit 1
 fi
 
@@ -89,7 +89,7 @@ pyinstaller --windowed --noconfirm \
   --add-data "assets/extractor-after-light.png:assets" \
   --collect-all tkinterdnd2 \
   --collect-all keyring \
-  interface.py
+  src/interface.py
 
 if [ ! -d "dist/Track-Tidy.app" ]; then
     echo
@@ -152,7 +152,7 @@ codesign --force --deep --sign - "dist/Track-Tidy.app"
 echo
 echo "Building the .dmg..."
 mkdir -p installer_output
-APP_VERSION="$(python3 -c "import track_tidy; print(track_tidy.APP_VERSION)")"
+APP_VERSION="$(python3 -c "import sys; sys.path.insert(0, 'src'); import track_tidy; print(track_tidy.APP_VERSION)")"
 DMG_NAME="installer_output/Track-Tidy-Setup-${APP_VERSION}.dmg"
 rm -f "$DMG_NAME"
 # hdiutil create can fail with a transient "Resource busy" right after

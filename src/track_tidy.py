@@ -98,11 +98,14 @@ def app_base_dir():
     """
     Folder the app's own files (credentials, .music by default) should live next
     to. When packaged as a onefile .exe (PyInstaller), that's the folder
-    containing the .exe itself - NOT the temporary extraction folder.
+    containing the .exe itself - NOT the temporary extraction folder. When
+    running from source (unfrozen), this file lives in src/, one level
+    below the project root where default_credentials.json/ffmpeg.exe/etc.
+    actually sit - hence the extra dirname() to go back up out of src/.
     """
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def user_config_dir():
