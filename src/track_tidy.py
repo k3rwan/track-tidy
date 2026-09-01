@@ -4695,11 +4695,18 @@ def find_fpcalc():
     return _find_bundled_tool("fpcalc")
 
 
-def convert_to_mp3(source_path):
+def convert_to_mp3(source_path, log=safe_print):
     """
     Converts ANY audio file (wav, flac, aac, m4a, ogg, wma, aiff, opus...) to
     .mp3 at 320 kbps using FFmpeg, which reads the input format automatically -
     no per-format handling needed here. Removes the original file on success.
+
+    Returns (mp3_path, None) on success, (None, error_detail) on failure -
+    error_detail used to just go to a bare print(), invisible in a
+    --windowed build with no console (real report: a failure surfaced only
+    as a generic "Conversion failed" with no way to tell why, not even in
+    the log). log defaults to safe_print for CLI/test callers; the GUI
+    passes its own journal logger through process_files().
     """
     mp3_path = os.path.splitext(source_path)[0] + ".mp3"
     try:
@@ -4710,27 +4717,32 @@ def convert_to_mp3(source_path):
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if result.returncode != 0:
-            print(f"  FFmpeg error during conversion: {result.stderr[-300:]}")
-            return None
+            error_detail = result.stderr[-300:].strip() or "unknown FFmpeg error"
+            log(f"  FFmpeg error during conversion: {error_detail}")
+            return None, error_detail
 
         os.remove(source_path)
-        return mp3_path
+        return mp3_path, None
 
     except FileNotFoundError:
-        print("  FFmpeg was not found. Check that it's installed and in the PATH.")
-        return None
+        error_detail = "FFmpeg was not found - check that it's installed and in the PATH."
+        log(f"  {error_detail}")
+        return None, error_detail
     except Exception as error:
         print(f"  Error during conversion: {error}")
         return None
 
 
-def convert_wav_to_aiff(source_path):
+def convert_wav_to_aiff(source_path, log=safe_print):
     """
     Converts a WAV file to AIFF using FFmpeg - purely a lossless PCM
     byte-order swap (little-endian -> big-endian), not a re-encode, so
     there's no quality loss. Exists only for cover-art compatibility with
     software that doesn't read embedded artwork from WAV (confirmed:
     Rekordbox) but does from AIFF. Removes the original file on success.
+
+    Returns (aiff_path, None) on success, (None, error_detail) on failure -
+    same reasoning as convert_to_mp3()'s return shape.
 
     FFmpeg's plain conversion drops every existing tag (genre, year,
     etc.) - confirmed live: its WAV demuxer doesn't surface the ID3 chunk
@@ -4746,7 +4758,7 @@ def convert_wav_to_aiff(source_path):
         source_audio = WAVE(source_path)
         source_tags = source_audio.tags
     except Exception as error:
-        print(f"  Could not read existing tags before conversion: {error}")
+        log(f"  Could not read existing tags before conversion: {error}")
 
     aiff_path = os.path.splitext(source_path)[0] + ".aiff"
     try:
@@ -4757,8 +4769,9 @@ def convert_wav_to_aiff(source_path):
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if result.returncode != 0:
-            print(f"  FFmpeg error during conversion: {result.stderr[-300:]}")
-            return None
+            error_detail = result.stderr[-300:].strip() or "unknown FFmpeg error"
+            log(f"  FFmpeg error during conversion: {error_detail}")
+            return None, error_detail
 
         if source_tags:
             try:
@@ -4776,17 +4789,19 @@ def convert_wav_to_aiff(source_path):
                     aiff_audio.tags.add(frame)
                 aiff_audio.save()
             except Exception as error:
-                print(f"  Could not carry over existing tags after conversion: {error}")
+                log(f"  Could not carry over existing tags after conversion: {error}")
 
         os.remove(source_path)
-        return aiff_path
+        return aiff_path, None
 
     except FileNotFoundError:
-        print("  FFmpeg was not found. Check that it's installed and in the PATH.")
-        return None
+        error_detail = "FFmpeg was not found - check that it's installed and in the PATH."
+        log(f"  {error_detail}")
+        return None, error_detail
     except Exception as error:
-        print(f"  Error during conversion: {error}")
-        return None
+        error_detail = str(error)
+        log(f"  Error during conversion: {error_detail}")
+        return None, error_detail
 
 
 def convert_aiff_to_wav(source_path):
@@ -5155,10 +5170,10 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
                 source_extension = os.path.splitext(file_name)[1].lstrip(".").upper()
                 if target_format == "mp3":
                     log(f"  Converting .{source_extension.lower()} -> .mp3 (320 kbps)...")
-                    new_path = convert_to_mp3(full_path)
+                    new_path, conversion_error = convert_to_mp3(full_path, log=log)
                 else:
                     log(f"  Converting .{source_extension.lower()} -> .aiff...")
-                    new_path = convert_wav_to_aiff(full_path)
+                    new_path, conversion_error = convert_wav_to_aiff(full_path, log=log)
 
                 if not new_path:
                     log("  Conversion failed, file skipped.\n")
@@ -5166,7 +5181,8 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
                     if on_progress:
                         on_progress(index, total)
                     if on_file_processed:
-                        on_file_processed(identifier, False, "Conversion failed")
+                        reason = f"Conversion failed: {conversion_error}" if conversion_error else "Conversion failed"
+                        on_file_processed(identifier, False, reason)
                     continue
 
                 full_path = new_path
