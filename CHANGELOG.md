@@ -3,6 +3,24 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.28.3]
+
+### Added
+- BPM and musical key estimation, shown as a second line under each
+  track's title in the Tagger table ("128 BPM · 8A", Camelot notation).
+  Runs automatically during a scan - toggle in Settings ("Detect
+  BPM/key when scanning") if it's slowing large-library scans down too
+  much. A from-scratch, dependency-free estimate (no librosa/essentia),
+  presented as a DJ-ballpark figure, not professional-grade accuracy.
+- Duplicate-track detection ("Find duplicates" button in Tagger) -
+  fingerprints scanned tracks locally (no network call) and flags
+  likely duplicates with a 🔁 marker and a highlighted row.
+
+### Fixed
+- Embedded Windows version metadata (publisher, product name,
+  description) into the built exe - a blank/anonymous-looking binary
+  is a mild suspicion signal to some heuristic/ML antivirus engines.
+
 ## [0.28.2] (Windows only)
 
 ### Removed
