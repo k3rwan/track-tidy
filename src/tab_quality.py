@@ -309,7 +309,23 @@ class QualityTabMixin:
         self._set_tabs_locked(True)
 
         if not self.quality_progress_canvas.winfo_ismapped():
-            self.quality_progress_canvas.pack(fill="x", padx=10, pady=(0, 5), before=self.quality_table_frame)
+            # Bottom of the tab, below the table - same placement as Tagger's
+            # own progress_canvas (in launch_frame) for consistency across
+            # tabs. The 22px bottom margin (not the usual 5-10px) matches
+            # Tagger's own launch_frame - the "vX.Y" version label is
+            # place()'d at the window's bottom-right corner, independent of
+            # any tab's layout, and would otherwise overlap this full-width
+            # bar's right edge.
+            self.quality_progress_canvas.pack(fill="x", padx=10, pady=(0, 22))
+            # Was missing here even before this bottom-placement change -
+            # without it the window never grows to make room, so the bar
+            # silently had nowhere to render (quality_table_frame's Treeview
+            # has a real minimum height, unlike a plain Frame, so pack can't
+            # just shrink it to free up space on its own). _reset_quality
+            # already calls this on the way back down after pack_forget();
+            # this is that call's missing counterpart on the way up. Same
+            # pattern as Tagger's own _show_scan_progress_bar.
+            self._adjust_window_height()
         self._update_progress_bar(self.quality_progress_canvas, 0, "0 %")
 
         self._run_in_background(self._run_quality_scan, folder, explicit_files)

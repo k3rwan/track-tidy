@@ -40,6 +40,7 @@ real Tk window the same way without extra setup (e.g. Xvfb on Linux).
 """
 import contextlib
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -266,6 +267,56 @@ def check_quality_row_logic(app):
         messagebox.showwarning = original_showwarning
 
 
+def check_quality_progress_bar_placement(app):
+    """Regression guard for a real bug found while moving Quality's
+    progress bar to the bottom of the tab (to match Tagger's own
+    placement): _start_quality_scan packed the canvas but never called
+    _adjust_window_height() afterwards, unlike Tagger's
+    _show_scan_progress_bar (tab_tagger.py) and unlike Quality's own
+    _reset_quality, which already called it on the way back down. Since
+    quality_table_frame's Treeview has a real minimum height (unlike a
+    plain Frame), pack couldn't shrink it to free up space on its own -
+    the window needed to actually grow, which never happened, so the bar
+    silently had nowhere to render at all (not just in the wrong place -
+    genuinely invisible), regardless of where in the tab it was packed.
+    Confirmed by reproducing with winfo_ismapped()/winfo_width() both
+    reporting the canvas as never having been laid out."""
+    tmp_dir = tempfile.mkdtemp()
+    shutil.copy(os.path.join(REPO_ROOT, "assets", "fart.wav"), os.path.join(tmp_dir, "a.wav"))
+
+    app._reset_quality()
+    pump(app.window, 0.1)
+    if app.quality_progress_canvas.winfo_ismapped():
+        raise AssertionError("progress bar should start out hidden")
+    height_before = app.window.winfo_height()
+
+    app.quality_folder_var.set(tmp_dir)
+    app._start_quality_scan()
+    pump(app.window, 0.2)
+    try:
+        if not app.quality_progress_canvas.winfo_ismapped():
+            raise AssertionError("progress bar never became visible after starting a scan")
+        if app.quality_progress_canvas.winfo_width() <= 1:
+            raise AssertionError(f"progress bar has no real width ({app.quality_progress_canvas.winfo_width()}px) - never laid out")
+        if app.window.winfo_height() <= height_before:
+            raise AssertionError("window should grow to make room for the progress bar")
+
+        canvas_top = app.quality_progress_canvas.winfo_rooty()
+        table_bottom = app.quality_table_frame.winfo_rooty() + app.quality_table_frame.winfo_height()
+        if canvas_top < table_bottom:
+            raise AssertionError("progress bar should sit BELOW the table (Tagger's placement), not above/inside it")
+    finally:
+        app.quality_cancel_requested.set()
+        pump(app.window, 1.5)  # let the background scan thread actually exit
+        app._reset_quality()
+        pump(app.window, 0.1)
+
+    if app.quality_progress_canvas.winfo_ismapped():
+        raise AssertionError("progress bar should be hidden again after _reset_quality")
+    if app.window.winfo_height() != height_before:
+        raise AssertionError("window should shrink back to its original height after _reset_quality")
+
+
 def check_quality_drag_and_drop(app):
     """Regression guard for the Quality tab's drag-and-drop, added to
     match the Tagger tab's own (a folder or file dropped while viewing
@@ -417,6 +468,13 @@ def main():
     except Exception as error:
         failures.append(f"quality row logic: {error}")
         print(f"FAIL quality row logic: {error}")
+
+    try:
+        check_quality_progress_bar_placement(app)
+        print("OK   quality progress bar placement/visibility")
+    except Exception as error:
+        failures.append(f"quality progress bar placement: {error}")
+        print(f"FAIL quality progress bar placement: {error}")
 
     try:
         check_quality_drag_and_drop(app)
