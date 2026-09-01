@@ -300,13 +300,14 @@ def check_duplicate_marker_and_row_tag(app):
 def check_always_on_top_toggle(app):
     """Pin button (_toggle_always_on_top) flips the window's real
     -topmost attribute, its pin_button color, and always_on_top_var in
-    lockstep. Checks a flip in whichever direction rather than asserting
-    a fixed starting value - this smoke test runs against the real,
-    un-isolated settings.json (see this file's own known limitation), so
-    the starting state depends on whatever was last saved on this
-    machine, not always False. Toggles back at the end so the run
-    doesn't leave a side effect in that real settings.json."""
+    lockstep. always_on_top_var is deliberately never restored from
+    settings.json (Kevin's call - a forgotten pin from a previous session
+    should never carry over), so it must always start False here,
+    regardless of whatever this machine's real, un-isolated settings.json
+    (see this file's own known limitation) happens to hold."""
     initial = bool(app.window.attributes("-topmost"))
+    if initial:
+        raise AssertionError("always_on_top should always start False - it must never be restored from settings.json")
 
     app._toggle_always_on_top()
     flipped = bool(app.window.attributes("-topmost"))

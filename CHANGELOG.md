@@ -25,7 +25,9 @@ on [Keep a Changelog](https://keepachangelog.com/).
   instead of leaving whatever Apply cleared them to.
 - "Always on top" pin button (top-right corner) - keeps Track Tidy in
   front of other windows (Rekordbox, Serato, etc.) instead of getting
-  buried behind them. Remembered across restarts.
+  buried behind them. Always starts unpinned - resets off every time
+  the app closes, so it can't stay on top unexpectedly if you forget
+  to unpin it.
 
 ### Fixed
 - Embedded Windows version metadata (publisher, product name,

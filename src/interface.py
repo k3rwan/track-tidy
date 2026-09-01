@@ -315,7 +315,11 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
         self.clear_disc_number_tag_var = tk.BooleanVar(value=saved_settings.get("clear_disc_number_tag", True))
         # Pure window-manager concern (see _toggle_always_on_top) - no
         # tagger.XXX module constant to mirror, unlike the settings above.
-        self.always_on_top_var = tk.BooleanVar(value=saved_settings.get("always_on_top", False))
+        # Deliberately NOT restored from saved_settings (Kevin's call) -
+        # always starts unpinned on launch, even if it was left pinned when
+        # the app last closed, so a forgotten pin from a previous session
+        # can never surprise you by keeping the window on top unexpectedly.
+        self.always_on_top_var = tk.BooleanVar(value=False)
         self._tagger_resize_pending = False
         tagger.AUTO_CONVERT_MP3 = self.auto_convert_var.get()
         tagger.AUTO_CONVERT_WAV_TO_AIFF = self.auto_convert_wav_aiff_var.get()
@@ -1601,15 +1605,16 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
 
     def _apply_always_on_top(self):
         """Applies always_on_top_var's current value to the actual window
-        attribute, tints pin_button to show which state it's in (accent
+        attribute and tints pin_button to show which state it's in (accent
         blue when pinned, muted grey otherwise - same colors info icons/
-        the version label already use elsewhere in this file), and
-        persists the choice. Called both from the toggle handler and once
-        at startup (see _build_interface) to restore a saved preference."""
+        the version label already use elsewhere in this file). Deliberately
+        does NOT persist the choice (see always_on_top_var's own comment) -
+        session-only, always starts back at False on the next launch.
+        Called both from the toggle handler and once at startup (see
+        _build_interface)."""
         enabled = self.always_on_top_var.get()
         self.window.attributes("-topmost", enabled)
         self.pin_button.configure(foreground=LINK_ACCENT_COLOR if enabled else "#999999")
-        tagger.save_setting("always_on_top", enabled)
         tagger.log_action(f"Always on top: {enabled}")
 
     # --- Truncated-text tooltip ---

@@ -1125,7 +1125,6 @@ DEFAULT_SETTINGS = {
     "clear_album_artist_tag": True,
     "clear_composer_tag": True,
     "clear_disc_number_tag": True,
-    "always_on_top": False,
 }
 
 
