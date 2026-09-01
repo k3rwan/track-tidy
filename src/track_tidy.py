@@ -1474,6 +1474,7 @@ MUSIC_FOLDER = ""
 # the rest of the pipeline simple and consistent.
 SUPPORTED_EXTENSIONS = (
     ".mp3", ".wav", ".flac", ".aac", ".m4a", ".ogg", ".wma", ".aiff", ".opus",
+    ".mpeg", ".mpg",
 )
 
 # List of mentions to automatically strip out (add more if needed)
