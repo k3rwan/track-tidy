@@ -1360,12 +1360,49 @@ class ListAudioFilesTests(unittest.TestCase):
             set(tagger.list_audio_files()), {"Song.mp3", "Track.wav", "Other.flac", "Track.m4a"},
         )
 
-    def test_excludes_non_taggable_formats_when_auto_convert_disabled(self):
-        # WAV and FLAC can both be tagged directly (no conversion needed),
-        # so they stay included either way - only M4A (needs converting to
-        # be taggable at all) drops out when auto-convert is off.
+    def test_includes_m4a_even_when_auto_convert_disabled(self):
+        # WAV and FLAC can both be tagged directly (no conversion needed).
+        # M4A can't be tagged directly either, but it's common enough
+        # (iTunes/Apple Music purchases) that it always converts to MP3
+        # regardless of the auto-convert setting (see
+        # _resolve_conversion_target) - unlike AAC/OGG/WMA/opus, which do
+        # still need auto-convert on to show up at all.
         tagger.AUTO_CONVERT_MP3 = False
-        self.assertEqual(set(tagger.list_audio_files()), {"Song.mp3", "Track.wav", "Other.flac"})
+        self.assertEqual(
+            set(tagger.list_audio_files()), {"Song.mp3", "Track.wav", "Other.flac", "Track.m4a"},
+        )
+
+
+class ResolveConversionTargetTests(unittest.TestCase):
+    def setUp(self):
+        self._original_auto_convert_mp3 = tagger.AUTO_CONVERT_MP3
+        self._original_auto_convert_wav = tagger.AUTO_CONVERT_WAV_TO_AIFF
+
+    def tearDown(self):
+        tagger.AUTO_CONVERT_MP3 = self._original_auto_convert_mp3
+        tagger.AUTO_CONVERT_WAV_TO_AIFF = self._original_auto_convert_wav
+
+    def test_m4a_always_converts_to_mp3_regardless_of_settings(self):
+        tagger.AUTO_CONVERT_MP3 = False
+        self.assertEqual(tagger._resolve_conversion_target("Track.m4a"), "mp3")
+        tagger.AUTO_CONVERT_MP3 = True
+        self.assertEqual(tagger._resolve_conversion_target("Track.m4a"), "mp3")
+
+    def test_mp3_never_converts(self):
+        tagger.AUTO_CONVERT_MP3 = True
+        self.assertIsNone(tagger._resolve_conversion_target("Track.mp3"))
+
+    def test_wav_follows_wav_to_aiff_setting_when_mp3_auto_convert_is_off(self):
+        tagger.AUTO_CONVERT_MP3 = False
+        tagger.AUTO_CONVERT_WAV_TO_AIFF = True
+        self.assertEqual(tagger._resolve_conversion_target("Track.wav"), "aiff")
+        tagger.AUTO_CONVERT_WAV_TO_AIFF = False
+        self.assertIsNone(tagger._resolve_conversion_target("Track.wav"))
+
+    def test_auto_convert_mp3_wins_over_wav_to_aiff(self):
+        tagger.AUTO_CONVERT_MP3 = True
+        tagger.AUTO_CONVERT_WAV_TO_AIFF = True
+        self.assertEqual(tagger._resolve_conversion_target("Track.wav"), "mp3")
 
 
 class ExtractAudioFilesTests(unittest.TestCase):

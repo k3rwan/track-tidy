@@ -2452,16 +2452,20 @@ def list_audio_files():
     of relative paths of the audio files found (without reading any tags).
     Fast: useful for detecting new files without rescanning everything.
 
-    Skips formats other than MP3/WAV/AIFF/FLAC when AUTO_CONVERT_MP3 is off -
-    those are the only formats mutagen can tag directly (see
-    open_audio_file), so with auto-convert disabled there's nothing usable
-    left to do with the rest. MP3/WAV/AIFF/FLAC themselves are always
-    included either way.
+    Skips formats other than MP3/WAV/AIFF/FLAC/M4A when AUTO_CONVERT_MP3 is
+    off - those are the only formats with something usable to do without
+    the user opting into converting everything: MP3/WAV/AIFF/FLAC can all
+    be tagged directly (see open_audio_file), and M4A - common enough
+    (iTunes/Apple Music purchases) to warrant it - always converts to MP3
+    to be taggable at all, the same way WAV always has a path forward via
+    AUTO_CONVERT_WAV_TO_AIFF (see _resolve_conversion_target). The
+    remaining formats (AAC/OGG/WMA/opus) still need AUTO_CONVERT_MP3 on to
+    show up at all.
     """
     if not os.path.isdir(MUSIC_FOLDER):
         return []
 
-    extensions = SUPPORTED_EXTENSIONS if AUTO_CONVERT_MP3 else (".mp3", ".wav", ".aiff", ".flac")
+    extensions = SUPPORTED_EXTENSIONS if AUTO_CONVERT_MP3 else (".mp3", ".wav", ".aiff", ".flac", ".m4a")
 
     audio_files = []
     for current_folder, _, file_names in os.walk(MUSIC_FOLDER):
@@ -5199,10 +5203,15 @@ def _resolve_conversion_target(file_name):
     AUTO_CONVERT_MP3 always wins when it's on, for any format, including
     WAV - it's the broader, more deliberate setting. AUTO_CONVERT_WAV_TO_AIFF
     only ever applies to WAV specifically, and only when AUTO_CONVERT_MP3
-    is off.
+    is off. M4A always converts to MP3 regardless of either setting - unlike
+    WAV/AIFF/FLAC, there's no direct-tagging path for it at all (see
+    open_audio_file), so leaving AUTO_CONVERT_MP3 off must not make M4A
+    files un-processable the way it does for AAC/OGG/WMA/opus.
     """
     if file_name.lower().endswith(".mp3"):
         return None
+    if file_name.lower().endswith(".m4a"):
+        return "mp3"
     if AUTO_CONVERT_MP3:
         return "mp3"
     if file_name.lower().endswith(".wav") and AUTO_CONVERT_WAV_TO_AIFF:
