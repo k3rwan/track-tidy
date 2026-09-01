@@ -52,7 +52,6 @@ import tkinter as tk
 from PIL import ImageGrab
 
 import interface
-import tab_tagger
 import track_tidy as tagger
 
 if sys.platform != "win32":
@@ -233,12 +232,8 @@ def check_bpm_key_display(app):
         "bpm": 128.0, "camelot_key": "8A", "duplicate_of": None,
     }
     displayed_title = app._build_row_values(info)[1]
-    expected_text = tab_tagger._to_italic_unicode("128 BPM - 8A")
-    lines = displayed_title.split("\n")
-    if len(lines) != 2 or not lines[1].endswith(expected_text) or not lines[1].startswith(" "):
-        raise AssertionError(
-            f"expected an italicized, right-padded '{expected_text}' second line, got {displayed_title!r}"
-        )
+    if "\n128 BPM - 8A" not in displayed_title:
+        raise AssertionError(f"expected a '128 BPM - 8A' second line in the title, got {displayed_title!r}")
 
     # No bpm/key detected (or feature off) -> no second line at all, so a
     # plain row looks exactly like it did before this feature existed.

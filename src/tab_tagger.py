@@ -33,36 +33,6 @@ from ui_common import (
     setup_placeholder,
 )
 
-# Mathematical Alphanumeric Symbols block - used by _to_italic_unicode to
-# fake an italic look for the BPM/Key subtitle (see _bpm_key_line): ttk's
-# Treeview has no per-line font control within a single cell, only one font
-# for the whole cell, so a real italic font would also italicize the title
-# line above it. Substituting each Latin letter for its italic codepoint
-# sidesteps that entirely - no font/style change needed at all.
-_ITALIC_UPPER_BASE = 0x1D434  # MATHEMATICAL ITALIC CAPITAL A
-_ITALIC_LOWER_BASE = 0x1D44E  # MATHEMATICAL ITALIC SMALL A
-
-
-def _to_italic_unicode(text):
-    """Best-effort italic look for plain text inside a ttk.Treeview cell -
-    see the module comment above. Digits and punctuation have no italic
-    variant in the Mathematical Alphanumeric Symbols block, so they pass
-    through unchanged (still reads fine - only the letters slant)."""
-    chars = []
-    for char in text:
-        if "A" <= char <= "Z":
-            chars.append(chr(_ITALIC_UPPER_BASE + (ord(char) - ord("A"))))
-        elif char == "h":
-            # The block leaves italic small "h" unassigned - the Unicode
-            # standard points to the pre-existing Planck constant symbol
-            # instead of a Math-Alphanumeric codepoint for this one letter.
-            chars.append("ℎ")
-        elif "a" <= char <= "z":
-            chars.append(chr(_ITALIC_LOWER_BASE + (ord(char) - ord("a"))))
-        else:
-            chars.append(char)
-    return "".join(chars)
-
 
 class TaggerTabMixin:
     def _build_tagger_tab(self, tagger_tab):
@@ -1882,38 +1852,12 @@ class TaggerTabMixin:
         key (see track_tidy.py's estimate_bpm_and_key) - empty string
         (no second line at all) when detection is off or failed for this
         file, so a plain title looks exactly like it did before this
-        feature existed.
-
-        Styled as a subtitle: italicized (via _to_italic_unicode - see its
-        own comment on why not a real italic font) and pushed toward the
-        right edge of the Title column with leading spaces, while the
-        title line above it stays left-aligned in the normal font -
-        ttk.Treeview only supports one font/anchor for an entire cell, so
-        neither of those could otherwise apply to just this one line."""
+        feature existed."""
         bpm = info.get("bpm")
         key = info.get("camelot_key")
         if bpm is None or key is None:
             return ""
-        text = _to_italic_unicode(f"{bpm:.0f} BPM - {key}")
-        return f"\n{self._right_align_padding(text)}{text}"
-
-    def _right_align_padding(self, text):
-        """Leading spaces to visually push _bpm_key_line's text toward the
-        right edge of the Title column, measured in the table's actual
-        font against the column's CURRENT width - approximate (ttk has no
-        real per-line right-anchor within a cell - see _bpm_key_line), and
-        a row built before the user drags the column to a new width won't
-        reflow until the next rebuild, but this tracks resizes far better
-        than a fixed guess would."""
-        try:
-            column_width = self.table.column("title", "width")
-            space_width = self._table_font.measure(" ") or 1
-            text_width = self._table_font.measure(text)
-            available = column_width - text_width - 8  # ttk's own small cell padding
-            space_count = max(0, available // space_width)
-        except Exception:
-            space_count = 0
-        return " " * space_count
+        return f"\n{bpm:.0f} BPM - {key}"
 
     def _build_row_values(self, info):
         """Builds the tuple of displayed values for a row (image handled separately)."""
