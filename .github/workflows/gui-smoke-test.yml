@@ -61,9 +61,20 @@ jobs:
           jq -n '{soundcloud_client_id: "ci-placeholder", soundcloud_client_secret: "ci-placeholder", discord_webhook_url: "https://discord.com/api/webhooks/0/ci-placeholder", acoustid_api_key: "ci-placeholder", discord_bot_token: "ci-placeholder"}' > default_credentials.json
 
       - name: Run GUI smoke test
+        # -u (unbuffered stdout): the last two runs of this job hit the
+        # 10-minute hard cap below with ZERO output logged, because
+        # Python fully buffers stdout when it's not a real terminal (a
+        # pipe, as GitHub Actions uses) - every print() this script makes
+        # was sitting in a buffer that only ever flushes on normal exit,
+        # so a genuine hang looks identical to "nothing ran yet" with no
+        # way to tell which check it actually got stuck on. This doesn't
+        # fix the hang itself (still not root-caused - the check most
+        # likely to blame was already rewritten to avoid real background
+        # work and it still happened), just makes the next occurrence
+        # diagnosable from the log instead of a total blackout.
         run: |
           source venv/bin/activate
-          python tests/gui_smoke_test.py
+          python -u tests/gui_smoke_test.py
 
       - name: Upload screenshots
         if: always()

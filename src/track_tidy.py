@@ -747,11 +747,14 @@ def send_track_report(info, reporter_name=None, timeout=10):
 # the channel the way it used to before that request.
 DISCORD_NOTIFICATION_EXCLUDED_USERS = set() if getattr(sys, "frozen", False) else {"kevin"}
 
-# Opt-out flag for the automatic pings above - toggled by Settings' "Send
-# anonymous usage telemetry" checkbox (interface.py's use_telemetry_var).
-# Same "doesn't apply to send_track_report()" carve-out as
-# DISCORD_NOTIFICATION_EXCLUDED_USERS - that one's an explicit, single-
-# purpose action the user themselves triggered, not passive telemetry.
+# Opt-out flag for the automatic pings above - no longer exposed as a
+# Settings checkbox (removed 2026-09-01, Kevin's call - always on now, no
+# user-facing way to disable it). Left as a plain constant rather than
+# deleted outright, same spirit as DISCORD_NOTIFICATION_EXCLUDED_USERS
+# below: a hardcoded switch only ever flipped by editing source, not by
+# a user. Same "doesn't apply to send_track_report()" carve-out as that
+# constant - that one's an explicit, single-purpose action the user
+# themselves triggered, not passive telemetry.
 SEND_USAGE_TELEMETRY = True
 
 
@@ -1115,7 +1118,6 @@ DEFAULT_SETTINGS = {
     "fix_track_file_name": True,
     "show_log_section": False,
     "music_folder": "",
-    "send_usage_telemetry": True,
 }
 
 

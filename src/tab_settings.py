@@ -66,11 +66,7 @@ class SettingsTabMixin:
         ).pack(fill="x", padx=10, pady=(0, 5))
         ttk.Button(
             app_frame, text="Reset all settings to default", command=self._reset_settings_to_default,
-        ).pack(fill="x", padx=10, pady=(0, 5))
-        ttk.Checkbutton(
-            app_frame, text="Send anonymous usage telemetry", variable=self.use_telemetry_var,
-            command=self._on_use_telemetry_changed,
-        ).pack(anchor="w", padx=10, pady=(0, 10))
+        ).pack(fill="x", padx=10, pady=(0, 10))
 
         self.internet_status_label = ttk.Label(
             soundcloud_tab, text="● Checking connection...", foreground="#999999",
@@ -179,12 +175,6 @@ class SettingsTabMixin:
         tagger.save_setting("fix_track_file_name", enabled)
         tagger.log_action(f"Fix track file name: {enabled}")
 
-    def _on_use_telemetry_changed(self):
-        enabled = self.use_telemetry_var.get()
-        tagger.SEND_USAGE_TELEMETRY = enabled
-        tagger.save_setting("send_usage_telemetry", enabled)
-        tagger.log_action(f"Send usage telemetry: {enabled}")
-
     def _reset_settings_to_default(self):
         """Restores every Settings-tab option to its out-of-the-box value.
         Deliberately bypasses the individual _on_X_changed() handlers -
@@ -205,12 +195,10 @@ class SettingsTabMixin:
         tagger.AUTO_CONVERT_MP3 = False
         tagger.AUTO_CONVERT_WAV_TO_AIFF = True
         tagger.FIX_TRACK_FILE_NAME = True
-        tagger.SEND_USAGE_TELEMETRY = True
 
         self.auto_convert_var.set(False)
         self.auto_convert_wav_aiff_var.set(True)
         self.fix_track_file_name_var.set(True)
-        self.use_telemetry_var.set(True)
 
         self.show_log_var.set(False)
         self._on_show_log_changed()
