@@ -40,7 +40,6 @@ real Tk window the same way without extra setup (e.g. Xvfb on Linux).
 """
 import contextlib
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -286,18 +285,14 @@ def check_quality_progress_bar_placement(app):
        produces its first verdict, _update_quality_summary_strip() packs
        ANOTHER new widget (the green/orange/red counts, between the
        buttons and the table) with the exact same missing-adjustment
-       bug. With a single tiny fixture file (finishes near-instantly)
-       this second pack never gets triggered before the check runs, so
-       an earlier version of this test passed while the bug still
-       shipped - real report: the bar disappeared again in actual use
-       specifically once that strip showed up, competing for space in a
-       window that was only grown to fit the bar alone. Using several
-       files and polling until the summary strip actually appears (not
-       a fixed short pump) is what catches this.
+       bug - real report: the bar disappeared again in actual use once
+       that strip showed up, competing for space in a window that was
+       only grown to fit the bar alone. Triggered directly here (rather
+       than waiting on a real background scan, which an earlier version
+       of this test did - real ffmpeg analysis + threading made it slow
+       and, on a loaded CI runner, occasionally hang outright).
     """
     tmp_dir = tempfile.mkdtemp()
-    for i in range(4):
-        shutil.copy(os.path.join(REPO_ROOT, "assets", "fart.wav"), os.path.join(tmp_dir, f"track_{i}.wav"))
 
     app._reset_quality()
     pump(app.window, 0.1)
@@ -305,10 +300,20 @@ def check_quality_progress_bar_placement(app):
         raise AssertionError("progress bar should start out hidden")
     height_before = app.window.winfo_height()
 
-    app.quality_folder_var.set(tmp_dir)
-    app._start_quality_scan()
-    pump(app.window, 0.2)
+    # Stub out the actual background analysis (real ffmpeg + threading -
+    # unnecessary here and, on a slower/loaded CI runner, a source of
+    # flaky timing) so _start_quality_scan's own synchronous pack/resize
+    # logic - the thing that actually had the bug - can be checked
+    # directly and deterministically, the same way check_quality_row_logic
+    # above drives _add_quality_row/_finalize_quality_scan directly rather
+    # than waiting on a real scan.
+    original_run_scan = app._run_quality_scan
+    app._run_quality_scan = lambda *a, **kw: None
     try:
+        app.quality_folder_var.set(tmp_dir)
+        app._start_quality_scan()
+        pump(app.window, 0.2)
+
         if not app.quality_progress_canvas.winfo_ismapped():
             raise AssertionError("progress bar never became visible after starting a scan")
         if app.quality_progress_canvas.winfo_width() <= 1:
@@ -321,23 +326,28 @@ def check_quality_progress_bar_placement(app):
         if canvas_top < table_bottom:
             raise AssertionError("progress bar should sit BELOW the table (Tagger's placement), not above/inside it")
 
-        # Poll (real analysis timing varies) until the summary strip
-        # actually appears - the exact moment bug #2 above happened.
-        deadline = time.time() + 20
-        summary_appeared = False
-        while time.time() < deadline:
-            app.window.update()
-            time.sleep(0.02)
-            if app.quality_summary_frame.winfo_ismapped():
-                summary_appeared = True
-                break
-        if not summary_appeared:
-            raise AssertionError("summary strip never appeared - can't verify the two-widgets-at-once case")
+        # Directly trigger the summary strip's own pack() (bug #2 above) -
+        # this is what a real scan's first verdict does, without needing
+        # to wait for one.
+        app._quality_scan_counts = {tagger.QUALITY_GREEN: 1, tagger.QUALITY_ORANGE: 0, tagger.QUALITY_RED: 0}
+        app._update_quality_summary_strip()
+        pump(app.window, 0.1)
+        if not app.quality_summary_frame.winfo_ismapped():
+            raise AssertionError("summary strip never appeared")
         if not app.quality_progress_canvas.winfo_ismapped() or app.quality_progress_canvas.winfo_width() <= 1:
             raise AssertionError("progress bar was pushed out once the summary strip appeared alongside it")
     finally:
-        app.quality_cancel_requested.set()
-        pump(app.window, 1.5)  # let the background scan thread actually exit
+        app._run_quality_scan = original_run_scan
+        # _start_quality_scan disabled these for the run and _reset_quality
+        # doesn't re-enable them itself (normally only called once a scan
+        # has already finished and re-enabled them via
+        # _finalize_quality_scan - bypassed here since the scan itself was
+        # stubbed to a no-op) - leaving them disabled would leak into
+        # whichever check runs next (e.g. check_quality_drag_and_drop's
+        # own quality_browse_button state check).
+        app.quality_browse_button.configure(state="normal")
+        app.quality_reset_button.configure(state="normal")
+        app._set_tabs_locked(False)  # _start_quality_scan locks tab-switching too
         app._reset_quality()
         pump(app.window, 0.1)
 
