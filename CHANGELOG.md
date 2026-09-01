@@ -15,6 +15,11 @@ on [Keep a Changelog](https://keepachangelog.com/).
 - Duplicate-track detection ("Find duplicates" button in Tagger) -
   fingerprints scanned tracks locally (no network call) and flags
   likely duplicates with a 🔁 marker and a highlighted row.
+- Comment/Album/Track number/Album artist/Composer/Disc number tags are
+  now cleared on Apply by default - real downloads very often carry
+  junk in these fields, which then clutters Rekordbox/Serato's browser
+  columns. Six independent toggles in Settings ("Clear metadata on
+  Apply") if you'd rather keep one of them.
 
 ### Fixed
 - Embedded Windows version metadata (publisher, product name,
