@@ -270,30 +270,37 @@ def check_quality_drag_and_drop(app):
     """Regression guard for the Quality tab's drag-and-drop, added to
     match the Tagger tab's own (a folder or file dropped while viewing
     Quality now analyzes it there, instead of only Tagger's window-level
-    registration ever reacting to a drop). Calls the drop handler
+    registration ever reacting to a drop) - including a real report that
+    an earlier version of this always analyzed the WHOLE parent folder
+    even when a single file was dropped, unlike Tagger's own drop, which
+    tags just the file(s) actually dropped. Calls the drop handler
     directly with a synthetic event rather than a simulated OS-level
     drop (unreliable in CI/sandboxes - see CLAUDE.md), so this checks the
-    handler's own logic: folder resolution, syncing the other tabs'
-    folder fields, and the "ignore while a scan is running" guard."""
+    handler's own logic: folder resolution, explicit-file-list scanning,
+    syncing the other tabs' folder fields, and the "ignore while a scan
+    is running" guard."""
     tmp_dir = tempfile.mkdtemp()
 
     class FakeEvent:
         pass
 
-    scan_calls = []
+    scan_calls = []  # each entry: (folder, explicit_files)
     original_start = app._start_quality_scan
     try:
-        app._start_quality_scan = lambda: scan_calls.append(app.quality_folder_var.get())
+        app._start_quality_scan = lambda explicit_files=None: scan_calls.append(
+            (app.quality_folder_var.get(), explicit_files)
+        )
 
         event = FakeEvent()
         event.data = "{" + tmp_dir + "}"
         app._on_quality_files_dropped(event)
-        if scan_calls != [tmp_dir]:
-            raise AssertionError(f"expected the dropped folder to start a scan, got {scan_calls}")
+        if scan_calls != [(tmp_dir, None)]:
+            raise AssertionError(f"expected the dropped folder to start a whole-folder scan, got {scan_calls}")
         if app.extract_folder_var.get() != tmp_dir or app.folder_variable.get() != tmp_dir:
             raise AssertionError("dropping onto Quality should sync Tagger/Extractor's folder fields too")
 
-        # Dropping a FILE (not a folder) should resolve to its containing folder.
+        # Dropping a single FILE must analyze just that file, not the
+        # whole folder it lives in.
         fake_file = os.path.join(tmp_dir, "track.mp3")
         with open(fake_file, "wb") as f:
             f.write(b"x")
@@ -301,8 +308,8 @@ def check_quality_drag_and_drop(app):
         event2 = FakeEvent()
         event2.data = "{" + fake_file + "}"
         app._on_quality_files_dropped(event2)
-        if scan_calls != [tmp_dir]:
-            raise AssertionError(f"expected a dropped file to resolve to its folder, got {scan_calls}")
+        if scan_calls != [(tmp_dir, [fake_file])]:
+            raise AssertionError(f"expected a single-file scan of just that file, got {scan_calls}")
 
         # A drop while a scan is already running must be ignored.
         app.quality_browse_button.configure(state="disabled")

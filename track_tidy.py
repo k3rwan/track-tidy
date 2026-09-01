@@ -6244,7 +6244,7 @@ def spectrogram_legend_image(width, height):
     return Image.fromarray(np.ascontiguousarray(rgb), mode="RGB")
 
 
-def analyze_folder_quality(folder, log=safe_print, on_progress=None, on_result=None, should_cancel=None):
+def analyze_folder_quality(folder, log=safe_print, on_progress=None, on_result=None, should_cancel=None, only_files=None):
     """
     Walks `folder` for every supported audio file and runs
     analyze_track_quality() over each one - the Quality tab's own scan.
@@ -6254,6 +6254,14 @@ def analyze_folder_quality(folder, log=safe_print, on_progress=None, on_result=N
     with whatever the Tagger tab currently has scanned. Read-only, never
     touches tags or covers.
 
+    only_files, if given, is an explicit list of absolute file paths to
+    analyze instead of walking `folder` for every supported file - used
+    when the user drops individual file(s) rather than a whole folder
+    (mirrors Tagger's own explicit_files scan), so only those show up in
+    the results instead of everything else that happens to sit in the
+    same folder. Each path is still expected to be relative to `folder`
+    for its "file" result field (relpath).
+
     on_result(result), if given, fires with each file's result dict right
     as it's produced - lets the caller stream rows into the UI live
     instead of waiting for the whole folder to finish, the same way the
@@ -6261,12 +6269,15 @@ def analyze_folder_quality(folder, log=safe_print, on_progress=None, on_result=N
     returned at the end regardless (used for the final "N analyzed"
     count on cancel).
     """
-    file_list = []
-    for current_folder, _dirs, file_names in os.walk(folder):
-        for name in file_names:
-            if name.lower().endswith(SUPPORTED_EXTENSIONS):
-                file_list.append(os.path.join(current_folder, name))
-    file_list.sort()
+    if only_files is not None:
+        file_list = sorted(only_files)
+    else:
+        file_list = []
+        for current_folder, _dirs, file_names in os.walk(folder):
+            for name in file_names:
+                if name.lower().endswith(SUPPORTED_EXTENSIONS):
+                    file_list.append(os.path.join(current_folder, name))
+        file_list.sort()
 
     results = []
     total = len(file_list)

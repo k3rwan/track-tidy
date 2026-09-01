@@ -244,20 +244,43 @@ class QualityTabMixin:
         if not raw_paths:
             return
 
-        first_path = os.path.normpath(raw_paths[0].strip("{}"))
-        # Quality only ever analyzes a whole folder (there's no per-file
-        # equivalent of Tagger's own multi-file drop) - a dropped file
-        # (rather than a folder) is treated as "analyze the folder it's
-        # in", the same folder Browse... would land you in by picking it
-        # yourself.
-        folder = first_path if os.path.isdir(first_path) else os.path.dirname(first_path)
-        if not os.path.isdir(folder):
+        paths = [os.path.normpath(p.strip("{}")) for p in raw_paths]
+
+        if os.path.isdir(paths[0]):
+            self._sync_all_folder_pickers(paths[0])
+            self._start_quality_scan()
             return
 
-        self._sync_all_folder_pickers(folder)
-        self._start_quality_scan()
+        # One or more individual files dropped: analyze just those, not
+        # everything else sitting in the same folder - same behavior as
+        # Tagger's own _start_multi_file_scan (real report: an earlier
+        # version of this always fell back to analyzing the whole parent
+        # folder, unlike Tagger's equivalent drop).
+        valid_paths = [
+            path for path in paths
+            if os.path.isfile(path) and path.lower().endswith(tagger.SUPPORTED_EXTENSIONS)
+        ]
+        if not valid_paths:
+            return
 
-    def _start_quality_scan(self):
+        folder = os.path.dirname(valid_paths[0])
+        same_folder_paths = []
+        for path in valid_paths:
+            if os.path.dirname(path) != folder:
+                self._append_to_journal(
+                    f"Ignored '{os.path.basename(path)}' - dropped from a different folder than the rest."
+                )
+                continue
+            same_folder_paths.append(path)
+
+        self._sync_all_folder_pickers(folder)
+        self._start_quality_scan(explicit_files=same_folder_paths)
+
+    def _start_quality_scan(self, explicit_files=None):
+        """explicit_files, if given, analyzes only those specific files
+        (mirrors Tagger's own explicit_files scan) instead of every
+        supported file in the folder - used by _on_quality_files_dropped
+        when the user drops individual file(s) rather than a folder."""
         folder = self.quality_folder_var.get().strip()
         if not folder or not os.path.isdir(folder):
             messagebox.showwarning("Missing folder", "Please choose a valid folder first.", parent=self.window)
@@ -289,13 +312,13 @@ class QualityTabMixin:
             self.quality_progress_canvas.pack(fill="x", padx=10, pady=(0, 5), before=self.quality_table_frame)
         self._update_progress_bar(self.quality_progress_canvas, 0, "0 %")
 
-        self._run_in_background(self._run_quality_scan, folder)
+        self._run_in_background(self._run_quality_scan, folder, explicit_files)
 
     def _request_quality_cancel(self):
         self.quality_cancel_requested.set()
         self.quality_scan_button.configure(state="disabled")
 
-    def _run_quality_scan(self, folder):
+    def _run_quality_scan(self, folder, explicit_files=None):
         try:
             reporter_name = getpass.getuser()
         except Exception:
@@ -313,7 +336,7 @@ class QualityTabMixin:
         try:
             results = tagger.analyze_folder_quality(
                 folder, log=self._append_to_journal, on_progress=on_progress, on_result=on_result,
-                should_cancel=self.quality_cancel_requested.is_set,
+                should_cancel=self.quality_cancel_requested.is_set, only_files=explicit_files,
             )
             cancelled = self.quality_cancel_requested.is_set()
             tagger.send_quality_scan_report(
