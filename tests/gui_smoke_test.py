@@ -266,6 +266,58 @@ def check_quality_row_logic(app):
         messagebox.showwarning = original_showwarning
 
 
+def check_quality_drag_and_drop(app):
+    """Regression guard for the Quality tab's drag-and-drop, added to
+    match the Tagger tab's own (a folder or file dropped while viewing
+    Quality now analyzes it there, instead of only Tagger's window-level
+    registration ever reacting to a drop). Calls the drop handler
+    directly with a synthetic event rather than a simulated OS-level
+    drop (unreliable in CI/sandboxes - see CLAUDE.md), so this checks the
+    handler's own logic: folder resolution, syncing the other tabs'
+    folder fields, and the "ignore while a scan is running" guard."""
+    tmp_dir = tempfile.mkdtemp()
+
+    class FakeEvent:
+        pass
+
+    scan_calls = []
+    original_start = app._start_quality_scan
+    try:
+        app._start_quality_scan = lambda: scan_calls.append(app.quality_folder_var.get())
+
+        event = FakeEvent()
+        event.data = "{" + tmp_dir + "}"
+        app._on_quality_files_dropped(event)
+        if scan_calls != [tmp_dir]:
+            raise AssertionError(f"expected the dropped folder to start a scan, got {scan_calls}")
+        if app.extract_folder_var.get() != tmp_dir or app.folder_variable.get() != tmp_dir:
+            raise AssertionError("dropping onto Quality should sync Tagger/Extractor's folder fields too")
+
+        # Dropping a FILE (not a folder) should resolve to its containing folder.
+        fake_file = os.path.join(tmp_dir, "track.mp3")
+        with open(fake_file, "wb") as f:
+            f.write(b"x")
+        scan_calls.clear()
+        event2 = FakeEvent()
+        event2.data = "{" + fake_file + "}"
+        app._on_quality_files_dropped(event2)
+        if scan_calls != [tmp_dir]:
+            raise AssertionError(f"expected a dropped file to resolve to its folder, got {scan_calls}")
+
+        # A drop while a scan is already running must be ignored.
+        app.quality_browse_button.configure(state="disabled")
+        try:
+            scan_calls.clear()
+            app.quality_folder_var.set("SHOULD_NOT_CHANGE")
+            app._on_quality_files_dropped(event)
+            if scan_calls or app.quality_folder_var.get() != "SHOULD_NOT_CHANGE":
+                raise AssertionError("drop should be ignored while a quality scan is running")
+        finally:
+            app.quality_browse_button.configure(state="normal")
+    finally:
+        app._start_quality_scan = original_start
+
+
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -303,6 +355,13 @@ def main():
     except Exception as error:
         failures.append(f"quality row logic: {error}")
         print(f"FAIL quality row logic: {error}")
+
+    try:
+        check_quality_drag_and_drop(app)
+        print("OK   quality tab drag-and-drop")
+    except Exception as error:
+        failures.append(f"quality drag-and-drop: {error}")
+        print(f"FAIL quality drag-and-drop: {error}")
 
     for theme in ("dark", "light"):
         app._apply_theme(theme)

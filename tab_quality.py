@@ -208,6 +208,55 @@ class QualityTabMixin:
         if folder:
             self._sync_all_folder_pickers(folder)
 
+    def _setup_quality_drag_and_drop(self):
+        """Same drag-and-drop as the Tagger tab (see _setup_drag_and_drop)
+        for this one - scoped to the Quality tab's own widgets so a drop
+        landing here (the tab actually visible under the cursor) analyzes
+        the dropped folder in Quality instead of falling through to
+        Tagger's own window/notebook-level registration. Silently does
+        nothing if tkinterdnd2 isn't installed."""
+        try:
+            from tkinterdnd2 import DND_FILES
+        except ImportError:
+            return
+
+        for widget in (
+            self.quality_tab, self.quality_table_frame, self.quality_table,
+            *self.quality_empty_state_widgets,
+        ):
+            try:
+                widget.drop_target_register(DND_FILES)
+                widget.dnd_bind("<<Drop>>", self._on_quality_files_dropped)
+            except Exception:
+                pass  # not fatal - the app works fine without drag-and-drop
+
+    def _on_quality_files_dropped(self, event):
+        # A Quality analysis already in progress locks every other tab
+        # (see _set_tabs_locked), but this tab itself stays reachable and
+        # its own drop targets stay registered - without this check, a
+        # drop here mid-analysis could restart it against a different
+        # folder while the background thread is still using the old one.
+        if str(self.quality_browse_button.cget("state")) == "disabled":
+            self._append_to_journal("Ignored dropped file(s) - wait for the current analysis to finish first.")
+            return
+
+        raw_paths = self.window.tk.splitlist(event.data)
+        if not raw_paths:
+            return
+
+        first_path = os.path.normpath(raw_paths[0].strip("{}"))
+        # Quality only ever analyzes a whole folder (there's no per-file
+        # equivalent of Tagger's own multi-file drop) - a dropped file
+        # (rather than a folder) is treated as "analyze the folder it's
+        # in", the same folder Browse... would land you in by picking it
+        # yourself.
+        folder = first_path if os.path.isdir(first_path) else os.path.dirname(first_path)
+        if not os.path.isdir(folder):
+            return
+
+        self._sync_all_folder_pickers(folder)
+        self._start_quality_scan()
+
     def _start_quality_scan(self):
         folder = self.quality_folder_var.get().strip()
         if not folder or not os.path.isdir(folder):
