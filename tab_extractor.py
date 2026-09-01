@@ -129,6 +129,58 @@ class ExtractorTabMixin:
         if folder:
             self._sync_all_folder_pickers(folder)
 
+    def _setup_extractor_drag_and_drop(self):
+        """Same drag-and-drop mechanism as Tagger/Quality's own (see
+        _setup_drag_and_drop / _setup_quality_drag_and_drop) - without
+        this, the Extractor tab had none of its own, so a drop while
+        viewing it fell through to Tagger's window/notebook-level
+        registration and silently started a Tagger scan instead (same bug
+        already found and fixed for Quality). Scoped to this tab's own
+        widgets so a drop landing here is caught before it can fall
+        through. Silently does nothing if tkinterdnd2 isn't installed.
+
+        Deliberately only fills the folder field (like Browse... does),
+        NOT an immediate _start_extraction() the way Tagger's drop starts
+        a scan or Quality's starts an analysis - both of those are
+        read-only previews the user can still back out of, but extraction
+        actually moves files on disk the moment it runs, with no review
+        step first. A stray drop shouldn't be able to restructure a
+        folder without the user then deliberately clicking Extract."""
+        try:
+            from tkinterdnd2 import DND_FILES
+        except ImportError:
+            return
+
+        for widget in (
+            self.extractor_tab, self.extractor_preview_frame,
+            self.extractor_preview_before_label, self.extractor_preview_after_label,
+        ):
+            try:
+                widget.drop_target_register(DND_FILES)
+                widget.dnd_bind("<<Drop>>", self._on_extractor_files_dropped)
+            except Exception:
+                pass  # not fatal - the app works fine without drag-and-drop
+
+    def _on_extractor_files_dropped(self, event):
+        if str(self.extract_browse_button.cget("state")) == "disabled":
+            self._append_to_journal("Ignored dropped file(s) - wait for the current extraction to finish first.")
+            return
+
+        raw_paths = self.window.tk.splitlist(event.data)
+        if not raw_paths:
+            return
+
+        first_path = os.path.normpath(raw_paths[0].strip("{}"))
+        # Extraction flattens a FOLDER's subfolders - there's no per-file
+        # equivalent of Tagger/Quality's own single-file handling, so a
+        # dropped file resolves to the folder it's in, same folder
+        # Browse... would land you in by picking it yourself.
+        folder = first_path if os.path.isdir(first_path) else os.path.dirname(first_path)
+        if not os.path.isdir(folder):
+            return
+
+        self._sync_all_folder_pickers(folder)
+
     def _start_extraction(self):
         folder = self.extract_folder_var.get().strip()
         if not folder or not os.path.isdir(folder):

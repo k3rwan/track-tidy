@@ -314,6 +314,7 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
         if self.folder_variable.get():
             self._sync_all_folder_pickers(self.folder_variable.get())
         self._setup_drag_and_drop()
+        self._setup_extractor_drag_and_drop()
         self._setup_quality_drag_and_drop()
         self._adjust_window_height()
         self._apply_theme(self._resolve_theme_choice(self.theme_var.get()))
@@ -1362,6 +1363,7 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
         quality_tab = ttk.Frame(self.notebook)
         soundcloud_tab = ttk.Frame(self.notebook)
         self.tagger_tab = tagger_tab
+        self.extractor_tab = extractor_tab
         self.quality_tab = quality_tab
         self.notebook.add(tagger_tab, text="Tagger")
         self.notebook.add(extractor_tab, text="Extractor")

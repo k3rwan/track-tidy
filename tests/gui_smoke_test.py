@@ -325,6 +325,61 @@ def check_quality_drag_and_drop(app):
         app._start_quality_scan = original_start
 
 
+def check_extractor_drag_and_drop(app):
+    """Regression guard: the Extractor tab had NO drag-and-drop of its
+    own (unlike Tagger and, since the previous fix, Quality), so a drop
+    while viewing it fell through to Tagger's window/notebook-level
+    registration and silently started a Tagger scan instead - the exact
+    same bug already found and fixed for Quality, just not yet noticed
+    here. Also checks the deliberate difference from Tagger/Quality: a
+    drop only fills the folder field, it does NOT auto-start the
+    extraction (which moves files on disk with no review step first,
+    unlike a scan/analysis)."""
+    tmp_dir = tempfile.mkdtemp()
+
+    class FakeEvent:
+        pass
+
+    extract_calls = []
+    original_start = app._start_extraction
+    try:
+        app._start_extraction = lambda: extract_calls.append(True)
+
+        event = FakeEvent()
+        event.data = "{" + tmp_dir + "}"
+        app._on_extractor_files_dropped(event)
+        if app.extract_folder_var.get() != tmp_dir:
+            raise AssertionError(f"expected the dropped folder to fill the field, got {app.extract_folder_var.get()!r}")
+        if app.quality_folder_var.get() != tmp_dir or app.folder_variable.get() != tmp_dir:
+            raise AssertionError("dropping onto Extractor should sync Tagger/Quality's folder fields too")
+        if extract_calls:
+            raise AssertionError("a drop must not auto-start the extraction (it moves files on disk)")
+
+        # Dropping a FILE resolves to its containing folder (extraction is
+        # inherently folder-scoped - there's no per-file equivalent).
+        fake_file = os.path.join(tmp_dir, "track.mp3")
+        with open(fake_file, "wb") as f:
+            f.write(b"x")
+        app.extract_folder_var.set("")
+        event2 = FakeEvent()
+        event2.data = "{" + fake_file + "}"
+        app._on_extractor_files_dropped(event2)
+        if app.extract_folder_var.get() != tmp_dir:
+            raise AssertionError(f"expected a dropped file to resolve to its folder, got {app.extract_folder_var.get()!r}")
+
+        # A drop while an extraction is already running must be ignored.
+        app.extract_browse_button.configure(state="disabled")
+        try:
+            app.extract_folder_var.set("SHOULD_NOT_CHANGE")
+            app._on_extractor_files_dropped(event)
+            if app.extract_folder_var.get() != "SHOULD_NOT_CHANGE":
+                raise AssertionError("drop should be ignored while an extraction is running")
+        finally:
+            app.extract_browse_button.configure(state="normal")
+    finally:
+        app._start_extraction = original_start
+
+
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -369,6 +424,13 @@ def main():
     except Exception as error:
         failures.append(f"quality drag-and-drop: {error}")
         print(f"FAIL quality drag-and-drop: {error}")
+
+    try:
+        check_extractor_drag_and_drop(app)
+        print("OK   extractor tab drag-and-drop")
+    except Exception as error:
+        failures.append(f"extractor drag-and-drop: {error}")
+        print(f"FAIL extractor drag-and-drop: {error}")
 
     for theme in ("dark", "light"):
         app._apply_theme(theme)
