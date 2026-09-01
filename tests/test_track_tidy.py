@@ -1956,6 +1956,51 @@ class ProcessFilesTests(unittest.TestCase):
         # The corrupted file is left alone (not silently deleted/renamed).
         self.assertIn("corrupted.mp3", remaining_files)
 
+    def test_explicitly_cleared_artist_is_written_as_empty(self):
+        # Real report: clearing the Artist/Title field entirely in the
+        # table and confirming used to silently write the OLD detected
+        # value back instead (artist_override="" or detected_artist"
+        # treats "" as falsy, same as never having overridden it at all).
+        good_path = os.path.join(self._tmp_dir.name, "track.mp3")
+        shutil.copy(self._good_source, good_path)
+
+        entry = self._make_plan_entry("track.mp3", "Old Artist", "Old Title")
+        entry["artist_override"] = ""
+
+        tagger.process_files([entry], log=lambda *_: None)
+
+        self.assertTrue(entry["processed"])
+        # FIX_TRACK_FILE_NAME (on by default) renames the file from the
+        # written tags - with artist empty, build_display_name() drops the
+        # "Artist - " prefix entirely, so this ends up as "Old Title.mp3".
+        final_path = os.path.join(self._tmp_dir.name, entry["final_path"])
+        audio = tagger.open_audio_file(final_path)
+        self.assertNotIn("TPE1", audio.tags)  # no artist frame at all, not "Old Artist"
+        self.assertEqual(str(audio.tags["TIT2"]), "Old Title")
+
+    def test_explicitly_cleared_title_is_skipped_not_reverted_to_the_old_value(self):
+        # Same bug as above, for Title - except a title is required to tag
+        # a file at all (see the "Missing title" skip), so the correct
+        # outcome here is a clean skip with a clear reason, not silently
+        # writing the old suggested title back.
+        good_path = os.path.join(self._tmp_dir.name, "track.mp3")
+        shutil.copy(self._good_source, good_path)
+
+        entry = self._make_plan_entry("track.mp3", "Old Artist", "Old Title")
+        entry["title_override"] = ""
+
+        results = []
+        tagger.process_files(
+            [entry], log=lambda *_: None,
+            on_file_processed=lambda ident, ok, reason=None: results.append((ident, ok, reason)),
+        )
+
+        self.assertEqual(results, [("track.mp3", False, "No title to write")])
+        self.assertTrue(entry["processed"])
+        # The file itself is left untouched - no "Old Title" got written.
+        audio = tagger.open_audio_file(good_path)
+        self.assertNotIn("TIT2", audio.tags)
+
 
 class SettingsPersistenceTests(unittest.TestCase):
     def setUp(self):

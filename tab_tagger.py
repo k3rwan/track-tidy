@@ -1744,10 +1744,18 @@ class TaggerTabMixin:
         )
 
         if info.get("processed"):
-            displayed_title = info["title_override"] or info["detected_title"] or "?"
+            # "is not None" (not a plain truthy/"or" check) so a title/artist
+            # deliberately cleared to "" - a real override, not "no
+            # override yet" - shows as "(empty)" instead of silently
+            # falling back to the old suggestion (real report).
+            if info["title_override"] is not None:
+                displayed_title = info["title_override"] or "(empty)"
+            else:
+                displayed_title = info["detected_title"] or "?"
             displayed_title += acoustid_marker + no_cover_marker
-            displayed_artist = info["artist_override"]
-            if displayed_artist is None:
+            if info["artist_override"] is not None:
+                displayed_artist = info["artist_override"] or "(empty)"
+            else:
                 displayed_artist = info["detected_artist"] if info["detected_artist"] else "(empty)"
             displayed_format = f"{target_format} {PROCESSED_CHECK}" if (needs_conversion and info["convert"]) else info["format"]
             # Reflects what actually happened to THIS row, not "processed
@@ -1779,14 +1787,14 @@ class TaggerTabMixin:
         apply = info["apply_changes"]
 
         if info["title_override"] is not None:
-            displayed_title = info["title_override"]
+            displayed_title = info["title_override"] or "(empty)"
         elif apply:
             displayed_title = (info["detected_title"] or "?") + acoustid_marker + no_cover_marker
         else:
             displayed_title = info["current_title"] or "(empty)"
 
         if info["artist_override"] is not None:
-            displayed_artist = info["artist_override"]
+            displayed_artist = info["artist_override"] or "(empty)"
         elif apply:
             displayed_artist = info["detected_artist"] if info["detected_artist"] else "(empty)"
         else:
@@ -3009,7 +3017,8 @@ class TaggerTabMixin:
         emoji rode along into title_override and got applied to the file)."""
         if info.get("processed"):
             if field == "title":
-                return info["title_override"] or info["detected_title"] or "?"
+                title_override = info["title_override"]
+                return title_override if title_override is not None else (info["detected_title"] or "?")
             override = info["artist_override"]
             return override if override is not None else (info["detected_artist"] or "(empty)")
 
@@ -3044,16 +3053,23 @@ class TaggerTabMixin:
                 return
 
             new_value = edit_entry.get().strip()
-            new_override = new_value if new_value else None
-            if new_override != info.get(f"{field}_override"):
+            # Deliberately kept as "" rather than collapsed to None when the
+            # user clears the field entirely - None means "no override yet,
+            # follow the auto-suggestion", so collapsing an intentionally-
+            # emptied field to None silently reverted it back to the
+            # previous/suggested value instead of actually clearing it, on
+            # both a fresh row and one already processed (real report).
+            # Ctrl+Z (_undo_edit) is the actual "I want it back" escape
+            # hatch, so there's no need for blank-to-revert as well.
+            if new_value != info.get(f"{field}_override"):
                 self._push_undo("edit", {
                     "info": info, "field": field,
                     "old_override": info.get(f"{field}_override"),
                     "old_override_is_manual": info.get(f"{field}_override_is_manual"),
                     "old_fix_pending": info.get("fix_pending"),
                 })
-            info[f"{field}_override"] = new_override
-            info[f"{field}_override_is_manual"] = bool(new_value)
+            info[f"{field}_override"] = new_value
+            info[f"{field}_override_is_manual"] = True
             edit_entry.destroy()
 
             if info.get("processed"):

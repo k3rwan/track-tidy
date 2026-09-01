@@ -5536,8 +5536,19 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
                 converted_this_file = True
                 log(f"  Converted to: '{file_name}'")
 
-            artist = info.get("artist_override") or info.get("detected_artist")
-            title = info.get("title_override") or info.get("detected_title")
+            # "is not None" (not a plain "or") - a title/artist deliberately
+            # cleared to "" by the user is a real override, not "no
+            # override yet, fall back to the suggestion". The "or" version
+            # silently wrote the OLD suggested value back whenever the user
+            # cleared a field entirely instead of respecting the edit (real
+            # report) - an intentionally-blanked title still hits the
+            # "Missing title" skip right below, same as ever having no
+            # title at all, while an intentionally-blanked artist is
+            # written as empty (legitimate: some tracks have none).
+            artist_override = info.get("artist_override")
+            artist = artist_override if artist_override is not None else info.get("detected_artist")
+            title_override = info.get("title_override")
+            title = title_override if title_override is not None else info.get("detected_title")
 
             if not title:
                 log("  Missing title, file skipped.\n")
