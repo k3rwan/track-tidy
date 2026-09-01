@@ -76,6 +76,7 @@ from ui_common import (
     AUTO_THEME_DARK_START_HOUR,
     AUTO_THEME_RECHECK_INTERVAL_MS,
     TABLE_ROW_HEIGHT,
+    TAGGER_TABLE_ROW_HEIGHT,
     DARK_COLORS,
     LIGHT_COLORS,
     INDICATOR_CHECKED_BG,
@@ -223,6 +224,13 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
         # Same reasoning as extract_cancel_requested above - the Quality
         # tab's own scan is a third independent background action.
         self.quality_cancel_requested = threading.Event()
+        # Same reasoning again - Tagger's own "Find duplicates" is a
+        # fourth independent background action, separate from Scan/
+        # Apply's own cancel_requested even though it lives in the same
+        # tab (can't run at the same time as a scan either way, but
+        # keeping the Event separate avoids any risk of one run's Cancel
+        # click accidentally cancelling the other).
+        self.find_duplicates_cancel_requested = threading.Event()
         # The folder a Quality scan's results are relative to, and a map of
         # each result row's item id -> its absolute path - both needed to
         # resolve a double-clicked row back to a real file for the spectrum
@@ -297,10 +305,12 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
         self.auto_convert_wav_aiff_var = tk.BooleanVar(value=saved_settings.get("auto_convert_wav_to_aiff", True))
         self.fix_track_file_name_var = tk.BooleanVar(value=saved_settings.get("fix_track_file_name", True))
         self.show_log_var = tk.BooleanVar(value=saved_settings.get("show_log_section", False))
+        self.detect_bpm_key_var = tk.BooleanVar(value=saved_settings.get("detect_bpm_key", True))
         self._tagger_resize_pending = False
         tagger.AUTO_CONVERT_MP3 = self.auto_convert_var.get()
         tagger.AUTO_CONVERT_WAV_TO_AIFF = self.auto_convert_wav_aiff_var.get()
         tagger.FIX_TRACK_FILE_NAME = self.fix_track_file_name_var.get()
+        tagger.DETECT_BPM_KEY = self.detect_bpm_key_var.get()
 
         self._build_interface()
         # Tagger's folder may already be pre-filled from a saved setting
@@ -792,6 +802,13 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
             "Table.Treeview", rowheight=TABLE_ROW_HEIGHT,
             font=(self._table_font.actual("family"), self._table_font.actual("size")),
         )
+        # Own style (not "Table.Treeview") so Tagger's taller rows (BPM/Key
+        # line under the title) don't also stretch Quality/History's
+        # single-line tables - see TAGGER_TABLE_ROW_HEIGHT's own comment.
+        style.configure(
+            "TaggerTable.Treeview", rowheight=TAGGER_TABLE_ROW_HEIGHT,
+            font=(self._table_font.actual("family"), self._table_font.actual("size")),
+        )
 
         # Same reasoning as Table.Treeview above, but for Radiobutton: pull
         # clam's own indicator element into whichever theme is active
@@ -994,6 +1011,17 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
             # the moment the table actually gets used.
             bordercolor=[("focus", colors["bg"])], lightcolor=[("focus", colors["bg"])],
         )
+        # Same colors as "Table.Treeview" above, just under the separate
+        # style name Tagger's own table uses (see TAGGER_TABLE_ROW_HEIGHT).
+        style.configure(
+            "TaggerTable.Treeview", background=colors["tree_bg"], fieldbackground=colors["tree_bg"],
+            foreground=colors["tree_fg"], bordercolor=colors["bg"], lightcolor=colors["bg"],
+        )
+        style.map(
+            "TaggerTable.Treeview",
+            background=[("selected", colors["select_bg"])], foreground=[("selected", colors["select_fg"])],
+            bordercolor=[("focus", colors["bg"])], lightcolor=[("focus", colors["bg"])],
+        )
         style.configure(
             "Treeview.Heading", background=colors["tree_heading_bg"], foreground=colors["fg"],
             bordercolor=colors["border"], lightcolor=colors["tree_heading_bg"], darkcolor=colors["tree_heading_bg"],
@@ -1034,6 +1062,11 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
             canvas.itemconfig(canvas.progress_text, fill=colors["progress_text"])
         self.table.tag_configure("odd_row", background=colors["tree_odd_row"], foreground=colors["tree_fg"])
         self.table.tag_configure("even_row", background=colors["tree_bg"], foreground=colors["tree_fg"])
+        # Duplicate-track row highlight (see find_duplicate_tracks() /
+        # _duplicate_marker()) - a muted amber in both themes, distinct
+        # from the plain striping so a duplicate stands out without being
+        # as alarming as a Quality "red" verdict.
+        self.table.tag_configure("dup_row", background="#5c4a2a" if dark else "#FBE7C6", foreground=colors["tree_fg"])
         self.quality_table.tag_configure(
             "odd_row", background=colors["tree_odd_row"], foreground=colors["tree_fg"],
         )
@@ -1788,6 +1821,13 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
                             else:
                                 status_label.pack_forget()
                                 self._draw_quality_spectrogram(canvas, data)
+
+                elif message_type == "duplicates_progress":
+                    index, total = content
+                    self.find_duplicates_button.configure(text=f"Find duplicates - {index}/{total}")
+
+                elif message_type == "duplicates_done":
+                    self._finalize_find_duplicates(content)
 
                 elif message_type == "internet_status":
                     is_online, is_startup_check = content

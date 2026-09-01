@@ -213,6 +213,90 @@ def check_tagger_row_logic(app):
     app._apply_table_filter()
 
 
+def check_bpm_key_display(app):
+    """Regression guard for the BPM/Key feature's display: it's rendered
+    as a SECOND LINE inside the Title cell (no new table column, no
+    window-width change - see TAGGER_TABLE_ROW_HEIGHT), not a suffix on
+    the same line like the ⚠️/🎧 markers. Exercises _build_row_values()
+    directly rather than a real scan (no ffmpeg/analysis needed here -
+    that's covered separately in test_track_tidy.py's
+    EstimateBpmAndKeyTests)."""
+    info = {
+        "file": "__gui_smoke_test_bpm_row__.mp3", "format": "MP3", "processed": False,
+        "apply_changes": True, "convert": False,
+        "current_title": "old title", "current_artist": "old artist",
+        "detected_title": "Real Title", "detected_artist": "Real Artist",
+        "title_override": None, "artist_override": None,
+        "found_cover_image": b"not empty", "already_applied": False,
+        "acoustid_identified": False, "original_order": 0,
+        "bpm": 128.0, "camelot_key": "8A", "duplicate_of": None,
+    }
+    displayed_title = app._build_row_values(info)[1]
+    if "\n128 BPM · 8A" not in displayed_title:
+        raise AssertionError(f"expected a '128 BPM · 8A' second line in the title, got {displayed_title!r}")
+
+    # No bpm/key detected (or feature off) -> no second line at all, so a
+    # plain row looks exactly like it did before this feature existed.
+    info["bpm"] = None
+    info["camelot_key"] = None
+    displayed_title = app._build_row_values(info)[1]
+    if "\n" in displayed_title:
+        raise AssertionError(f"expected no second line when bpm/key are None, got {displayed_title!r}")
+
+
+def check_duplicate_marker_and_row_tag(app):
+    """Regression guard for the duplicate-detection UI: a row with
+    duplicate_of set gets the "\U0001f501" marker on the title (NOT
+    cleared by a title edit, unlike ⚠️/\U0001f3a7 - see
+    _duplicate_marker's own docstring) and the "dup_row" background tag,
+    applied the same way _finalize_find_duplicates does (not a real
+    fingerprinting pass - that's covered separately in
+    test_track_tidy.py's DuplicateDetectionTests)."""
+    info = {
+        "file": "__gui_smoke_test_dup_row__.mp3", "format": "MP3", "processed": False,
+        "apply_changes": True, "convert": False,
+        "current_title": "old title", "current_artist": "old artist",
+        "detected_title": "Real Title", "detected_artist": "Real Artist",
+        "title_override": None, "artist_override": None,
+        "found_cover_image": b"not empty", "already_applied": False,
+        "acoustid_identified": False, "original_order": 0,
+        "bpm": None, "camelot_key": None, "duplicate_of": None,
+    }
+    app.scanned_plan.append(info)
+    image_tk = app._create_thumbnail(info)
+    app.tk_images[info["file"]] = image_tk
+    app.table.insert(
+        "", "end", iid=info["file"], image=image_tk if image_tk else "",
+        values=app._build_row_values(info), tags=("even_row",),
+    )
+
+    displayed_title = app._build_row_values(info)[1]
+    if "\U0001f501" in displayed_title:
+        raise AssertionError("duplicate marker present before duplicate_of was even set")
+
+    # Mirrors _finalize_find_duplicates's own row-marking logic.
+    info["duplicate_of"] = "some_other_track.mp3"
+    app._refresh_row(info)
+    current_tags = app.table.item(info["file"], "tags")
+    if "dup_row" not in current_tags:
+        app.table.item(info["file"], tags=tuple(current_tags) + ("dup_row",))
+
+    displayed_title = app._build_row_values(info)[1]
+    if "\U0001f501" not in displayed_title:
+        raise AssertionError(f"expected the duplicate marker once duplicate_of is set, got {displayed_title!r}")
+
+    final_tags = app.table.item(info["file"], "tags")
+    if "dup_row" not in final_tags:
+        raise AssertionError(f"expected 'dup_row' among the row's tags, got {final_tags}")
+
+    # Unlike ⚠️/\U0001f3a7, a title edit must NOT clear the duplicate marker -
+    # it's a fact about the audio, not something a title override "resolves".
+    info["title_override"] = "Real Title"
+    displayed_title_after_edit = app._build_row_values(info)[1]
+    if "\U0001f501" not in displayed_title_after_edit:
+        raise AssertionError("duplicate marker incorrectly cleared by a title edit")
+
+
 def check_quality_row_logic(app):
     """Regression guard for two real reports: (1) analysis results used to
     just sit in scan/arrival order, leaving the tracks that most need a
@@ -318,8 +402,16 @@ def check_quality_progress_bar_placement(app):
             raise AssertionError("progress bar never became visible after starting a scan")
         if app.quality_progress_canvas.winfo_width() <= 1:
             raise AssertionError(f"progress bar has no real width ({app.quality_progress_canvas.winfo_width()}px) - never laid out")
-        if app.window.winfo_height() <= height_before:
-            raise AssertionError("window should grow to make room for the progress bar")
+        # Was strictly "<=" (must grow) before Tagger's own table got
+        # taller rows for the BPM/Key second line - the window (one
+        # shared height across every tab) can now already be tall enough
+        # from Tagger's own content alone to fit Quality's progress bar
+        # with no further growth needed. What actually matters is that it
+        # never SHRINKS to make room (still checked below via a real
+        # mapped/positioned bar) - confirmed empirically that this can
+        # legitimately be an equality now, not just a fluke.
+        if app.window.winfo_height() < height_before:
+            raise AssertionError("window should not shrink when the progress bar appears")
 
         canvas_top = app.quality_progress_canvas.winfo_rooty()
         table_bottom = app.quality_table_frame.winfo_rooty() + app.quality_table_frame.winfo_height()
@@ -547,6 +639,20 @@ def main():
     except Exception as error:
         failures.append(f"tagger row logic: {error}")
         print(f"FAIL tagger row logic: {error}")
+
+    try:
+        check_bpm_key_display(app)
+        print("OK   tagger BPM/Key second-line display")
+    except Exception as error:
+        failures.append(f"BPM/Key display: {error}")
+        print(f"FAIL BPM/Key display: {error}")
+
+    try:
+        check_duplicate_marker_and_row_tag(app)
+        print("OK   tagger duplicate marker/row tag")
+    except Exception as error:
+        failures.append(f"duplicate marker/row tag: {error}")
+        print(f"FAIL duplicate marker/row tag: {error}")
 
     try:
         app.notebook.select(2)  # Quality tab

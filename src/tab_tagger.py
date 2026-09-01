@@ -25,7 +25,7 @@ from ui_common import (
     MAX_UNDO_STACK_SIZE,
     NO_COVER_REPORT_THRESHOLD,
     THUMBNAIL_SIZE,
-    TABLE_ROW_HEIGHT,
+    TAGGER_TABLE_ROW_HEIGHT,
     COLUMNS,
     NO_COVER_SUMMARY_ROW_ID,
     SEARCH_RESULT_SUMMARY_ROW_ID,
@@ -138,6 +138,17 @@ class TaggerTabMixin:
             variable=self.no_cover_filter_var, command=self._apply_table_filter,
         ).pack(anchor="w", padx=10, pady=(0, 6))
 
+        # Fingerprints every scanned track and flags likely duplicates - a
+        # separate on-demand action (not run automatically during Scan)
+        # since it's real O(n^2) work, unlike the per-file BPM/Key
+        # detection. Disabled until there's actually something to compare
+        # (see _update_empty_state_hint).
+        self.find_duplicates_button = ttk.Button(
+            self.advanced_frame, text="Find duplicates", command=self._start_find_duplicates,
+        )
+        self.find_duplicates_button.configure(state="disabled")
+        self.find_duplicates_button.pack(fill="x", padx=10, pady=(0, 10))
+
         # --- Scan results table ---
         # Plain Frame, not LabelFrame - same reasoning as advanced_frame
         # above, this was most of the excess gap above the table headers.
@@ -183,10 +194,10 @@ class TaggerTabMixin:
         # certain characters (e.g. the checkbox glyphs below) in table
         # cells but not in the header, so the same glyph looks different.
         style.configure(
-            "Table.Treeview", rowheight=TABLE_ROW_HEIGHT,
+            "TaggerTable.Treeview", rowheight=TAGGER_TABLE_ROW_HEIGHT,
             font=(self._table_font.actual("family"), self._table_font.actual("size")),
         )
-        self.table.configure(style="Table.Treeview")
+        self.table.configure(style="TaggerTable.Treeview")
 
         for col in COLUMNS:
             self.table.heading(col, text=headers[col])
@@ -199,6 +210,19 @@ class TaggerTabMixin:
         self.table.heading("artist", command=lambda: self._sort_by("artist"))
         self.table.heading("format", command=self._toggle_all_convert)
 
+        # Duplicate-row highlight (see find_duplicate_tracks()) MUST be
+        # tag_configure'd for the very first time here, BEFORE odd_row/
+        # even_row below - confirmed empirically (see the "tag priority"
+        # investigation for this exact bug) that ttk.Treeview's per-item
+        # tag priority for conflicting style options (here: background)
+        # is decided by which tag was tag_configure'd FIRST EVER, not by
+        # the item's own tags=(...) tuple order and not by which tag was
+        # configured most recently - a later re-configure (e.g. _apply_theme
+        # changing dup_row's actual color per theme) only updates that
+        # tag's own value, it does NOT change its priority rank. Placing
+        # this after odd_row/even_row silently lost every time (verified:
+        # the stripe tag's background always won instead).
+        self.table.tag_configure("dup_row", background="#FBE7C6")
         # Alternating rows (every other one greyed out) for readability.
         # Foreground is set explicitly here too (not just background) -
         # otherwise ttk/clam can fall back to a default (dim/grey) text
@@ -737,6 +761,7 @@ class TaggerTabMixin:
         self.browse_button.configure(state=state)
         self.scan_button.configure(state=state)
         self.reset_button.configure(state=state)
+        self.find_duplicates_button.configure(state=state)
         # advanced_toggle is a plain Label (click-bound, not a real ttk
         # Button - see _toggle_advanced_section, which also has its own
         # _is_run_active() guard), so "disabling" it means faking the look
@@ -748,6 +773,11 @@ class TaggerTabMixin:
             self.scan_button.configure(text="Scan")
             self._update_apply_button_label()
             self.apply_button.configure(text="Apply", command=self._start_processing, state="normal")
+            # Resets Find duplicates back to its normal ready state
+            # regardless of which run (Scan/Apply/Find duplicates itself)
+            # just finished - re-disabled below if the table is empty.
+            self.find_duplicates_button.configure(text="Find duplicates", command=self._start_find_duplicates)
+            self._update_empty_state_hint()
         else:
             self.cancel_requested.clear()
             self.apply_button.configure(text="Cancel", command=self._request_cancel, state="normal")
@@ -770,6 +800,68 @@ class TaggerTabMixin:
             parent=self.window,
         )
         return files[:MAX_TRACKS_PER_SCAN]
+
+    def _start_find_duplicates(self):
+        """Fingerprints every currently-scanned track and flags likely
+        duplicates (see track_tidy.py's find_duplicate_tracks) - reuses
+        _set_buttons_enabled's blanket run-lock (Browse/Scan/Reset
+        disabled, tabs locked, _is_run_active() true) the same way Scan
+        does, then re-enables just this button, repurposed as Cancel for
+        the duration of this run specifically (not Scan/Apply's own
+        cancel_requested - a separate Event so the two runs can never be
+        confused with each other, even though they can't actually run at
+        the same time either)."""
+        if not self.scanned_plan:
+            return
+        self._set_buttons_enabled(False)
+        self.find_duplicates_cancel_requested.clear()
+        self.find_duplicates_button.configure(
+            text="Cancel", command=self._request_find_duplicates_cancel, state="normal",
+        )
+        file_paths = [os.path.join(tagger.MUSIC_FOLDER, info["file"]) for info in self.scanned_plan]
+        self._run_in_background(self._run_find_duplicates, file_paths)
+
+    def _request_find_duplicates_cancel(self):
+        self.find_duplicates_cancel_requested.set()
+        self.find_duplicates_button.configure(state="disabled")
+
+    def _run_find_duplicates(self, file_paths):
+        def on_progress(index, total):
+            self.message_queue.put(("duplicates_progress", (index, total)))
+
+        duplicates = tagger.find_duplicate_tracks(
+            file_paths, log=self._append_to_journal, on_progress=on_progress,
+            should_cancel=self.find_duplicates_cancel_requested.is_set,
+        )
+        self.message_queue.put(("duplicates_done", duplicates))
+
+    def _finalize_find_duplicates(self, duplicates):
+        self._set_buttons_enabled(True)
+        if not duplicates:
+            self._append_to_journal("Find duplicates: no matches found.")
+            return
+
+        by_relative_path = {info["file"]: info for info in self.scanned_plan}
+        flagged = set()
+        for absolute_a, absolute_b, _similarity in duplicates:
+            relative_a = os.path.relpath(absolute_a, tagger.MUSIC_FOLDER)
+            relative_b = os.path.relpath(absolute_b, tagger.MUSIC_FOLDER)
+            info_a = by_relative_path.get(relative_a)
+            info_b = by_relative_path.get(relative_b)
+            if not info_a or not info_b:
+                continue
+            info_a["duplicate_of"] = relative_b
+            info_b["duplicate_of"] = relative_a
+            for info in (info_a, info_b):
+                if info["file"] in flagged:
+                    continue
+                flagged.add(info["file"])
+                self._refresh_row(info)
+                current_tags = self.table.item(info["file"], "tags")
+                if "dup_row" not in current_tags:
+                    self.table.item(info["file"], tags=tuple(current_tags) + ("dup_row",))
+
+        self._append_to_journal(f"Find duplicates: {len(flagged)} track(s) flagged as likely duplicates.")
 
     def _start_scan(self):
         folder = self.folder_variable.get().strip()
@@ -1028,11 +1120,17 @@ class TaggerTabMixin:
     def _update_empty_state_hint(self):
         """Shows the drag-and-drop/select-a-folder hint centered over the
         table only while it has no rows at all - called after every table
-        mutation that could take it to (or from) zero rows."""
+        mutation that could take it to (or from) zero rows. Also keeps
+        Find duplicates enabled/disabled in step with whether there's
+        anything to compare - skipped while a run is active, since that
+        already forces every action button (including this one) disabled
+        via _set_buttons_enabled."""
         if self.table.get_children():
             self.empty_state_frame.place_forget()
         else:
             self.empty_state_frame.place(relx=0.5, rely=0.5, anchor="center")
+        if not self._is_run_active():
+            self.find_duplicates_button.configure(state="normal" if self.table.get_children() else "disabled")
 
     def _add_scan_row(self, info):
         """Immediately adds a row to the table, ABOVE the previous ones, as soon as a file has just been scanned."""
@@ -1740,6 +1838,27 @@ class TaggerTabMixin:
         and the track info dialog (_show_track_info)."""
         return " 🎧" if info.get("acoustid_identified") and info["title_override"] is None else ""
 
+    def _duplicate_marker(self, info):
+        """"🔁" for a row find_duplicate_tracks() matched against another
+        file already in the table - unlike the AcoustID/no-cover markers
+        above, this does NOT clear once the title is edited: a duplicate
+        is a fact about the audio itself, not something a title override
+        "resolves". Shared by _build_row_values() and _restripe_rows()/
+        _flash_new_row() (see the "dup_row" tag)."""
+        return " 🔁" if info.get("duplicate_of") else ""
+
+    def _bpm_key_line(self, info):
+        """Second line under the title showing the estimated BPM/Camelot
+        key (see track_tidy.py's estimate_bpm_and_key) - empty string
+        (no second line at all) when detection is off or failed for this
+        file, so a plain title looks exactly like it did before this
+        feature existed."""
+        bpm = info.get("bpm")
+        key = info.get("camelot_key")
+        if bpm is None or key is None:
+            return ""
+        return f"\n{bpm:.0f} BPM · {key}"
+
     def _build_row_values(self, info):
         """Builds the tuple of displayed values for a row (image handled separately)."""
         # AIFF is treated like MP3 here - already taggable and lossless, it
@@ -1812,6 +1931,7 @@ class TaggerTabMixin:
                 apply_box = ALREADY_APPLIED_MARK
             else:
                 apply_box = PROCESSED_CHECK if info.get("apply_changes") else EMPTY_BOX
+            displayed_title += self._duplicate_marker(info) + self._bpm_key_line(info)
             return (apply_box, displayed_title, displayed_artist, displayed_format)
 
         apply = info["apply_changes"]
@@ -1842,6 +1962,7 @@ class TaggerTabMixin:
         else:
             displayed_format = info["format"]
 
+        displayed_title += self._duplicate_marker(info) + self._bpm_key_line(info)
         return (apply_box, displayed_title, displayed_artist, displayed_format)
 
     def _set_all_checked_state(self, checked):

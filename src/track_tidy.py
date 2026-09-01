@@ -1118,6 +1118,7 @@ DEFAULT_SETTINGS = {
     "fix_track_file_name": True,
     "show_log_section": False,
     "music_folder": "",
+    "detect_bpm_key": True,
 }
 
 
@@ -3073,8 +3074,19 @@ def _finish_scan(prepared, match_result, cover_source, log=safe_print):
     else:
         cover_source = None
 
+    # Independent of the cover/tag search above - runs even for an
+    # already_applied file, since BPM/key is about the audio itself, not
+    # its tags. Never blocks/aborts the scan on failure (see
+    # estimate_bpm_and_key's own try/except).
+    bpm, camelot_key = (
+        estimate_bpm_and_key(os.path.join(MUSIC_FOLDER, file_name), log=log)
+        if DETECT_BPM_KEY else (None, None)
+    )
+
     return {
         "file": file_name,
+        "bpm": bpm,
+        "camelot_key": camelot_key,
         "format": os.path.splitext(file_name)[1].lstrip(".").upper(),
         "detected_artist": detected_artist,
         "detected_title": detected_title,
@@ -3127,6 +3139,7 @@ def _finish_scan(prepared, match_result, cover_source, log=safe_print):
         "current_cover_bytes": prepared["current_cover_bytes"],
         "title_override": None,
         "artist_override": None,
+        "duplicate_of": None,
         "processed": False,
         "final_path": None,
         # So the UI knows NOT to re-derive detected_artist/detected_title
@@ -5953,6 +5966,302 @@ def analyze_folder_quality(folder, log=safe_print, on_progress=None, on_result=N
         if on_progress:
             on_progress(index, total)
     return results
+
+
+# ============================================================================
+# 15. BPM / KEY DETECTION
+# ============================================================================
+
+# Opt-out flag - toggled by Settings' "Detect BPM/key when scanning"
+# checkbox. On by default, matching the Tagger table's own BPM/Key
+# display (shown as a second line under the title - see
+# tab_tagger.py's _build_row_values()).
+DETECT_BPM_KEY = True
+
+BPM_ANALYSIS_SEGMENT_SECONDS = 45
+BPM_ANALYSIS_SKIP_SECONDS = 5
+BPM_ANALYSIS_SAMPLE_RATE = 11025
+
+BPM_MIN = 70
+BPM_MAX = 180
+
+# Camelot wheel notation - the DJ-standard way to express a key for
+# harmonic mixing (adjacent numbers/letters = compatible keys), more
+# useful at a glance for this audience than "A minor". Index = pitch
+# class (0=C, 1=C#, ... 11=B); inner arrays give the Camelot code for
+# that pitch class as a major vs. minor tonic.
+_CAMELOT_MAJOR = ["8B", "3B", "10B", "5B", "12B", "7B", "2B", "9B", "4B", "11B", "6B", "1B"]
+_CAMELOT_MINOR = ["5A", "12A", "7A", "2A", "9A", "4A", "11A", "6A", "1A", "8A", "3A", "10A"]
+
+# Krumhansl-Schmuckler key profiles - published, widely-used constants
+# for key detection by correlating a track's own pitch-class energy
+# distribution (chroma vector) against these, not something invented
+# for this app.
+_MAJOR_KEY_PROFILE = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
+_MINOR_KEY_PROFILE = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
+
+
+def _onset_envelope(samples, frame_size=1024, hop_size=512):
+    """Per-frame RMS energy -> half-wave-rectified first difference - a
+    simple, standard percussive-onset-strength proxy (a bigger value
+    means a bigger jump in energy, i.e. a likely drum/beat hit)."""
+    frame_count = 1 + (len(samples) - frame_size) // hop_size
+    if frame_count < 2:
+        return np.array([])
+    energy = np.empty(frame_count)
+    for i in range(frame_count):
+        start = i * hop_size
+        frame = samples[start:start + frame_size]
+        energy[i] = np.sqrt(np.mean(frame ** 2)) if len(frame) else 0.0
+    onset = np.diff(energy)
+    onset[onset < 0] = 0.0
+    return onset
+
+
+def _estimate_bpm(samples, sample_rate):
+    """
+    Autocorrelation-based tempo estimate - finds the strongest
+    periodicity in the onset envelope within a plausible dance-music BPM
+    range (BPM_MIN-BPM_MAX). Simple and fast (FFT-based autocorrelation,
+    no external library), but a from-scratch approach: expect occasional
+    octave errors (half/double tempo) on ambiguous material, not
+    professional (e.g. Mixed In Key)-grade accuracy. Returns None if
+    there isn't enough signal to make even a rough estimate.
+    """
+    hop_size = 512
+    onset = _onset_envelope(samples, hop_size=hop_size)
+    if len(onset) < 8:
+        return None
+
+    onset = onset - onset.mean()
+    # FFT-based autocorrelation - pad to 2x length to avoid circular
+    # wraparound contaminating the result.
+    spectrum = np.fft.rfft(onset, n=2 * len(onset))
+    autocorr = np.fft.irfft(spectrum * np.conj(spectrum))[:len(onset)]
+
+    frame_rate = sample_rate / hop_size  # onset frames per second
+    min_lag = max(1, int(frame_rate * 60 / BPM_MAX))
+    max_lag = min(len(autocorr) - 1, int(frame_rate * 60 / BPM_MIN))
+    if max_lag <= min_lag:
+        return None
+
+    search_window = autocorr[min_lag:max_lag + 1]
+    best_lag = min_lag + int(np.argmax(search_window))
+    if autocorr[best_lag] <= 0:
+        return None
+
+    bpm = frame_rate * 60 / best_lag
+
+    # Octave-preference heuristic: the autocorrelation peak is
+    # inherently ambiguous between a tempo and its harmonics/
+    # subharmonics - fold a double/half candidate into the "typical"
+    # dance-music range when it lands there, since that's the more
+    # likely intended tempo.
+    for candidate in (bpm, bpm * 2, bpm / 2):
+        if 85 <= candidate <= 175:
+            bpm = candidate
+            break
+
+    return round(bpm, 1)
+
+
+def _estimate_key(samples, sample_rate):
+    """
+    Chromagram (12 pitch-class energy bins) + Krumhansl-Schmuckler
+    template correlation -> best-matching (tonic, mode) -> Camelot
+    notation. Same "estimate, not certainty" caveat as _estimate_bpm -
+    electronic/heavily-processed material in particular can easily
+    confuse a chroma-based approach like this one. Returns None if
+    there isn't enough signal to make even a rough estimate.
+    """
+    frame_size = 4096
+    hop_size = 2048
+    frame_count = 1 + (len(samples) - frame_size) // hop_size
+    if frame_count < 1:
+        return None
+
+    window = np.hanning(frame_size)
+    freqs = np.fft.rfftfreq(frame_size, d=1 / sample_rate)
+    # Map each FFT bin to a pitch class (0=C..11=B) via the standard
+    # MIDI-note formula. Bins below ~40Hz are excluded so sub-bass/
+    # rumble energy (rarely tonally meaningful) can't dominate the
+    # profile.
+    with np.errstate(divide="ignore"):
+        midi_note = 69 + 12 * np.log2(np.maximum(freqs, 1e-9) / 440.0)
+    pitch_class = np.mod(np.round(midi_note), 12).astype(int)
+    valid_bins = freqs > 40
+
+    chroma = np.zeros(12)
+    for i in range(frame_count):
+        start = i * hop_size
+        frame = samples[start:start + frame_size]
+        if len(frame) < frame_size:
+            break
+        spectrum = np.abs(np.fft.rfft(frame * window))
+        for pitch in range(12):
+            chroma[pitch] += spectrum[valid_bins & (pitch_class == pitch)].sum()
+
+    if chroma.sum() <= 0:
+        return None
+    chroma = chroma / chroma.sum()
+
+    best_score, best_tonic, best_is_major = -np.inf, 0, True
+    for tonic in range(12):
+        major_score = np.corrcoef(chroma, np.roll(_MAJOR_KEY_PROFILE, tonic))[0, 1]
+        minor_score = np.corrcoef(chroma, np.roll(_MINOR_KEY_PROFILE, tonic))[0, 1]
+        if major_score > best_score:
+            best_score, best_tonic, best_is_major = major_score, tonic, True
+        if minor_score > best_score:
+            best_score, best_tonic, best_is_major = minor_score, tonic, False
+
+    return (_CAMELOT_MAJOR if best_is_major else _CAMELOT_MINOR)[best_tonic]
+
+
+def estimate_bpm_and_key(file_path, log=safe_print):
+    """
+    Best-effort BPM + Camelot-notation key estimate for file_path, shown
+    as a second line under the title in the Tagger table. Pure numpy -
+    deliberately NOT using a full audio-analysis library (librosa/
+    essentia): those pull in scipy/numba-sized dependencies that would
+    meaningfully bloat the installer and risk reintroducing antivirus
+    false positives (numba especially - see the 0.28.2 VirusTotal
+    investigation), for a feature that's explicitly presented as an
+    estimate rather than something needing professional accuracy.
+    Returns (None, None) on any failure - must never abort a scan.
+    """
+    try:
+        samples = _decode_pcm_segment(
+            file_path, duration=BPM_ANALYSIS_SEGMENT_SECONDS,
+            skip=BPM_ANALYSIS_SKIP_SECONDS, sample_rate=BPM_ANALYSIS_SAMPLE_RATE,
+        )
+        if len(samples) < BPM_ANALYSIS_SAMPLE_RATE * 3:  # under ~3s decoded - too little to analyze
+            return None, None
+        bpm = _estimate_bpm(samples, BPM_ANALYSIS_SAMPLE_RATE)
+        key = _estimate_key(samples, BPM_ANALYSIS_SAMPLE_RATE)
+        return bpm, key
+    except Exception as error:
+        log(f"  [BPM/Key] Could not analyze '{file_path}': {error}")
+        return None, None
+
+
+# ============================================================================
+# 16. DUPLICATE DETECTION
+# ============================================================================
+
+# How much audio to fingerprint per file - the same default fpcalc uses
+# for AcoustID identification (its own internal MAX_AUDIO_LENGTH),
+# reused here for consistency; long enough to reliably tell two
+# different tracks apart without fingerprinting entire (possibly very
+# long) files.
+DUPLICATE_FINGERPRINT_LENGTH_SECONDS = 120
+
+# Similarity score (0-1, see _fingerprint_similarity) at or above which
+# two tracks are considered the same underlying recording. A starting
+# point, not empirically tuned against a large real-world dataset -
+# revisit if real usage turns up false positives/negatives.
+DUPLICATE_SIMILARITY_THRESHOLD = 0.95
+
+# How far one fingerprint is allowed to slide against the other while
+# searching for the best alignment (in fingerprint frames, each ~1/8s) -
+# covers a silent intro/outro length difference between two rips of the
+# same track without an unbounded (and much slower) search.
+_DUPLICATE_MAX_ALIGNMENT_OFFSET = 80
+
+
+def _compute_raw_fingerprint(file_path, log=safe_print):
+    """
+    Runs the bundled fpcalc directly with -raw -json to get the
+    UNCOMPRESSED Chromaprint fingerprint as a plain list of 32-bit
+    integers - entirely local, no network call, no API key needed.
+    Deliberately bypasses pyacoustid's own chromaprint.py wrapper here:
+    that needs a libchromaprint shared library this app doesn't bundle
+    (only fpcalc.exe, for AcoustID identification in
+    identify_via_acoustid()) - going straight to fpcalc's own CLI flags
+    needs nothing extra bundled.
+    """
+    try:
+        result = subprocess.run(
+            [find_fpcalc(), "-raw", "-json", "-length", str(DUPLICATE_FINGERPRINT_LENGTH_SECONDS), file_path],
+            capture_output=True, text=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode != 0:
+            log(f"  [Duplicates] fpcalc failed on '{file_path}': {result.stderr.strip()}")
+            return None
+        return json.loads(result.stdout).get("fingerprint")
+    except FileNotFoundError:
+        log("  [Duplicates] fpcalc was not found - check it's bundled or installed.")
+        return None
+    except Exception as error:
+        log(f"  [Duplicates] Could not fingerprint '{file_path}': {error}")
+        return None
+
+
+def _fingerprint_similarity(fingerprint_a, fingerprint_b):
+    """
+    Similarity score (0-1) between two raw Chromaprint fingerprints -
+    the same audio re-encoded at a different bitrate/format produces a
+    fingerprint that's mostly, but not bit-for-bit, identical, so this
+    looks for the best-aligned bit-error-rate rather than exact
+    equality. Slides the shorter fingerprint across the longer one
+    (bounded by _DUPLICATE_MAX_ALIGNMENT_OFFSET), and at each offset
+    XORs the overlapping region and counts differing bits (popcount via
+    np.unpackbits) - returns 1 minus the best (lowest) bit-error-rate
+    found across every offset tried.
+    """
+    shorter = np.asarray(fingerprint_a, dtype=np.uint32)
+    longer = np.asarray(fingerprint_b, dtype=np.uint32)
+    if len(shorter) == 0 or len(longer) == 0:
+        return 0.0
+    if len(shorter) > len(longer):
+        shorter, longer = longer, shorter
+
+    best_bit_error_rate = 1.0
+    max_offset = min(_DUPLICATE_MAX_ALIGNMENT_OFFSET, len(longer) - 1)
+    for offset in range(0, max_offset + 1):
+        window = longer[offset:offset + len(shorter)]
+        overlap = min(len(shorter), len(window))
+        if overlap < 10:  # too little overlap for a meaningful comparison
+            continue
+        xor = np.bitwise_xor(shorter[:overlap], window[:overlap])
+        differing_bits = np.unpackbits(xor.view(np.uint8)).sum()
+        bit_error_rate = differing_bits / (overlap * 32)
+        if bit_error_rate < best_bit_error_rate:
+            best_bit_error_rate = bit_error_rate
+
+    return 1.0 - best_bit_error_rate
+
+
+def find_duplicate_tracks(file_paths, log=safe_print, on_progress=None, should_cancel=None):
+    """
+    Fingerprints every file in file_paths once, then compares every pair
+    for similarity - returns a list of (file_a, file_b, similarity)
+    triples for pairs at or above DUPLICATE_SIMILARITY_THRESHOLD.
+    O(n^2) comparisons (fine at realistic per-scan batch sizes), so this
+    is a deliberate, separate on-demand action in the Tagger tab ("Find
+    duplicates"), not something run automatically on every scan the way
+    BPM/Key detection is.
+    """
+    total = len(file_paths)
+    fingerprints = {}
+    for index, path in enumerate(file_paths, start=1):
+        if should_cancel and should_cancel():
+            return []
+        fingerprints[path] = _compute_raw_fingerprint(path, log=log)
+        if on_progress:
+            on_progress(index, total)
+
+    duplicates = []
+    fingerprinted_paths = [path for path in file_paths if fingerprints.get(path)]
+    for i in range(len(fingerprinted_paths)):
+        if should_cancel and should_cancel():
+            break
+        for j in range(i + 1, len(fingerprinted_paths)):
+            path_a, path_b = fingerprinted_paths[i], fingerprinted_paths[j]
+            similarity = _fingerprint_similarity(fingerprints[path_a], fingerprints[path_b])
+            if similarity >= DUPLICATE_SIMILARITY_THRESHOLD:
+                duplicates.append((path_a, path_b, similarity))
+    return duplicates
 
 
 def process_folder(log=safe_print, on_progress=None):

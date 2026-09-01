@@ -3088,5 +3088,116 @@ class ComputeTrackSpectrogramTests(unittest.TestCase):
             self.assertIsNone(tagger.compute_track_spectrogram(tiny_path))
 
 
+def _run_ffmpeg(args):
+    subprocess.run(
+        [tagger.find_ffmpeg()] + args, capture_output=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+
+
+@unittest.skipUnless(shutil.which(tagger.find_ffmpeg()) or os.path.exists(tagger.find_ffmpeg()),
+                      "ffmpeg not available in this environment")
+class EstimateBpmAndKeyTests(unittest.TestCase):
+    """estimate_bpm_and_key() is a from-scratch, pure-numpy estimate
+    (deliberately not librosa/essentia - see the BPM/KEY DETECTION
+    section's own comment on why) - these tests check it lands in the
+    right ballpark on synthetic material with a KNOWN tempo/pitch, not
+    that it matches a professional tool's accuracy."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self._tmp_dir.cleanup()
+
+    def test_bpm_estimate_is_close_to_a_known_tempo(self):
+        # A 2Hz tremolo on a steady tone = 120 pulses/minute = 120 BPM.
+        path = os.path.join(self._tmp_dir.name, "tone.wav")
+        _run_ffmpeg(["-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=30",
+                     "-af", "tremolo=f=2.0:d=1.0", path])
+        bpm, _key = tagger.estimate_bpm_and_key(path)
+        self.assertIsNotNone(bpm)
+        # A from-scratch autocorrelation estimator is expected to
+        # sometimes land on an octave of the true tempo (60/120/240) -
+        # any of those counts as "found the right periodicity".
+        candidates = [bpm, bpm * 2, bpm / 2]
+        self.assertTrue(
+            any(abs(c - 120) <= 6 for c in candidates),
+            f"expected ~120 BPM (or an octave of it), got {bpm}",
+        )
+
+    def test_key_estimate_matches_a_known_pitch_class(self):
+        # 440Hz = A4 -> pitch class A -> Camelot 11B (major) or 8A (minor)
+        # depending on which mode's template correlates higher for a
+        # pure, harmonically-empty tone.
+        path = os.path.join(self._tmp_dir.name, "tone.wav")
+        _run_ffmpeg(["-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=20", path])
+        _bpm, key = tagger.estimate_bpm_and_key(path)
+        self.assertIn(key, ("11B", "8A"))
+
+    def test_returns_none_none_for_a_file_too_short_to_analyze(self):
+        path = os.path.join(self._tmp_dir.name, "tiny.wav")
+        with open(path, "wb") as f:
+            f.write(b"not a real audio file")
+        bpm, key = tagger.estimate_bpm_and_key(path)
+        self.assertIsNone(bpm)
+        self.assertIsNone(key)
+
+
+@unittest.skipUnless(shutil.which(tagger.find_fpcalc()) or os.path.exists(tagger.find_fpcalc()),
+                      "fpcalc not available in this environment")
+class DuplicateDetectionTests(unittest.TestCase):
+    """find_duplicate_tracks()/_fingerprint_similarity() - fully local,
+    no network call and no libchromaprint needed (see the DUPLICATE
+    DETECTION section's own comment on why fpcalc's own -raw -json flags
+    are used directly instead of pyacoustid's chromaprint.py wrapper)."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self._tmp_dir.cleanup()
+
+    def _make_tone(self, name, frequency, duration=20):
+        path = os.path.join(self._tmp_dir.name, name)
+        _run_ffmpeg(["-y", "-f", "lavfi", "-i", f"sine=frequency={frequency}:duration={duration}", path])
+        return path
+
+    def test_same_track_reencoded_scores_above_threshold(self):
+        original = self._make_tone("song.wav", 523.25)
+        reencoded = os.path.join(self._tmp_dir.name, "song_128k.mp3")
+        _run_ffmpeg(["-y", "-i", original, "-b:a", "128k", reencoded])
+
+        fp_a = tagger._compute_raw_fingerprint(original)
+        fp_b = tagger._compute_raw_fingerprint(reencoded)
+        self.assertIsNotNone(fp_a)
+        self.assertIsNotNone(fp_b)
+        similarity = tagger._fingerprint_similarity(fp_a, fp_b)
+        self.assertGreaterEqual(similarity, tagger.DUPLICATE_SIMILARITY_THRESHOLD)
+
+    def test_different_tracks_score_below_threshold(self):
+        path_a = self._make_tone("song_a.wav", 523.25)
+        path_b = self._make_tone("song_b.wav", 659.25)
+        fp_a = tagger._compute_raw_fingerprint(path_a)
+        fp_b = tagger._compute_raw_fingerprint(path_b)
+        similarity = tagger._fingerprint_similarity(fp_a, fp_b)
+        self.assertLess(similarity, tagger.DUPLICATE_SIMILARITY_THRESHOLD)
+
+    def test_find_duplicate_tracks_end_to_end(self):
+        original = self._make_tone("song.wav", 523.25)
+        copy_path = os.path.join(self._tmp_dir.name, "song_copy.mp3")
+        _run_ffmpeg(["-y", "-i", original, "-b:a", "192k", copy_path])
+        different = self._make_tone("different.wav", 659.25)
+
+        duplicates = tagger.find_duplicate_tracks([original, copy_path, different])
+        pairs = {frozenset((os.path.basename(a), os.path.basename(b))) for a, b, _sim in duplicates}
+        self.assertIn(frozenset({"song.wav", "song_copy.mp3"}), pairs)
+        self.assertNotIn(frozenset({"song.wav", "different.wav"}), pairs)
+
+    def test_fingerprint_similarity_handles_empty_input(self):
+        self.assertEqual(tagger._fingerprint_similarity([], [1, 2, 3]), 0.0)
+        self.assertEqual(tagger._fingerprint_similarity([], []), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

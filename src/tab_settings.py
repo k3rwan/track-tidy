@@ -49,6 +49,10 @@ class SettingsTabMixin:
         ttk.Checkbutton(
             behavior_frame, text="Show log section", variable=self.show_log_var,
             command=self._on_show_log_changed,
+        ).pack(anchor="w", padx=10, pady=(0, 0))
+        ttk.Checkbutton(
+            behavior_frame, text="Detect BPM/key when scanning (slower)",
+            variable=self.detect_bpm_key_var, command=self._on_detect_bpm_key_changed,
         ).pack(anchor="w", padx=10, pady=(0, 10))
 
         # Maintenance actions, clearly grouped as their own section instead
@@ -175,6 +179,12 @@ class SettingsTabMixin:
         tagger.save_setting("fix_track_file_name", enabled)
         tagger.log_action(f"Fix track file name: {enabled}")
 
+    def _on_detect_bpm_key_changed(self):
+        enabled = self.detect_bpm_key_var.get()
+        tagger.DETECT_BPM_KEY = enabled
+        tagger.save_setting("detect_bpm_key", enabled)
+        tagger.log_action(f"Detect BPM/key when scanning: {enabled}")
+
     def _reset_settings_to_default(self):
         """Restores every Settings-tab option to its out-of-the-box value.
         Deliberately bypasses the individual _on_X_changed() handlers -
@@ -195,10 +205,12 @@ class SettingsTabMixin:
         tagger.AUTO_CONVERT_MP3 = False
         tagger.AUTO_CONVERT_WAV_TO_AIFF = True
         tagger.FIX_TRACK_FILE_NAME = True
+        tagger.DETECT_BPM_KEY = True
 
         self.auto_convert_var.set(False)
         self.auto_convert_wav_aiff_var.set(True)
         self.fix_track_file_name_var.set(True)
+        self.detect_bpm_key_var.set(True)
 
         self.show_log_var.set(False)
         self._on_show_log_changed()
