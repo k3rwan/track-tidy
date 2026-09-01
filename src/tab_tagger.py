@@ -435,40 +435,61 @@ class TaggerTabMixin:
         folder at a time - one dropped from a different folder than the
         first valid file is skipped (logged, not silently mixed in or
         left to collide with a same-named file)."""
-        valid_paths = [
-            path for path in file_paths
-            if os.path.isfile(path) and path.lower().endswith(tagger.SUPPORTED_EXTENSIONS)
-        ]
+        # Collects (filename, reason) for every dropped file this function
+        # ends up skipping - unlike the journal (hidden by default, see
+        # show_log_var), a real popup at the end is the only way the user
+        # actually sees why nothing happened, e.g. dropping a genuinely
+        # unsupported file (.txt, .mp4...) used to leave zero trace at all,
+        # not even in the journal.
+        ignored = []
+
+        valid_paths = []
+        for path in file_paths:
+            if os.path.isfile(path) and path.lower().endswith(tagger.SUPPORTED_EXTENSIONS):
+                valid_paths.append(path)
+            else:
+                ignored.append((os.path.basename(path), "unsupported file type"))
+
         if not valid_paths:
+            self._show_ignored_files_warning(ignored)
             return
 
         folder = os.path.dirname(valid_paths[0])
         relative_names = []
         for path in valid_paths:
             if os.path.dirname(path) != folder:
-                self._append_to_journal(
-                    f"Ignored '{os.path.basename(path)}' - dropped from a different folder than the rest."
-                )
+                reason = "dropped from a different folder than the rest"
+                self._append_to_journal(f"Ignored '{os.path.basename(path)}' - {reason}.")
+                ignored.append((os.path.basename(path), reason))
                 continue
             if (
                 not tagger.AUTO_CONVERT_MP3
-                and not path.lower().endswith((".mp3", ".wav", ".aiff", ".aif", ".flac"))
-            ):
-                self._append_to_journal(
-                    f"Ignored '{os.path.basename(path)}' - only MP3/WAV/AIFF/FLAC can be tagged "
-                    "without converting (Settings > Convert everything to MP3)."
+                and not path.lower().endswith(
+                    (".mp3", ".wav", ".aiff", ".aif", ".flac", ".m4a", ".mpeg", ".mpg")
                 )
+            ):
+                reason = (
+                    "only MP3/WAV/AIFF/FLAC/M4A/MPEG can be tagged without converting "
+                    "everything else (Settings > Convert everything to MP3)"
+                )
+                self._append_to_journal(f"Ignored '{os.path.basename(path)}' - {reason}.")
+                ignored.append((os.path.basename(path), reason))
                 continue
             relative_name = os.path.basename(path)
             if folder == getattr(self, "last_scanned_folder", None) and any(
                 info["file"] == relative_name for info in self.scanned_plan
             ):
                 self._append_to_journal(f"Ignored '{relative_name}' - already in the table.")
+                ignored.append((relative_name, "already in the table"))
                 continue
             relative_names.append(relative_name)
 
         if not relative_names:
+            self._show_ignored_files_warning(ignored)
             return
+
+        if ignored:
+            self._show_ignored_files_warning(ignored)
 
         relative_names = self._apply_track_count_limit(relative_names)
 
@@ -496,6 +517,23 @@ class TaggerTabMixin:
         self._set_buttons_enabled(False)
         self._show_scan_progress_bar()
         self._run_in_background(self._run_scan, relative_names)
+
+    def _show_ignored_files_warning(self, ignored):
+        """Surfaces dropped files _start_multi_file_scan skipped, as a real
+        popup rather than only the journal (hidden by default) - otherwise
+        dropping e.g. a single unsupported file looks like nothing
+        happened at all, with no clue why."""
+        if not ignored:
+            return
+        unit = "file was" if len(ignored) == 1 else "files were"
+        lines = "\n".join(f"- {name}: {reason}" for name, reason in ignored[:10])
+        if len(ignored) > 10:
+            lines += f"\n- ...and {len(ignored) - 10} more (see the log for the full list)."
+        messagebox.showwarning(
+            "Some files were skipped",
+            f"{len(ignored)} {unit} not added:\n\n{lines}",
+            parent=self.window,
+        )
 
     def _toggle_advanced_section(self):
         if self._is_run_active():
