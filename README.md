@@ -8,7 +8,7 @@
   <a href="https://github.com/k3rwan/track-tidy/releases/download/0.26.3/Track-Tidy-Setup-0.26.3.dmg"><img src="https://img.shields.io/badge/Download-000000?style=for-the-badge&logo=apple" alt="Download for macOS"></a>
 </p>
 <p align="center">
-  <sub>Windows 0.27, macOS 0.26.3 - see <a href="../../releases/latest">Releases</a> for older versions.</sub>
+  <sub>Windows 0.28, macOS 0.26.3 - see <a href="../../releases/latest">Releases</a> for older versions.</sub>
 </p>
 
 <p align="center">
