@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <a href="https://www.virustotal.com/gui/file/f549d006481d6549231a90fb939523212ebe6b711891ec09af8d2368c1975c39/detection"><img src="https://img.shields.io/badge/Scanned%20on-VirusTotal-brightgreen?style=for-the-badge&logo=virustotal&logoColor=white" alt="Scanned on VirusTotal - view full report"></a>
+  <a href="https://www.virustotal.com/gui/file/f549d006481d6549231a90fb939523212ebe6b711891ec09af8d2368c1975c39/detection"><img src="https://img.shields.io/badge/VirusTotal-3%2F75-green?style=for-the-badge&logo=virustotal&logoColor=white" alt="VirusTotal: 3/75 detections"></a>
 </p>
 
 > ⭐ If Track Tidy is useful to you, consider starring the repo - it's free and helps other DJs find it.
@@ -81,8 +81,10 @@ understand the hesitation. A few things that should help:
 - The source code below is the real thing that gets built into the installer
   - nothing hidden.
 - The Windows installer is scanned with
-  [VirusTotal](https://www.virustotal.com/gui/file/36857d8adc196f1b0a8efc66ff836700e6460b62084985ded7b4399f451d7e1b/detection)
-  on every release - click through for the full vendor-by-vendor report.
+  [VirusTotal](https://www.virustotal.com/gui/file/f549d006481d6549231a90fb939523212ebe6b711891ec09af8d2368c1975c39/detection)
+  on every release: **3/75** security vendors flag it, all generic/heuristic
+  detections (no real signature match) - click through for the full
+  vendor-by-vendor report.
 
 ## Install
 
