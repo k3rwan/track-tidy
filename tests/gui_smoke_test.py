@@ -268,21 +268,36 @@ def check_quality_row_logic(app):
 
 
 def check_quality_progress_bar_placement(app):
-    """Regression guard for a real bug found while moving Quality's
+    """Regression guard for two real bugs found while moving Quality's
     progress bar to the bottom of the tab (to match Tagger's own
-    placement): _start_quality_scan packed the canvas but never called
-    _adjust_window_height() afterwards, unlike Tagger's
-    _show_scan_progress_bar (tab_tagger.py) and unlike Quality's own
-    _reset_quality, which already called it on the way back down. Since
-    quality_table_frame's Treeview has a real minimum height (unlike a
-    plain Frame), pack couldn't shrink it to free up space on its own -
-    the window needed to actually grow, which never happened, so the bar
-    silently had nowhere to render at all (not just in the wrong place -
-    genuinely invisible), regardless of where in the tab it was packed.
-    Confirmed by reproducing with winfo_ismapped()/winfo_width() both
-    reporting the canvas as never having been laid out."""
+    placement):
+
+    1. _start_quality_scan packed the canvas but never called
+       _adjust_window_height() afterwards, unlike Tagger's
+       _show_scan_progress_bar (tab_tagger.py) and unlike Quality's own
+       _reset_quality, which already called it on the way back down.
+       quality_table_frame's Treeview has a real minimum height (unlike
+       a plain Frame), so pack couldn't shrink it to free up space on
+       its own - the window needed to actually grow, which never
+       happened, so the bar had nowhere to render at all (not just in
+       the wrong place - genuinely invisible).
+
+    2. Fixing #1 alone still wasn't enough in real use: once a real scan
+       produces its first verdict, _update_quality_summary_strip() packs
+       ANOTHER new widget (the green/orange/red counts, between the
+       buttons and the table) with the exact same missing-adjustment
+       bug. With a single tiny fixture file (finishes near-instantly)
+       this second pack never gets triggered before the check runs, so
+       an earlier version of this test passed while the bug still
+       shipped - real report: the bar disappeared again in actual use
+       specifically once that strip showed up, competing for space in a
+       window that was only grown to fit the bar alone. Using several
+       files and polling until the summary strip actually appears (not
+       a fixed short pump) is what catches this.
+    """
     tmp_dir = tempfile.mkdtemp()
-    shutil.copy(os.path.join(REPO_ROOT, "assets", "fart.wav"), os.path.join(tmp_dir, "a.wav"))
+    for i in range(4):
+        shutil.copy(os.path.join(REPO_ROOT, "assets", "fart.wav"), os.path.join(tmp_dir, f"track_{i}.wav"))
 
     app._reset_quality()
     pump(app.window, 0.1)
@@ -305,6 +320,21 @@ def check_quality_progress_bar_placement(app):
         table_bottom = app.quality_table_frame.winfo_rooty() + app.quality_table_frame.winfo_height()
         if canvas_top < table_bottom:
             raise AssertionError("progress bar should sit BELOW the table (Tagger's placement), not above/inside it")
+
+        # Poll (real analysis timing varies) until the summary strip
+        # actually appears - the exact moment bug #2 above happened.
+        deadline = time.time() + 20
+        summary_appeared = False
+        while time.time() < deadline:
+            app.window.update()
+            time.sleep(0.02)
+            if app.quality_summary_frame.winfo_ismapped():
+                summary_appeared = True
+                break
+        if not summary_appeared:
+            raise AssertionError("summary strip never appeared - can't verify the two-widgets-at-once case")
+        if not app.quality_progress_canvas.winfo_ismapped() or app.quality_progress_canvas.winfo_width() <= 1:
+            raise AssertionError("progress bar was pushed out once the summary strip appeared alongside it")
     finally:
         app.quality_cancel_requested.set()
         pump(app.window, 1.5)  # let the background scan thread actually exit

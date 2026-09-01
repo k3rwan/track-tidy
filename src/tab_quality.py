@@ -420,6 +420,17 @@ class QualityTabMixin:
         self.quality_summary_red_var.set(f"● {self._quality_scan_counts[tagger.QUALITY_RED]}")
         if not self.quality_summary_frame.winfo_ismapped():
             self.quality_summary_frame.pack(fill="x", padx=10, pady=(0, 5), before=self.quality_table_frame)
+            # Same missing-call bug as the progress bar's own pack() had
+            # (see _start_quality_scan) - without this the window never
+            # grows to make room, and since this strip and the progress
+            # bar can both appear during the same real scan (as soon as
+            # the first result with a verdict comes in), they end up
+            # competing for space in a window only large enough for
+            # whichever one got adjusted for - real report: the progress
+            # bar disappeared again in actual use once this strip showed
+            # up, despite working fine in a quick synthetic test that
+            # never got far enough into a scan to trigger this strip too.
+            self._adjust_window_height()
 
     def _on_quality_verdict_heading_click(self):
         """Cycles the dot column through: 1st click = worst (red) on top,
@@ -506,6 +517,10 @@ class QualityTabMixin:
         )
         self.quality_reset_button.configure(state="normal")
         self.quality_progress_canvas.pack_forget()
+        # Matches Tagger's own _finalize_processing (tab_tagger.py) - without
+        # this the window stays at its grown size, leaving blank space where
+        # the bar used to be until the user clicks Reset.
+        self._adjust_window_height()
         self._set_tabs_locked(False)
 
         # Surfaces the tracks that most need a listen first, instead of
