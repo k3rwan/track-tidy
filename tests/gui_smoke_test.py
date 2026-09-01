@@ -232,8 +232,8 @@ def check_bpm_key_display(app):
         "bpm": 128.0, "camelot_key": "8A", "duplicate_of": None,
     }
     displayed_title = app._build_row_values(info)[1]
-    if "\n128 BPM · 8A" not in displayed_title:
-        raise AssertionError(f"expected a '128 BPM · 8A' second line in the title, got {displayed_title!r}")
+    if "\n(128 BPM - 8A)" not in displayed_title:
+        raise AssertionError(f"expected a '(128 BPM - 8A)' second line in the title, got {displayed_title!r}")
 
     # No bpm/key detected (or feature off) -> no second line at all, so a
     # plain row looks exactly like it did before this feature existed.

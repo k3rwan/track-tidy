@@ -1857,7 +1857,7 @@ class TaggerTabMixin:
         key = info.get("camelot_key")
         if bpm is None or key is None:
             return ""
-        return f"\n{bpm:.0f} BPM · {key}"
+        return f"\n({bpm:.0f} BPM - {key})"
 
     def _build_row_values(self, info):
         """Builds the tuple of displayed values for a row (image handled separately)."""
