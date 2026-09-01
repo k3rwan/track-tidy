@@ -18,7 +18,7 @@
 > ⭐ If Track Tidy is useful to you, consider starring the repo - it's free and helps other DJs find it.
 
 <p align="center">
-  <img src="screenshots/scan-in-progress.png" alt="Track Tidy scanning a folder" width="600">
+  <img src="screenshots/tab-tagger.png" alt="Track Tidy's Tagger tab, showing scanned tracks ready to apply" width="600">
 </p>
 
 ## What it does
@@ -32,10 +32,35 @@ Point it at a folder and it:
 - Optionally renames the file to a clean "Artist - Title" and converts WAV to
   AIFF (so cover art actually shows up for software that doesn't read it from
   WAV).
+- Flags tracks worth a second look: no cover match found (⚠️), or an
+  identification made from the audio itself rather than the filename (🎧).
+- Flattens a messy folder of nested subfolders back into one flat folder
+  (Extractor tab).
+- Scans a library for low-quality files - low bitrate, clipping, overly
+  quiet masters (Quality tab).
 - Keeps a permanent history of every file it processes (browsable/restorable
   from Settings), so it never re-touches a file it's already tagged.
 - Checks for updates on startup and can download/install them directly.
 - Dark mode.
+
+## Screenshots
+
+<table align="center">
+  <tr>
+    <td align="center" width="33%">
+      <img src="screenshots/tab-extractor.png" alt="Extractor tab: flattening a nested folder of files" width="260"><br>
+      <sub><b>Extractor</b> - flattens nested subfolders</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="screenshots/tab-quality.png" alt="Quality tab: bitrate/loudness analysis results, worst-first" width="260"><br>
+      <sub><b>Quality</b> - flags low-bitrate/clipped/quiet files</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="screenshots/tab-settings.png" alt="Settings tab: appearance, file handling, and app options" width="260"><br>
+      <sub><b>Settings</b> - theme, conversion, history, updates</sub>
+    </td>
+  </tr>
+</table>
 
 ## Is this safe?
 
