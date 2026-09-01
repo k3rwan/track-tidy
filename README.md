@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/k3rwan/track-tidy/releases/download/0.27/Track-Tidy-Setup-0.27.exe"><img src="https://img.shields.io/badge/Download-0078D6?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iI2ZmZmZmZiIgZD0iTTMgM2g4LjV2OC41SDN6bTkuNSAwSDIxdjguNWgtOC41ek0zIDEyLjVoOC41VjIxSDN6bTkuNSAwSDIxVjIxaC04LjV6Ii8+PC9zdmc+" alt="Download for Windows"></a>
+  <a href="https://github.com/k3rwan/track-tidy/releases/download/0.28/Track-Tidy-Setup-0.28.exe"><img src="https://img.shields.io/badge/Download-0078D6?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iI2ZmZmZmZiIgZD0iTTMgM2g4LjV2OC41SDN6bTkuNSAwSDIxdjguNWgtOC41ek0zIDEyLjVoOC41VjIxSDN6bTkuNSAwSDIxVjIxaC04LjV6Ii8+PC9zdmc+" alt="Download for Windows"></a>
   &nbsp;
   <a href="https://github.com/k3rwan/track-tidy/releases/download/0.26.3/Track-Tidy-Setup-0.26.3.dmg"><img src="https://img.shields.io/badge/Download-000000?style=for-the-badge&logo=apple" alt="Download for macOS"></a>
 </p>
@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <a href="https://www.virustotal.com/gui/file/82d5cf9dc2472dd74ac4a73f6412acfdb8efc7282ebaf4a7bd3f6d0bc5cafcc9/detection"><img src="https://img.shields.io/badge/Scanned%20on-VirusTotal-brightgreen?style=for-the-badge&logo=virustotal&logoColor=white" alt="Scanned on VirusTotal - view full report"></a>
+  <a href="https://www.virustotal.com/gui/file/36857d8adc196f1b0a8efc66ff836700e6460b62084985ded7b4399f451d7e1b/detection"><img src="https://img.shields.io/badge/Scanned%20on-VirusTotal-brightgreen?style=for-the-badge&logo=virustotal&logoColor=white" alt="Scanned on VirusTotal - view full report"></a>
 </p>
 
 > ⭐ If Track Tidy is useful to you, consider starring the repo - it's free and helps other DJs find it.
@@ -56,7 +56,7 @@ understand the hesitation. A few things that should help:
 - The source code below is the real thing that gets built into the installer
   - nothing hidden.
 - The Windows installer is scanned with
-  [VirusTotal](https://www.virustotal.com/gui/file/8d58317d6e3a81c37dfa6e1e5d465a641885d65ddcc57534d033f1128f1a752a/detection)
+  [VirusTotal](https://www.virustotal.com/gui/file/36857d8adc196f1b0a8efc66ff836700e6460b62084985ded7b4399f451d7e1b/detection)
   on every release - click through for the full vendor-by-vendor report.
 
 ## Install
