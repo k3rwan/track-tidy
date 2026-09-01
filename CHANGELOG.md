@@ -23,6 +23,9 @@ on [Keep a Changelog](https://keepachangelog.com/).
   Apply") if you'd rather keep one of them. History's "Restore" now
   puts these six fields back to their exact original values too,
   instead of leaving whatever Apply cleared them to.
+- "Always on top" pin button (top-right corner) - keeps Track Tidy in
+  front of other windows (Rekordbox, Serato, etc.) instead of getting
+  buried behind them. Remembered across restarts.
 
 ### Fixed
 - Embedded Windows version metadata (publisher, product name,

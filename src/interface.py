@@ -80,6 +80,7 @@ from ui_common import (
     DARK_COLORS,
     LIGHT_COLORS,
     INDICATOR_CHECKED_BG,
+    LINK_ACCENT_COLOR,
 )
 
 
@@ -312,6 +313,9 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
         self.clear_album_artist_tag_var = tk.BooleanVar(value=saved_settings.get("clear_album_artist_tag", True))
         self.clear_composer_tag_var = tk.BooleanVar(value=saved_settings.get("clear_composer_tag", True))
         self.clear_disc_number_tag_var = tk.BooleanVar(value=saved_settings.get("clear_disc_number_tag", True))
+        # Pure window-manager concern (see _toggle_always_on_top) - no
+        # tagger.XXX module constant to mirror, unlike the settings above.
+        self.always_on_top_var = tk.BooleanVar(value=saved_settings.get("always_on_top", False))
         self._tagger_resize_pending = False
         tagger.AUTO_CONVERT_MP3 = self.auto_convert_var.get()
         tagger.AUTO_CONVERT_WAV_TO_AIFF = self.auto_convert_wav_aiff_var.get()
@@ -1397,6 +1401,19 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
         version_label = ttk.Label(self.window, text=tagger.APP_VERSION, foreground="#999999")
         version_label.place(relx=1.0, rely=1.0, x=-6, y=-4, anchor="se")
 
+        # "Always on top" toggle - placed directly on the window (like
+        # version_label above), overlapping the Notebook's own tab strip
+        # to the right of the last tab (blank space there, so nothing to
+        # collide with) rather than adding a dedicated top bar just for
+        # this one button. Lets Track Tidy stay visible over Rekordbox/
+        # Serato/etc. instead of getting buried behind them.
+        self.pin_button = ttk.Label(self.window, text="📌", cursor="hand2")
+        self.pin_button.place(relx=1.0, x=-8, y=4, anchor="ne")
+        self.pin_button.bind("<Button-1>", lambda event: self._toggle_always_on_top())
+        self.pin_button.bind("<Enter>", lambda event: self._show_tooltip("Always on top", event))
+        self.pin_button.bind("<Leave>", lambda event: self._hide_tooltip())
+        self._apply_always_on_top()
+
         tagger_tab = ttk.Frame(self.notebook)
         extractor_tab = ttk.Frame(self.notebook)
         quality_tab = ttk.Frame(self.notebook)
@@ -1575,6 +1592,25 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
     # final tags include one, that foreground stays visible through the
     # flash instead of the plain row color (see _flash_new_row).
     _VERDICT_TAG_NAMES = ("verdict_green", "verdict_orange", "verdict_red")
+
+    # --- Always on top toggle ---
+
+    def _toggle_always_on_top(self):
+        self.always_on_top_var.set(not self.always_on_top_var.get())
+        self._apply_always_on_top()
+
+    def _apply_always_on_top(self):
+        """Applies always_on_top_var's current value to the actual window
+        attribute, tints pin_button to show which state it's in (accent
+        blue when pinned, muted grey otherwise - same colors info icons/
+        the version label already use elsewhere in this file), and
+        persists the choice. Called both from the toggle handler and once
+        at startup (see _build_interface) to restore a saved preference."""
+        enabled = self.always_on_top_var.get()
+        self.window.attributes("-topmost", enabled)
+        self.pin_button.configure(foreground=LINK_ACCENT_COLOR if enabled else "#999999")
+        tagger.save_setting("always_on_top", enabled)
+        tagger.log_action(f"Always on top: {enabled}")
 
     # --- Truncated-text tooltip ---
 

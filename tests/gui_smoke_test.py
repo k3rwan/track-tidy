@@ -297,6 +297,30 @@ def check_duplicate_marker_and_row_tag(app):
         raise AssertionError("duplicate marker incorrectly cleared by a title edit")
 
 
+def check_always_on_top_toggle(app):
+    """Pin button (_toggle_always_on_top) flips the window's real
+    -topmost attribute, its pin_button color, and always_on_top_var in
+    lockstep. Checks a flip in whichever direction rather than asserting
+    a fixed starting value - this smoke test runs against the real,
+    un-isolated settings.json (see this file's own known limitation), so
+    the starting state depends on whatever was last saved on this
+    machine, not always False. Toggles back at the end so the run
+    doesn't leave a side effect in that real settings.json."""
+    initial = bool(app.window.attributes("-topmost"))
+
+    app._toggle_always_on_top()
+    flipped = bool(app.window.attributes("-topmost"))
+    if flipped == initial:
+        raise AssertionError("toggling the pin button should flip the window's -topmost attribute")
+    if bool(app.always_on_top_var.get()) != flipped:
+        raise AssertionError("always_on_top_var should match the window's actual -topmost attribute")
+
+    app._toggle_always_on_top()
+    restored = bool(app.window.attributes("-topmost"))
+    if restored != initial:
+        raise AssertionError("toggling back should restore the original -topmost state")
+
+
 def check_quality_row_logic(app):
     """Regression guard for two real reports: (1) analysis results used to
     just sit in scan/arrival order, leaving the tracks that most need a
@@ -653,6 +677,13 @@ def main():
     except Exception as error:
         failures.append(f"duplicate marker/row tag: {error}")
         print(f"FAIL duplicate marker/row tag: {error}")
+
+    try:
+        check_always_on_top_toggle(app)
+        print("OK   always-on-top pin button")
+    except Exception as error:
+        failures.append(f"always-on-top pin button: {error}")
+        print(f"FAIL always-on-top pin button: {error}")
 
     try:
         app.notebook.select(2)  # Quality tab

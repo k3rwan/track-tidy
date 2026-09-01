@@ -283,6 +283,9 @@ class SettingsTabMixin:
         tagger.CLEAR_COMPOSER_TAG = True
         tagger.CLEAR_DISC_NUMBER_TAG = True
 
+        self.always_on_top_var.set(False)
+        self._apply_always_on_top()
+
         self.auto_convert_var.set(False)
         self.auto_convert_wav_aiff_var.set(True)
         self.fix_track_file_name_var.set(True)
