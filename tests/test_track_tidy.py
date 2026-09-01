@@ -1888,6 +1888,136 @@ class WriteTagsFlacTests(unittest.TestCase):
         self.assertEqual(cover_bytes, cover)
 
 
+class ClearUnwantedTagFieldsTests(unittest.TestCase):
+    """CLEAR_*_TAG settings (Settings tab's "Clear metadata on Apply") -
+    each independently toggleable, all on by default. Covers both the
+    ID3 path (mp3/wav/aiff) and the Vorbis-comment path (FLAC), which
+    use entirely different mutagen APIs (see _clear_unwanted_tag_fields's
+    own comment on why FLAC can't use tags.pop())."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.mp3_path = os.path.join(self._tmp_dir.name, "song.mp3")
+        shutil.copy(os.path.join(project_root, "assets", "fart_low_bitrate.mp3"), self.mp3_path)
+        self.flac_path = os.path.join(self._tmp_dir.name, "song.flac")
+        shutil.copy(os.path.join(project_root, "assets", "fart.flac"), self.flac_path)
+
+        self._original_flags = {
+            "CLEAR_COMMENT_TAG": tagger.CLEAR_COMMENT_TAG,
+            "CLEAR_ALBUM_TAG": tagger.CLEAR_ALBUM_TAG,
+            "CLEAR_TRACK_NUMBER_TAG": tagger.CLEAR_TRACK_NUMBER_TAG,
+            "CLEAR_ALBUM_ARTIST_TAG": tagger.CLEAR_ALBUM_ARTIST_TAG,
+            "CLEAR_COMPOSER_TAG": tagger.CLEAR_COMPOSER_TAG,
+            "CLEAR_DISC_NUMBER_TAG": tagger.CLEAR_DISC_NUMBER_TAG,
+        }
+
+    def tearDown(self):
+        self._tmp_dir.cleanup()
+        for name, value in self._original_flags.items():
+            setattr(tagger, name, value)
+
+    def _seed_id3_fields(self, path):
+        from mutagen.id3 import COMM, TALB, TRCK, TPE2, TCOM, TPOS
+        audio = tagger.MP3(path)
+        if audio.tags is None:
+            audio.add_tags()
+        audio.tags.add(COMM(encoding=3, lang="eng", desc="", text=["junk comment"]))
+        audio.tags.add(TALB(encoding=3, text=["Junk Album"]))
+        audio.tags.add(TRCK(encoding=3, text=["3"]))
+        audio.tags.add(TPE2(encoding=3, text=["Junk Album Artist"]))
+        audio.tags.add(TCOM(encoding=3, text=["Junk Composer"]))
+        audio.tags.add(TPOS(encoding=3, text=["1"]))
+        audio.save(v2_version=3)
+
+    def _id3_frames_present(self, path):
+        audio = tagger.MP3(path)
+        return {key for key in ("COMM", "TALB", "TRCK", "TPE2", "TCOM", "TPOS") if audio.tags.getall(key)}
+
+    def _seed_flac_fields(self, path):
+        audio = tagger.FLAC(path)
+        if audio.tags is None:
+            audio.add_tags()
+        audio.tags["comment"] = ["junk comment"]
+        audio.tags["album"] = ["Junk Album"]
+        audio.tags["tracknumber"] = ["3"]
+        audio.tags["albumartist"] = ["Junk Album Artist"]
+        audio.tags["composer"] = ["Junk Composer"]
+        audio.tags["discnumber"] = ["1"]
+        audio.save()
+
+    def _flac_fields_present(self, path):
+        audio = tagger.FLAC(path)
+        keys = ("comment", "album", "tracknumber", "albumartist", "composer", "discnumber")
+        return {key for key in keys if key in audio.tags}
+
+    def test_id3_all_six_fields_cleared_by_default(self):
+        self._seed_id3_fields(self.mp3_path)
+        tagger.write_tags(
+            self.mp3_path, "Artist", "Title", cover_image=None, force_remove_if_missing=False,
+            update_title=False, update_artist=False, update_cover=False, log=lambda *_: None,
+        )
+        self.assertEqual(self._id3_frames_present(self.mp3_path), set())
+
+    def test_flac_all_six_fields_cleared_by_default(self):
+        self._seed_flac_fields(self.flac_path)
+        tagger.write_tags(
+            self.flac_path, "Artist", "Title", cover_image=None, force_remove_if_missing=False,
+            update_title=False, update_artist=False, update_cover=False, log=lambda *_: None,
+        )
+        self.assertEqual(self._flac_fields_present(self.flac_path), set())
+
+    def test_clear_extra_tags_false_leaves_everything_alone(self):
+        """The unchecked-row / history-restore case - nothing about these
+        fields should change even though every CLEAR_*_TAG is on."""
+        self._seed_id3_fields(self.mp3_path)
+        tagger.write_tags(
+            self.mp3_path, "Artist", "Title", cover_image=None, force_remove_if_missing=False,
+            update_title=False, update_artist=False, update_cover=False,
+            clear_extra_tags=False, log=lambda *_: None,
+        )
+        self.assertEqual(
+            self._id3_frames_present(self.mp3_path),
+            {"COMM", "TALB", "TRCK", "TPE2", "TCOM", "TPOS"},
+        )
+
+    def test_individual_toggle_keeps_just_that_field(self):
+        """Turning one CLEAR_*_TAG off keeps only that field, still clears
+        the other five - each setting is genuinely independent."""
+        tagger.CLEAR_COMMENT_TAG = False
+        self._seed_id3_fields(self.mp3_path)
+        tagger.write_tags(
+            self.mp3_path, "Artist", "Title", cover_image=None, force_remove_if_missing=False,
+            update_title=False, update_artist=False, update_cover=False, log=lambda *_: None,
+        )
+        self.assertEqual(self._id3_frames_present(self.mp3_path), {"COMM"})
+
+    def test_flac_pop_bug_regression(self):
+        """Regression guard for a real bug this feature's own tests
+        caught: VCFLACDict subclasses list, so tags.pop(key, None)
+        raises TypeError (list.pop only takes an index) the moment it's
+        actually exercised - _clear_unwanted_tag_fields must use
+        __contains__/__delitem__ instead. Also exercises the identical
+        pre-existing latent bug in the title/artist-clearing branch
+        (clearing a title/artist to "" on a FLAC file)."""
+        audio = tagger.FLAC(self.flac_path)
+        if audio.tags is None:
+            audio.add_tags()
+        audio.tags["title"] = ["Old Title"]
+        audio.tags["artist"] = ["Old Artist"]
+        audio.save()
+
+        tagger.write_tags(
+            self.flac_path, artist="", title="Old Title", cover_image=None, force_remove_if_missing=False,
+            update_title=False, update_artist=True, update_cover=False, log=lambda *_: None,
+        )
+        # No crash (the actual bug) is the main point here; a cleared/
+        # absent tag reads back as None, per read_current_info's own
+        # contract - not "" (that would mean a tag exists with empty text).
+        _, artist, _, _ = tagger.read_current_info(self.flac_path)
+        self.assertIsNone(artist)
+
+
 class ProcessFilesTests(unittest.TestCase):
     """Reported bug: a corrupted file ("can't sync to MPEG frame", a real
     mutagen error for invalid MP3 audio data) raised uncaught from inside

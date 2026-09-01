@@ -55,6 +55,40 @@ class SettingsTabMixin:
             variable=self.detect_bpm_key_var, command=self._on_detect_bpm_key_changed,
         ).pack(anchor="w", padx=10, pady=(0, 10))
 
+        # Real DJ downloads (SoundCloud rips, YouTube converts, random
+        # torrents...) very often carry junk in exactly these fields - a
+        # "Downloaded from ..." comment, an "album" of "YouTube", a
+        # composer/track/disc number left over from some unrelated
+        # compilation - which then clutters Rekordbox/Serato's browser
+        # columns. All on by default (Kevin's call); each independently
+        # toggleable for anyone who actually wants to keep one of them.
+        clear_tags_frame = ttk.LabelFrame(soundcloud_tab, text="Clear metadata on Apply")
+        clear_tags_frame.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Checkbutton(
+            clear_tags_frame, text="Comment", variable=self.clear_comment_tag_var,
+            command=self._on_clear_comment_tag_changed,
+        ).pack(anchor="w", padx=10, pady=(10, 0))
+        ttk.Checkbutton(
+            clear_tags_frame, text="Album", variable=self.clear_album_tag_var,
+            command=self._on_clear_album_tag_changed,
+        ).pack(anchor="w", padx=10, pady=(0, 0))
+        ttk.Checkbutton(
+            clear_tags_frame, text="Track number", variable=self.clear_track_number_tag_var,
+            command=self._on_clear_track_number_tag_changed,
+        ).pack(anchor="w", padx=10, pady=(0, 0))
+        ttk.Checkbutton(
+            clear_tags_frame, text="Album artist", variable=self.clear_album_artist_tag_var,
+            command=self._on_clear_album_artist_tag_changed,
+        ).pack(anchor="w", padx=10, pady=(0, 0))
+        ttk.Checkbutton(
+            clear_tags_frame, text="Composer", variable=self.clear_composer_tag_var,
+            command=self._on_clear_composer_tag_changed,
+        ).pack(anchor="w", padx=10, pady=(0, 0))
+        ttk.Checkbutton(
+            clear_tags_frame, text="Disc number", variable=self.clear_disc_number_tag_var,
+            command=self._on_clear_disc_number_tag_changed,
+        ).pack(anchor="w", padx=10, pady=(0, 10))
+
         # Maintenance actions, clearly grouped as their own section instead
         # of floating unframed below "Behavior" (where they looked like
         # they were part of it, even though they're one-off actions, not
@@ -185,6 +219,42 @@ class SettingsTabMixin:
         tagger.save_setting("detect_bpm_key", enabled)
         tagger.log_action(f"Detect BPM/key when scanning: {enabled}")
 
+    def _on_clear_comment_tag_changed(self):
+        enabled = self.clear_comment_tag_var.get()
+        tagger.CLEAR_COMMENT_TAG = enabled
+        tagger.save_setting("clear_comment_tag", enabled)
+        tagger.log_action(f"Clear Comment tag: {enabled}")
+
+    def _on_clear_album_tag_changed(self):
+        enabled = self.clear_album_tag_var.get()
+        tagger.CLEAR_ALBUM_TAG = enabled
+        tagger.save_setting("clear_album_tag", enabled)
+        tagger.log_action(f"Clear Album tag: {enabled}")
+
+    def _on_clear_track_number_tag_changed(self):
+        enabled = self.clear_track_number_tag_var.get()
+        tagger.CLEAR_TRACK_NUMBER_TAG = enabled
+        tagger.save_setting("clear_track_number_tag", enabled)
+        tagger.log_action(f"Clear Track number tag: {enabled}")
+
+    def _on_clear_album_artist_tag_changed(self):
+        enabled = self.clear_album_artist_tag_var.get()
+        tagger.CLEAR_ALBUM_ARTIST_TAG = enabled
+        tagger.save_setting("clear_album_artist_tag", enabled)
+        tagger.log_action(f"Clear Album artist tag: {enabled}")
+
+    def _on_clear_composer_tag_changed(self):
+        enabled = self.clear_composer_tag_var.get()
+        tagger.CLEAR_COMPOSER_TAG = enabled
+        tagger.save_setting("clear_composer_tag", enabled)
+        tagger.log_action(f"Clear Composer tag: {enabled}")
+
+    def _on_clear_disc_number_tag_changed(self):
+        enabled = self.clear_disc_number_tag_var.get()
+        tagger.CLEAR_DISC_NUMBER_TAG = enabled
+        tagger.save_setting("clear_disc_number_tag", enabled)
+        tagger.log_action(f"Clear Disc number tag: {enabled}")
+
     def _reset_settings_to_default(self):
         """Restores every Settings-tab option to its out-of-the-box value.
         Deliberately bypasses the individual _on_X_changed() handlers -
@@ -206,11 +276,23 @@ class SettingsTabMixin:
         tagger.AUTO_CONVERT_WAV_TO_AIFF = True
         tagger.FIX_TRACK_FILE_NAME = True
         tagger.DETECT_BPM_KEY = True
+        tagger.CLEAR_COMMENT_TAG = True
+        tagger.CLEAR_ALBUM_TAG = True
+        tagger.CLEAR_TRACK_NUMBER_TAG = True
+        tagger.CLEAR_ALBUM_ARTIST_TAG = True
+        tagger.CLEAR_COMPOSER_TAG = True
+        tagger.CLEAR_DISC_NUMBER_TAG = True
 
         self.auto_convert_var.set(False)
         self.auto_convert_wav_aiff_var.set(True)
         self.fix_track_file_name_var.set(True)
         self.detect_bpm_key_var.set(True)
+        self.clear_comment_tag_var.set(True)
+        self.clear_album_tag_var.set(True)
+        self.clear_track_number_tag_var.set(True)
+        self.clear_album_artist_tag_var.set(True)
+        self.clear_composer_tag_var.set(True)
+        self.clear_disc_number_tag_var.set(True)
 
         self.show_log_var.set(False)
         self._on_show_log_changed()

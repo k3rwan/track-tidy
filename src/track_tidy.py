@@ -1119,6 +1119,12 @@ DEFAULT_SETTINGS = {
     "show_log_section": False,
     "music_folder": "",
     "detect_bpm_key": True,
+    "clear_comment_tag": True,
+    "clear_album_tag": True,
+    "clear_track_number_tag": True,
+    "clear_album_artist_tag": True,
+    "clear_composer_tag": True,
+    "clear_disc_number_tag": True,
 }
 
 
@@ -1339,6 +1345,12 @@ def restore_history_entry(entry, log=safe_print, override_path=None):
         # delall branch), not skip touching it and leave Apply's tags in
         # place - a real user-reported bug (fixed 2026-08-22).
         update_title=True, update_artist=True, update_cover=True,
+        # Nothing was ever logged for comment/album/track-number/album-
+        # artist/composer/disc-number (history.jsonl only keeps old
+        # artist/title/cover), so there's no value to restore these
+        # fields TO - leave whatever's currently in the file alone
+        # rather than either re-clearing or fabricating something.
+        clear_extra_tags=False,
         log=log,
     )
     log(f"  Restored tags on: '{full_path}'")
@@ -1532,6 +1544,22 @@ AUTO_CONVERT_WAV_TO_AIFF = True
 # of this setting - it only controls the FILENAME itself, for a user who'd
 # rather keep their own existing file naming untouched.
 FIX_TRACK_FILE_NAME = True
+
+# Whether write_tags() strips each of these fields on every Apply (set by
+# the UI, each independently toggleable, all on by default - Kevin's
+# call). Real DJ downloads (SoundCloud rips, YouTube converts, random
+# torrents...) very often carry junk in exactly these fields - a
+# "Downloaded from ..." comment, an "album" of "YouTube", a composer/
+# track/disc number left over from some unrelated compilation the file
+# was originally ripped from - which then shows up as clutter in
+# Rekordbox/Serato's browser columns. Distinct from title/artist/cover,
+# which this app is actively trying to GET RIGHT rather than blank out.
+CLEAR_COMMENT_TAG = True
+CLEAR_ALBUM_TAG = True
+CLEAR_TRACK_NUMBER_TAG = True
+CLEAR_ALBUM_ARTIST_TAG = True
+CLEAR_COMPOSER_TAG = True
+CLEAR_DISC_NUMBER_TAG = True
 
 
 # ============================================================================
@@ -5015,13 +5043,64 @@ def _write_wav_riff_info(file_path, artist, title, update_artist, update_title, 
             os.remove(temp_path)
 
 
+def _clear_unwanted_tag_fields(tags, is_flac):
+    """
+    Strips comment/album/track-number/album-artist/composer/disc-number
+    per the CLEAR_*_TAG settings (each independently toggleable in
+    Settings' "Clear metadata" section, all on by default) - real DJ
+    downloads very often carry junk in exactly these fields (see the
+    constants' own comment). Runs on whatever's CURRENTLY in the file,
+    not just freshly-scanned info - so a file that already had junk here
+    long before Track Tidy ever touched it gets cleaned up too, the same
+    as one scanned for the first time today.
+    """
+    if is_flac:
+        # NOT tags.pop(key, None) - VCFLACDict subclasses list (its
+        # DictMixin base doesn't override pop()), so .pop() actually
+        # resolves to list.pop(index) and raises "pop expected at most
+        # 1 argument" the moment it's ever really exercised (confirmed:
+        # this exact bug was already latent in this file's own title/
+        # artist-clearing branch below, just never hit in practice since
+        # process_files() skips a row with an empty title before
+        # write_tags() is even called, and artist is rarely cleared to
+        # "" - same fix applied there too). __delitem__/__contains__ ARE
+        # real dict-like methods here, unlike pop().
+        for key, enabled in (
+            ("comment", CLEAR_COMMENT_TAG), ("album", CLEAR_ALBUM_TAG),
+            ("tracknumber", CLEAR_TRACK_NUMBER_TAG), ("albumartist", CLEAR_ALBUM_ARTIST_TAG),
+            ("composer", CLEAR_COMPOSER_TAG), ("discnumber", CLEAR_DISC_NUMBER_TAG),
+        ):
+            if enabled and key in tags:
+                del tags[key]
+    else:
+        if CLEAR_COMMENT_TAG:
+            tags.delall("COMM")
+        if CLEAR_ALBUM_TAG:
+            tags.delall("TALB")
+        if CLEAR_TRACK_NUMBER_TAG:
+            tags.delall("TRCK")
+        if CLEAR_ALBUM_ARTIST_TAG:
+            tags.delall("TPE2")
+        if CLEAR_COMPOSER_TAG:
+            tags.delall("TCOM")
+        if CLEAR_DISC_NUMBER_TAG:
+            tags.delall("TPOS")
+
+
 def write_tags(file_path, artist, title, cover_image, force_remove_if_missing,
-                update_title=True, update_artist=True, update_cover=True, log=safe_print):
+                update_title=True, update_artist=True, update_cover=True,
+                clear_extra_tags=True, log=safe_print):
     """
     Writes the chosen tags:
     - update_title / update_artist: True to write, False to leave as-is
     - update_cover: True to apply the cover logic (replace/remove/keep),
       False to leave the cover untouched entirely
+    - clear_extra_tags: True to also strip comment/album/track-number/
+      album-artist/composer/disc-number per the CLEAR_*_TAG settings
+      (see _clear_unwanted_tag_fields) - False for an unchecked row
+      (nothing about it should change) or a history restore (there's
+      nothing logged to restore these fields TO, so leaving them alone
+      is the only sensible behavior either way).
     """
     if file_path.lower().endswith(".wav") and (update_title or update_artist):
         _write_wav_riff_info(file_path, artist, title, update_artist, update_title, log=log)
@@ -5037,13 +5116,15 @@ def write_tags(file_path, artist, title, cover_image, force_remove_if_missing,
         if update_title:
             if title:
                 tags["title"] = [title]
-            else:
-                tags.pop("title", None)
+            elif "title" in tags:
+                # NOT tags.pop("title", None) - see _clear_unwanted_tag_fields's
+                # own comment on why VCFLACDict.pop() actually crashes.
+                del tags["title"]
         if update_artist:
             if artist:
                 tags["artist"] = [artist]
-            else:
-                tags.pop("artist", None)
+            elif "artist" in tags:
+                del tags["artist"]
 
         if update_cover:
             if cover_image:
@@ -5063,6 +5144,9 @@ def write_tags(file_path, artist, title, cover_image, force_remove_if_missing,
             elif force_remove_if_missing:
                 audio.clear_pictures()
             # otherwise: leave the existing cover untouched
+
+        if clear_extra_tags:
+            _clear_unwanted_tag_fields(tags, is_flac=True)
     else:
         tags = audio.tags
 
@@ -5084,6 +5168,9 @@ def write_tags(file_path, artist, title, cover_image, force_remove_if_missing,
             elif force_remove_if_missing:
                 tags.delall("APIC")
             # otherwise: leave the existing cover untouched
+
+        if clear_extra_tags:
+            _clear_unwanted_tag_fields(tags, is_flac=False)
 
     save_audio(audio)
 
@@ -5248,6 +5335,10 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
             write_tags(
                 full_path, artist, title, cover_image, force_remove_if_missing,
                 update_title=update_title, update_artist=update_artist, update_cover=update_cover,
+                # Tied to apply_changes, same as the three above - an
+                # unchecked row means "leave this file exactly as-is",
+                # which must include not stripping its comment/album/etc.
+                clear_extra_tags=update_cover,
                 log=log,
             )
 

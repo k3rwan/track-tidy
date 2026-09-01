@@ -306,11 +306,23 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
         self.fix_track_file_name_var = tk.BooleanVar(value=saved_settings.get("fix_track_file_name", True))
         self.show_log_var = tk.BooleanVar(value=saved_settings.get("show_log_section", False))
         self.detect_bpm_key_var = tk.BooleanVar(value=saved_settings.get("detect_bpm_key", True))
+        self.clear_comment_tag_var = tk.BooleanVar(value=saved_settings.get("clear_comment_tag", True))
+        self.clear_album_tag_var = tk.BooleanVar(value=saved_settings.get("clear_album_tag", True))
+        self.clear_track_number_tag_var = tk.BooleanVar(value=saved_settings.get("clear_track_number_tag", True))
+        self.clear_album_artist_tag_var = tk.BooleanVar(value=saved_settings.get("clear_album_artist_tag", True))
+        self.clear_composer_tag_var = tk.BooleanVar(value=saved_settings.get("clear_composer_tag", True))
+        self.clear_disc_number_tag_var = tk.BooleanVar(value=saved_settings.get("clear_disc_number_tag", True))
         self._tagger_resize_pending = False
         tagger.AUTO_CONVERT_MP3 = self.auto_convert_var.get()
         tagger.AUTO_CONVERT_WAV_TO_AIFF = self.auto_convert_wav_aiff_var.get()
         tagger.FIX_TRACK_FILE_NAME = self.fix_track_file_name_var.get()
         tagger.DETECT_BPM_KEY = self.detect_bpm_key_var.get()
+        tagger.CLEAR_COMMENT_TAG = self.clear_comment_tag_var.get()
+        tagger.CLEAR_ALBUM_TAG = self.clear_album_tag_var.get()
+        tagger.CLEAR_TRACK_NUMBER_TAG = self.clear_track_number_tag_var.get()
+        tagger.CLEAR_ALBUM_ARTIST_TAG = self.clear_album_artist_tag_var.get()
+        tagger.CLEAR_COMPOSER_TAG = self.clear_composer_tag_var.get()
+        tagger.CLEAR_DISC_NUMBER_TAG = self.clear_disc_number_tag_var.get()
 
         self._build_interface()
         # Tagger's folder may already be pre-filled from a saved setting
