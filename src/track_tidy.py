@@ -127,16 +127,12 @@ KEYRING_SERVICE = "Track-Tidy"
 
 CLIENT_ID_KEY = "soundcloud_client_id"
 CLIENT_SECRET_KEY = "soundcloud_client_secret"
-SPOTIFY_CLIENT_ID_KEY = "spotify_client_id"
-SPOTIFY_CLIENT_SECRET_KEY = "spotify_client_secret"
 
 # Old plaintext file locations (pre-keyring) - read once at startup as a
 # migration path, then deleted. Not used for anything else.
 _LEGACY_CREDENTIAL_FILES = {
     CLIENT_ID_KEY: os.path.join(user_config_dir(), "clientID.txt"),
     CLIENT_SECRET_KEY: os.path.join(user_config_dir(), "clientSecret.txt"),
-    SPOTIFY_CLIENT_ID_KEY: os.path.join(user_config_dir(), "spotifyClientID.txt"),
-    SPOTIFY_CLIENT_SECRET_KEY: os.path.join(user_config_dir(), "spotifyClientSecret.txt"),
 }
 
 
@@ -191,8 +187,8 @@ def read_credential(key):
 
 def load_default_credentials():
     """
-    The shared default app credentials (SoundCloud, Spotify, Discord
-    webhook, AcoustID) used to be embedded directly in this file (base64,
+    The shared default app credentials (SoundCloud, Discord webhook,
+    AcoustID) used to be embedded directly in this file (base64,
     then AES-256-GCM, then - for AcoustID specifically, since it was never
     treated as sensitive - a bare literal) - fine while the compiled
     binary was the only thing
@@ -236,23 +232,11 @@ SOUNDCLOUD_DEFAULT_CLIENT_SECRET = _default_credentials.get("soundcloud_client_s
 SOUNDCLOUD_CLIENT_ID = read_credential(CLIENT_ID_KEY) or SOUNDCLOUD_DEFAULT_CLIENT_ID
 SOUNDCLOUD_CLIENT_SECRET = read_credential(CLIENT_SECRET_KEY) or SOUNDCLOUD_DEFAULT_CLIENT_SECRET
 
-# Same reasoning/risk as SOUNDCLOUD_DEFAULT_CLIENT_ID/_SECRET above, this
-# time against Spotify's developer terms - accepted risk (confirmed with
-# Kevin). Spotify is only ever tried as an absolute last resort (after
-# iTunes, SoundCloud, AND the AcoustID-corrected retry of both have all
-# come up empty - see the end of scan_files()), not a normal priority
-# source, so this should get hit rarely.
-SPOTIFY_DEFAULT_CLIENT_ID = _default_credentials.get("spotify_client_id", "")
-SPOTIFY_DEFAULT_CLIENT_SECRET = _default_credentials.get("spotify_client_secret", "")
-
-SPOTIFY_CLIENT_ID = read_credential(SPOTIFY_CLIENT_ID_KEY) or SPOTIFY_DEFAULT_CLIENT_ID
-SPOTIFY_CLIENT_SECRET = read_credential(SPOTIFY_CLIENT_SECRET_KEY) or SPOTIFY_DEFAULT_CLIENT_SECRET
-
 # AcoustID API keys are meant to be per-APPLICATION, one key shared by every
 # user of that app - unlike SoundCloud, which needs each user's own app
 # credentials, so this one was never something every user has to
 # configure. It also carries no real abuse risk beyond the free-tier rate
-# limit being shared (unlike SOUNDCLOUD/SPOTIFY_DEFAULT_CLIENT_SECRET
+# limit being shared (unlike SOUNDCLOUD_DEFAULT_CLIENT_SECRET
 # above, leaking it doesn't violate any ToS or risk a suspension) - but it
 # still doesn't need to sit in the public source as a bare literal when
 # the same default_credentials.json mechanism already exists for exactly
@@ -327,25 +311,23 @@ def check_internet_connection(timeout=2.5):
 
 def check_restrictive_firewall(timeout=5):
     """
-    Detects a firewall/network policy that blocks iTunes' and/or Spotify's
-    own domains specifically while general internet access still works -
-    the scenario suspected behind a real report where SoundCloud kept
-    finding (unreliable) covers while iTunes and Spotify, which both
-    actually had the correct release, seemingly never got a chance. Only
-    meaningful once check_internet_connection() has already confirmed
-    basic connectivity - call that first and skip this otherwise (a
-    blocked domain and "no internet at all" would look identical here).
+    Detects a firewall/network policy that blocks iTunes' own domain
+    specifically while general internet access still works - the
+    scenario suspected behind a real report where SoundCloud kept finding
+    (unreliable) covers while iTunes, which actually had the correct
+    release, seemingly never got a chance. Only meaningful once
+    check_internet_connection() has already confirmed basic connectivity -
+    call that first and skip this otherwise (a blocked domain and "no
+    internet at all" would look identical here).
 
-    Returns a list of blocked source names ("iTunes"/"Spotify") - empty if
-    both are reachable. Never raises.
+    Returns a list of blocked source names ("iTunes") - empty if
+    reachable. Never raises.
     """
-    blocked = []
-    for name, url in (("iTunes", "https://itunes.apple.com"), ("Spotify", "https://accounts.spotify.com")):
-        try:
-            requests.head(url, timeout=timeout)
-        except requests.exceptions.RequestException:
-            blocked.append(name)
-    return blocked
+    try:
+        requests.head("https://itunes.apple.com", timeout=timeout)
+        return []
+    except requests.exceptions.RequestException:
+        return ["iTunes"]
 
 
 # --- App version & update check ---
@@ -875,7 +857,7 @@ def send_new_install_notification(reporter_name=None, previous_version=None, tim
 def send_scan_complete_notification(
     reporter_name=None, number_new=0, number_removed=0, total=0, number_no_cover=0,
     number_rate_limited_sources=0, auth_error_sources=None, cancelled=False,
-    number_itunes=0, number_spotify=0, number_soundcloud=0, number_acoustid_used=0, timeout=10,
+    number_itunes=0, number_soundcloud=0, number_acoustid_used=0, timeout=10,
 ):
     """
     Posts a scan-complete ping to the same Discord webhook as
@@ -889,7 +871,7 @@ def send_scan_complete_notification(
     raises) - also False without posting anything for an excluded account
     (see DISCORD_NOTIFICATION_EXCLUDED_USERS).
 
-    number_itunes/_spotify/_soundcloud are how many of this scan's tracks
+    number_itunes/_soundcloud are how many of this scan's tracks
     actually got their cover from each source (see each track's own
     "cover_source" - set in _finish_scan) - lets a source's real-world
     match rate be watched over time instead of only surfacing as a spike
@@ -916,7 +898,6 @@ def send_scan_complete_notification(
                 "inline": True,
             },
             {"name": "iTunes matches", "value": str(number_itunes), "inline": True},
-            {"name": "Spotify matches", "value": str(number_spotify), "inline": True},
             {"name": "SoundCloud matches", "value": str(number_soundcloud), "inline": True},
             {"name": "AcoustID fallback used", "value": str(number_acoustid_used), "inline": True},
             {"name": "Rate-limited sources", "value": str(number_rate_limited_sources), "inline": True},
@@ -929,8 +910,8 @@ def send_scan_complete_notification(
 
 def send_rate_limit_report(source, reporter_name=None, timeout=10):
     """
-    Posts a ping to Discord the moment a cover source (iTunes, Spotify,
-    SoundCloud, or AcoustID) gets rate-limited during a scan, so the
+    Posts a ping to Discord the moment a cover source (iTunes, SoundCloud,
+    or AcoustID) gets rate-limited during a scan, so the
     developer sees it as it happens instead of only as a count buried in
     the "Scan complete" embed - see the *_rate_limited handlers in
     interface.py's _start_message_loop, each already gated to fire at
@@ -1132,7 +1113,6 @@ DEFAULT_SETTINGS = {
     "auto_convert_mp3": False,
     "auto_convert_wav_to_aiff": True,
     "fix_track_file_name": True,
-    "use_spotify": False,
     "show_log_section": False,
     "music_folder": "",
     "send_usage_telemetry": True,
@@ -1498,25 +1478,21 @@ SUPPORTED_EXTENSIONS = (
 MENTIONS_TO_REMOVE = []
 
 # Which cover sources are enabled - whichever are enabled are tried in a
-# fixed priority order: iTunes, then Spotify, then SoundCloud - see
-# _search_one_source() / search_cover_manual(). iTunes and Spotify are
-# both curated commercial catalogs; SoundCloud is community-uploaded and
-# far more prone to a wrong match (an unrelated repost, a fan edit...) -
-# real report: SoundCloud "succeeded" with a non-official image (a radio
-# freestyle photo) before Spotify ever got a chance to offer the track's
-# actual official cover. SoundCloud stays useful as the final fallback
-# for remixes/edits that live there and nowhere else.
-# iTunes/SoundCloud are always on - fixed, not a user-facing toggle (kept
-# as named constants rather than inlining True, since the rest of the
-# codebase still reads them as "is this source active"). USE_SPOTIFY is
-# the one exception: set by the UI (off by default) - Spotify's own
-# real-world rate limit (see SPOTIFY_SEARCH_RATE_LIMIT_COOLDOWN_SECONDS)
-# has repeatedly made it fail before ever contributing a cover, with
-# nothing actionable for the user beyond waiting on Spotify's own Extended
-# Quota Mode approval - a toggle lets it be skipped entirely instead of
-# wasting a request on every scan until then.
+# fixed priority order: iTunes, then SoundCloud - see
+# _search_one_source() / search_cover_manual(). iTunes is a curated
+# commercial catalog; SoundCloud is community-uploaded and far more prone
+# to a wrong match (an unrelated repost, a fan edit...), but stays useful
+# as the fallback for remixes/edits that live there and nowhere else.
+# Both always on - fixed, not a user-facing toggle (kept as named
+# constants rather than inlining True, since the rest of the codebase
+# still reads them as "is this source active").
+# Spotify was tried as a third source (see CHANGELOG for its history) but
+# removed entirely - its shared app never got past Development Mode's
+# tight rate limit (a rolling 30s window with a much lower ceiling than
+# Extended Quota Mode), which tripped on essentially every scan regardless
+# of pacing, contributing almost nothing while still wasting a request and
+# a log slot.
 USE_ITUNES = True
-USE_SPOTIFY = False
 USE_SOUNDCLOUD = True
 
 # Last-resort audio-content identification (AcoustID/Chromaprint) for a file
@@ -2695,25 +2671,24 @@ def detect_parenthetical_mentions(text):
 # ============================================================================
 
 def _search_one_source(
-    source, artist, search_title, remix_qualified_title, soundcloud_token, spotify_token, log,
-    on_itunes_rate_limited=None, on_spotify_rate_limited=None, own_has_generic_qualifier=False,
+    source, artist, search_title, remix_qualified_title, soundcloud_token, log,
+    on_itunes_rate_limited=None, own_has_generic_qualifier=False,
 ):
     """
     Tries a single cover source, using that provider's own established
     query strategy:
-    - iTunes/Spotify: both curated commercial catalogs, so they share the
-      same strategy - the plain (parens-stripped) title first, then a
-      retry with the remix qualifier kept in the query if that misses and
-      the two titles actually differ (e.g. a heavily-remixed song where
-      the plain query ranks a different remix first) - UNLESS the
-      qualifier names a specific remix/edit/bootleg (see
-      title_has_named_qualifier), in which case the qualified title is
-      tried FIRST and alone: a plain-title fallback risks matching a
-      different, unrelated official release that just shares the base
-      title (e.g. an official "(Remix)" single, when what's wanted is
-      someone's unofficial bootleg of it) - better to fall through to
-      SoundCloud, where unofficial reworks actually tend to live, than
-      silently substitute the wrong version's artwork.
+    - iTunes: the plain (parens-stripped) title first, then a retry with
+      the remix qualifier kept in the query if that misses and the two
+      titles actually differ (e.g. a heavily-remixed song where the plain
+      query ranks a different remix first) - UNLESS the qualifier names a
+      specific remix/edit/bootleg (see title_has_named_qualifier), in
+      which case the qualified title is tried FIRST and alone: a plain-
+      title fallback risks matching a different, unrelated official
+      release that just shares the base title (e.g. an official
+      "(Remix)" single, when what's wanted is someone's unofficial
+      bootleg of it) - better to fall through to SoundCloud, where
+      unofficial reworks actually tend to live, than silently substitute
+      the wrong version's artwork.
     - SoundCloud: goes straight for the remix-qualified title, since
       remixes/edits live there more often than a plain search would find.
     Returns (match_result, source_label) - source_label is None when
@@ -2721,21 +2696,13 @@ def _search_one_source(
     """
     has_named_qualifier = remix_qualified_title != search_title and title_has_named_qualifier(remix_qualified_title)
 
-    if source in ("itunes", "spotify"):
-        search_function = (
-            lambda a, t, log, allow_loose_remix_match=False: search_cover_itunes(
-                a, t, log=log, allow_loose_remix_match=allow_loose_remix_match, on_rate_limited=on_itunes_rate_limited,
-            )
-        ) if source == "itunes" else (
-            lambda a, t, log, allow_loose_remix_match=False: search_cover_spotify(
-                a, t, spotify_token, log=log, allow_loose_remix_match=allow_loose_remix_match,
-                on_rate_limited=on_spotify_rate_limited,
-            )
+    if source == "itunes":
+        search_function = lambda a, t, log, allow_loose_remix_match=False: search_cover_itunes(
+            a, t, log=log, allow_loose_remix_match=allow_loose_remix_match, on_rate_limited=on_itunes_rate_limited,
         )
-        label = "iTunes" if source == "itunes" else "Spotify"
         if has_named_qualifier:
             match_result = search_function(artist, remix_qualified_title, log=log, allow_loose_remix_match=True)
-            return match_result, (label if match_result else None)
+            return match_result, ("iTunes" if match_result else None)
         # allow_loose_remix_match=True even here (no named qualifier of
         # our own to retry with) - loose_remix_match() itself now also
         # accepts a store's title once ANY of its own extra trailing
@@ -2751,7 +2718,7 @@ def _search_one_source(
         match_result = search_function(artist, search_title, log=log, allow_loose_remix_match=True)
         if not match_result and remix_qualified_title != search_title:
             match_result = search_function(artist, remix_qualified_title, log=log, allow_loose_remix_match=True)
-        return match_result, (label if match_result else None)
+        return match_result, ("iTunes" if match_result else None)
 
     # source == "soundcloud"
     match_result = search_cover_soundcloud(
@@ -2761,25 +2728,13 @@ def _search_one_source(
     return match_result, ("SoundCloud" if match_result else None)
 
 
-def search_cover_manual(
-    artist, title, soundcloud_token, log=safe_print, spotify_token=None,
-    on_itunes_rate_limited=None, on_spotify_rate_limited=None,
-):
+def search_cover_manual(artist, title, soundcloud_token, log=safe_print, on_itunes_rate_limited=None):
     """
     Searches for a cover using the given artist/title directly, trying
-    every enabled source in priority order (iTunes, then Spotify, then
-    SoundCloud) and stopping at the first match - used by the "fix Artist/
-    Title and search again" flow after a scan finds no match at all
-    (user-corrected artist/title), and by "Rescan".
-
-    Spotify comes before SoundCloud despite USE_SPOTIFY's name/history as
-    a "last resort" (see CLAUDE.md) - both iTunes and Spotify are curated
-    commercial catalogs, while SoundCloud is community-uploaded and far
-    more prone to a wrong match (an unrelated repost, a fan edit...) - a
-    real report showed SoundCloud "succeeding" with a non-official image
-    before Spotify ever got a chance to offer the actual correct one.
-    Still opt-in via spotify_token (None to skip it entirely), same as
-    soundcloud_token.
+    every enabled source in priority order (iTunes, then SoundCloud) and
+    stopping at the first match - used by the "fix Artist/Title and
+    search again" flow after a scan finds no match at all (user-corrected
+    artist/title), and by "Rescan".
 
     Returns (found_cover_image, cover_source, returned_artist,
     returned_title) - the last three are None if nothing matched.
@@ -2792,15 +2747,13 @@ def search_cover_manual(
 
     for source, enabled in (
         ("itunes", USE_ITUNES),
-        ("spotify", USE_SPOTIFY and bool(spotify_token)),
         ("soundcloud", USE_SOUNDCLOUD and not SOUNDCLOUD_RATE_LIMITED and not SOUNDCLOUD_UNAVAILABLE),
     ):
         if not enabled:
             continue
         match_result, cover_source = _search_one_source(
-            source, artist, search_title, remix_qualified_title, soundcloud_token, spotify_token, log,
-            on_itunes_rate_limited=on_itunes_rate_limited, on_spotify_rate_limited=on_spotify_rate_limited,
-            own_has_generic_qualifier=own_has_generic_qualifier,
+            source, artist, search_title, remix_qualified_title, soundcloud_token, log,
+            on_itunes_rate_limited=on_itunes_rate_limited, own_has_generic_qualifier=own_has_generic_qualifier,
         )
         if match_result:
             found_cover_image, returned_artist, returned_title = match_result
@@ -2809,27 +2762,19 @@ def search_cover_manual(
     return None, None, None, None
 
 
-def search_cover_manual_with_tokens(
-    artist, title, log=safe_print, on_auth_error=None,
-    on_itunes_rate_limited=None, on_spotify_rate_limited=None,
-):
+def search_cover_manual_with_tokens(artist, title, log=safe_print, on_auth_error=None, on_itunes_rate_limited=None):
     """
-    Same as search_cover_manual(), but also fetches the SoundCloud/Spotify
-    tokens itself - for a single ad-hoc search (e.g. the "fix Artist/Title
-    and search again" flow after a scan finds nothing) that doesn't go
+    Same as search_cover_manual(), but also fetches the SoundCloud token
+    itself - for a single ad-hoc search (e.g. the "fix Artist/Title and
+    search again" flow after a scan finds nothing) that doesn't go
     through scan_files()'s full per-run setup.
     """
     soundcloud_token = None
     if USE_SOUNDCLOUD and SOUNDCLOUD_CLIENT_ID and SOUNDCLOUD_CLIENT_SECRET:
         soundcloud_token = get_soundcloud_token(log=log, on_auth_error=on_auth_error)
 
-    spotify_token = None
-    if USE_SPOTIFY and SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
-        spotify_token = get_spotify_token(log=log, on_auth_error=on_auth_error, on_rate_limited=on_spotify_rate_limited)
-
     return search_cover_manual(
-        artist, title, soundcloud_token, log=log, spotify_token=spotify_token,
-        on_itunes_rate_limited=on_itunes_rate_limited, on_spotify_rate_limited=on_spotify_rate_limited,
+        artist, title, soundcloud_token, log=log, on_itunes_rate_limited=on_itunes_rate_limited,
     )
 
 
@@ -2995,7 +2940,7 @@ def _prepare_scan(file_name, log=safe_print, on_new_mention=None, history_lookup
     if detected_title:
         search_title, remix_qualified_title = compute_search_titles(detected_title)
     if not detected_artist:
-        # scan_files() skips iTunes/Spotify entirely without an artist to
+        # scan_files() skips iTunes entirely without an artist to
         # search with - artist_sets_match() treats a blank expected artist
         # as trivially matching anything (an empty set is a subset of any
         # set), so searching those with no artist risks a confidently wrong
@@ -3009,7 +2954,7 @@ def _prepare_scan(file_name, log=safe_print, on_new_mention=None, history_lookup
         # direct title-only SoundCloud search finds without trouble.
         log(
             "  No artist could be determined from the filename or tags - skipping "
-            "iTunes/Spotify search (correct the Artist/Title and search again for those)."
+            "iTunes search (correct the Artist/Title and search again for it)."
         )
 
     return {
@@ -3027,7 +2972,7 @@ def _prepare_scan(file_name, log=safe_print, on_new_mention=None, history_lookup
         "acoustid_identified": False,  # set to True in place by _try_acoustid_correction, if it runs
         # See _is_already_applied - there's nothing a fresh online search
         # could improve on a file that's already fully tagged, so
-        # scan_files() skips iTunes/Spotify/SoundCloud/AcoustID entirely
+        # scan_files() skips iTunes/SoundCloud/AcoustID entirely
         # for it instead of re-spending quota re-confirming what's already
         # there (this is what "double scan" means in this codebase -
         # rescanning a folder that still has already-applied files sitting
@@ -3193,26 +3138,8 @@ def _finish_scan(prepared, match_result, cover_source, log=safe_print):
 SOUNDCLOUD_RATE_LIMITED = False  # set for the current run once a 429 is hit
 SOUNDCLOUD_UNAVAILABLE = False  # set for the current run when no credentials are configured at all
 
-# Same idea as SOUNDCLOUD_RATE_LIMITED above - set for the current scan
-# once a search 429 is hit, checked before every subsequent Spotify
-# search attempt, cleared again at the start of the next scan. Real
-# report: a 100-track scan hit the search endpoint's own timed cooldown
-# (_spotify_search_cooldown, 60s) re-expiring and re-tripping a FRESH 429
-# over and over throughout the whole scan - the log's own comment already
-# claimed "for the rest of this scan", but the cooldown alone only ever
-# enforced 60s, not that. A scan this size takes far longer than 60s
-# (iTunes/AcoustID alone easily push each file's turn past a minute), so
-# the timed cooldown kept expiring mid-scan and letting a doomed retry
-# through - two more wasted requests (main + title-only) every time,
-# for zero successful matches once the real quota is genuinely
-# exhausted. This flag makes the search actually stop for the rest of
-# the scan on the first hit, like SoundCloud already does; the timed
-# cooldown itself is untouched (still relevant to a call made outside
-# scan_files, e.g. search_cover_manual's single "Fix no cover" retry).
-SPOTIFY_SEARCH_RATE_LIMITED = False
-
 def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=None, on_rate_limited=None,
-               should_cancel=None, on_auth_error=None, on_itunes_rate_limited=None, on_spotify_rate_limited=None,
+               should_cancel=None, on_auth_error=None, on_itunes_rate_limited=None,
                on_acoustid_rate_limited=None):
     """
     Scans ONLY the files in the given list (relative paths).
@@ -3232,10 +3159,9 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
     the per-request pacing each one already gets (_itunes_throttle() and
     friends).
     """
-    global SOUNDCLOUD_RATE_LIMITED, SOUNDCLOUD_UNAVAILABLE, SPOTIFY_SEARCH_RATE_LIMITED
+    global SOUNDCLOUD_RATE_LIMITED, SOUNDCLOUD_UNAVAILABLE
     SOUNDCLOUD_RATE_LIMITED = False
     SOUNDCLOUD_UNAVAILABLE = False
-    SPOTIFY_SEARCH_RATE_LIMITED = False
 
     if not file_list:
         return []
@@ -3245,7 +3171,7 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
     # decides right away which files Track Tidy has actually already
     # applied before, per history.jsonl (see _prepare_scan's
     # "already_applied") - those need no online search at all, so this is
-    # computed BEFORE authenticating with SoundCloud/Spotify below, to
+    # computed BEFORE authenticating with SoundCloud below, to
     # skip that too when nothing in this batch actually needs it (e.g.
     # rescanning a folder that's already fully tagged from a previous
     # Apply). history_lookup is loaded once here rather than once per
@@ -3284,19 +3210,9 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
 
         soundcloud_token = get_soundcloud_token(log=log, on_rate_limited=_mark_rate_limited, on_auth_error=on_auth_error)
 
-    spotify_token = None
-    if not needs_search:
-        pass
-    elif USE_SPOTIFY and SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
-        spotify_token = get_spotify_token(log=log, on_auth_error=on_auth_error, on_rate_limited=on_spotify_rate_limited)
-    elif USE_SPOTIFY:
-        log("  [Spotify] No credentials configured - skipping Spotify for this scan.")
-
     # Phase 2: finish each file in its original order, strictly
-    # sequentially - iTunes first, then (if it found nothing) Spotify,
-    # then SoundCloud (see search_cover_manual for why Spotify - a
-    # curated commercial catalog like iTunes - now comes before
-    # SoundCloud - community-uploaded, far more prone to a wrong match).
+    # sequentially - iTunes first, then SoundCloud (community-uploaded,
+    # far more prone to a wrong match, so tried second).
     results = []
     for prepared in prepared_list:
         if should_cancel and should_cancel():
@@ -3316,10 +3232,10 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
         match_result = None
         cover_source = None
         # A blank artist (e.g. a filename with no "Artist - Title"
-        # separator to detect one from) no longer blocks iTunes/Spotify -
-        # they're tried with just the title, same as SoundCloud already
-        # did. artist_sets_match() treats an empty expected-artist set as
-        # a match against anything, so validation for these effectively
+        # separator to detect one from) no longer blocks iTunes - it's
+        # tried with just the title, same as SoundCloud already did.
+        # artist_sets_match() treats an empty expected-artist set as a
+        # match against anything, so validation for these effectively
         # falls back to requiring an EXACT title match alone - a real risk
         # of a false positive on a generic title, accepted as a tradeoff
         # for not missing an otherwise-findable track that just has no
@@ -3336,18 +3252,8 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
         if USE_ITUNES and has_query:
             match_result, cover_source = _search_one_source(
                 "itunes", prepared["detected_artist"], prepared["search_title"],
-                prepared["remix_qualified_title"], None, None, log,
+                prepared["remix_qualified_title"], None, log,
                 on_itunes_rate_limited=on_itunes_rate_limited,
-            )
-
-        if (
-            not match_result and has_query and USE_SPOTIFY and spotify_token
-            and not SPOTIFY_SEARCH_RATE_LIMITED
-        ):
-            match_result, cover_source = _search_one_source(
-                "spotify", prepared["detected_artist"], prepared["search_title"],
-                prepared["remix_qualified_title"], None, spotify_token, log,
-                on_spotify_rate_limited=on_spotify_rate_limited,
             )
 
         if (
@@ -3356,7 +3262,7 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
         ):
             match_result, cover_source = _search_one_source(
                 "soundcloud", prepared["detected_artist"], prepared["search_title"],
-                prepared["remix_qualified_title"], soundcloud_token, None, log,
+                prepared["remix_qualified_title"], soundcloud_token, log,
                 own_has_generic_qualifier=own_has_generic_qualifier,
             )
 
@@ -3366,15 +3272,14 @@ def scan_files(file_list, on_file_scanned=None, log=safe_print, on_new_mention=N
             own_has_generic_qualifier = title_has_generic_qualifier(prepared["detected_title"] or "")
             for source, enabled in (
                 ("itunes", USE_ITUNES),
-                ("spotify", USE_SPOTIFY and bool(spotify_token) and not SPOTIFY_SEARCH_RATE_LIMITED),
                 ("soundcloud", USE_SOUNDCLOUD and not SOUNDCLOUD_RATE_LIMITED and not SOUNDCLOUD_UNAVAILABLE),
             ):
                 if not enabled:
                     continue
                 match_result, cover_source = _search_one_source(
                     source, prepared["detected_artist"], prepared["search_title"],
-                    prepared["remix_qualified_title"], soundcloud_token, spotify_token, log,
-                    on_itunes_rate_limited=on_itunes_rate_limited, on_spotify_rate_limited=on_spotify_rate_limited,
+                    prepared["remix_qualified_title"], soundcloud_token, log,
+                    on_itunes_rate_limited=on_itunes_rate_limited,
                     own_has_generic_qualifier=own_has_generic_qualifier,
                 )
                 if match_result:
@@ -3895,12 +3800,12 @@ class _SourceCooldown:
     endpoint - shared by every source that can hit a 429/quota-exceeded
     error mid-scan and needs to stop retrying it for the rest of THIS scan
     instead of hammering it again, one wasted request at a time, on every
-    remaining file (iTunes, Spotify's token AND search endpoints,
-    SoundCloud's token endpoint, AcoustID). These were five separately
-    hand-copied instances of the exact same "module-level 'until'
-    timestamp + check-before-request + set-on-429" pattern, one added at a
-    time as each source's own rate-limit handling was built - consolidated
-    here instead of leaving a sixth near-copy for the next one.
+    remaining file (iTunes, SoundCloud's token endpoint, AcoustID). These
+    were separately hand-copied instances of the exact same "module-level
+    'until' timestamp + check-before-request + set-on-429" pattern, one
+    added at a time as each source's own rate-limit handling was built -
+    consolidated here instead of leaving another near-copy for the next
+    one.
     """
 
     def __init__(self):
@@ -3917,13 +3822,13 @@ class _SourceThrottle:
     """
     Enforces a minimum interval between consecutive requests to one API
     endpoint - shared by every source with its own proactive per-request
-    pacing (iTunes, Spotify, SoundCloud, AcoustID). These were four
-    separately hand-copied instances of the exact same "lock + last-
-    request timestamp + sleep the difference" pattern, one added at a time
-    as each source's own "rate limited too often" report came in -
-    consolidated here instead of leaving a fifth near-copy for the next
-    one. Callable directly (like the plain functions it replaces) so every
-    call site stays unchanged.
+    pacing (iTunes, SoundCloud, AcoustID). These were separately hand-
+    copied instances of the exact same "lock + last-request timestamp +
+    sleep the difference" pattern, one added at a time as each source's
+    own "rate limited too often" report came in - consolidated here
+    instead of leaving another near-copy for the next one. Callable
+    directly (like the plain functions it replaces) so every call site
+    stays unchanged.
     """
 
     def __init__(self, min_interval_seconds):
@@ -4199,7 +4104,7 @@ def invalidate_soundcloud_token():
     write_credential(_SOUNDCLOUD_TOKEN_EXPIRY_KEYRING_KEY, "0")
 
 
-# Unlike iTunes/Spotify, a 429 from SoundCloud's token endpoint carries no
+# Unlike iTunes, a 429 from SoundCloud's token endpoint carries no
 # Retry-After header or any other signal of how long to wait (checked
 # directly against the live endpoint while it was rate limited - nothing
 # useful in the response headers or body beyond {"error":
@@ -4213,9 +4118,8 @@ SOUNDCLOUD_TOKEN_RATE_LIMIT_COOLDOWN_SECONDS = 300
 _soundcloud_token_cooldown = _SourceCooldown()
 
 # Where the persisted token lives now (see get_soundcloud_token) - the OS
-# keyring, same store already used for the SoundCloud/Spotify client
-# credentials, not the plaintext settings.json an earlier version wrote it
-# to.
+# keyring, same store already used for the SoundCloud client credentials,
+# not the plaintext settings.json an earlier version wrote it to.
 _SOUNDCLOUD_TOKEN_KEYRING_KEY = "soundcloud_access_token"
 _SOUNDCLOUD_TOKEN_EXPIRY_KEYRING_KEY = "soundcloud_access_token_expiry"
 _soundcloud_legacy_token_setting_purged = False
@@ -4367,13 +4271,12 @@ def looks_like_mix_variant(text):
     return bool(MIX_VARIANT_RE.search(text))
 
 
-# Paces every SoundCloud search request the same way _itunes_throttle()/
-# _spotify_throttle() pace their own sources (see there) - SoundCloud is
-# tried for every file iTunes AND Spotify (when reached) didn't already
-# resolve, and unlike those two this endpoint had no pacing at all before,
-# only a reactive cooldown on the separate TOKEN endpoint. 1.5s apart,
-# matching the other two, to stay under SoundCloud's real per-app limit
-# instead of only reacting after a 429 already happened.
+# Paces every SoundCloud search request the same way _itunes_throttle()
+# paces its own source (see there) - SoundCloud is tried for every file
+# iTunes didn't already resolve, and unlike iTunes this endpoint had no
+# pacing at all before, only a reactive cooldown on the separate TOKEN
+# endpoint. 1.5s apart, matching iTunes, to stay under SoundCloud's real
+# per-app limit instead of only reacting after a 429 already happened.
 SOUNDCLOUD_MIN_REQUEST_INTERVAL_SECONDS = 1.5
 _soundcloud_throttle = _SourceThrottle(SOUNDCLOUD_MIN_REQUEST_INTERVAL_SECONDS)
 
@@ -4570,270 +4473,6 @@ def search_cover_soundcloud(artist, title, token, log=safe_print, own_has_generi
         return None
 
 
-# ============================================================================
-# 10.5. COVER SEARCH - SPOTIFY (last resort only - see USE_SPOTIFY)
-# ============================================================================
-
-_cached_spotify_token = None
-_cached_spotify_token_expiry = 0  # Unix timestamp
-
-
-def invalidate_spotify_token():
-    """Forces the next get_spotify_token() call to authenticate again
-    instead of reusing the cached token - e.g. after the credentials change."""
-    global _cached_spotify_token, _cached_spotify_token_expiry
-    _cached_spotify_token = None
-    _cached_spotify_token_expiry = 0
-
-
-# Unlike SoundCloud, Spotify's Accounts service documents a Retry-After
-# header (seconds) on a 429 from this endpoint - read and honored below
-# instead of guessing, falling back to this only if the header is somehow
-# missing.
-SPOTIFY_TOKEN_RATE_LIMIT_FALLBACK_COOLDOWN_SECONDS = 60
-_spotify_token_cooldown = _SourceCooldown()
-
-
-def get_spotify_token(log=safe_print, on_auth_error=None, on_rate_limited=None):
-    global _cached_spotify_token, _cached_spotify_token_expiry
-
-    if _cached_spotify_token and time.time() < _cached_spotify_token_expiry - 60:
-        return _cached_spotify_token
-
-    if _spotify_token_cooldown.active():
-        log("  [Spotify] Still rate limited from earlier - skipping the token request.")
-        return None
-
-    if not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET:
-        log("  [Spotify] No credentials found.")
-        return None
-
-    try:
-        credentials = f"{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}"
-        encoded_credentials = base64.b64encode(credentials.encode()).decode()
-
-        response = requests.post(
-            "https://accounts.spotify.com/api/token",
-            headers={
-                "Authorization": f"Basic {encoded_credentials}",
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-            data={"grant_type": "client_credentials"},
-            timeout=10,
-        )
-
-        if response.status_code == 200:
-            payload = response.json()
-            _cached_spotify_token = payload.get("access_token")
-            _cached_spotify_token_expiry = time.time() + payload.get("expires_in", 3600)
-            return _cached_spotify_token
-
-        if response.status_code == 429:
-            try:
-                wait_seconds = int(response.headers.get("Retry-After", ""))
-            except ValueError:
-                wait_seconds = SPOTIFY_TOKEN_RATE_LIMIT_FALLBACK_COOLDOWN_SECONDS
-            _spotify_token_cooldown.trigger(wait_seconds)
-            log(f"  [Spotify] Rate limit reached (too many token requests) - pausing Spotify for {wait_seconds}s.")
-            if on_rate_limited:
-                on_rate_limited()
-            return None
-
-        message = f"HTTP {response.status_code} - {response.text[:300]}"
-        log(f"  [Spotify] Authentication error: {message}")
-        if on_auth_error:
-            on_auth_error("Spotify", message)
-        return None
-
-    except Exception as error:
-        log(f"  [Spotify] Error during authentication: {error}")
-        return None
-
-
-# The SEARCH endpoint (unlike the token endpoint above) has its own,
-# separate rate limit - a real report hit HTTP 429 "QUOTA_EXCEEDED" on it
-# directly, with the token itself still perfectly valid. Same "pause for
-# the rest of this scan instead of hammering it again on every remaining
-# track" treatment as iTunes/SoundCloud, since without this every
-# subsequent Spotify search this scan would otherwise just fail the same
-# way, one more wasted request at a time.
-SPOTIFY_SEARCH_RATE_LIMIT_COOLDOWN_SECONDS = 60
-_spotify_search_cooldown = _SourceCooldown()
-
-# Paces every Spotify search request the same way _itunes_throttle() paces
-# iTunes (see there) - search_cover_spotify() can fire up to 4 of these
-# back-to-back for a single track (plain + remix-qualified retry, each with
-# its own title-only fallback - see its docstring), and it's tried for
-# every file iTunes didn't already resolve, which in practice is often most
-# of a scan, not "very few files" as originally assumed. Without any
-# pacing, that burst was tripping Spotify's real rate limit within the
-# first several files, making the "Spotify's request limit has been
-# reached" popup show up on nearly every scan. A first attempt at 0.5s
-# (~120/min) still wasn't enough - real report: the popup kept showing up
-# too often even with that in place. Matched to iTunes' own already-proven
-# 1.5s (~40/min, see ITUNES_MIN_REQUEST_INTERVAL_SECONDS) instead of
-# re-guessing a new number, since that pacing already stopped the
-# identical problem there.
-SPOTIFY_MIN_REQUEST_INTERVAL_SECONDS = 1.5
-_spotify_throttle = _SourceThrottle(SPOTIFY_MIN_REQUEST_INTERVAL_SECONDS)
-
-
-def _search_cover_spotify_query(query, artist, title, token, log, allow_loose_remix_match=False, on_rate_limited=None):
-    """
-    Runs a single Spotify search query and validates its candidates -
-    factored out of search_cover_spotify() so it can be tried with more
-    than one query string (see there) without duplicating the candidate-
-    checking logic. Returns (image_bytes, returned_artist, returned_title)
-    on a confirmed match, or None (also returning the raw result list, for
-    logging) when nothing in this query's results checks out.
-
-    allow_loose_remix_match mirrors search_cover_itunes's own parameter of
-    the same name - see there. on_rate_limited is called once if THIS call
-    hits the search endpoint's own rate limit (see
-    SPOTIFY_SEARCH_RATE_LIMIT_COOLDOWN_SECONDS).
-    """
-    if _spotify_search_cooldown.active():
-        log("  [Spotify] Still rate limited from earlier in this scan - skipping.")
-        return None, []
-
-    _spotify_throttle()
-
-    response = requests.get(
-        "https://api.spotify.com/v1/search",
-        headers={"Authorization": f"Bearer {token}"},
-        params={"q": query, "type": "track", "limit": 10},
-        timeout=10,
-    )
-
-    if response.status_code == 429:
-        global SPOTIFY_SEARCH_RATE_LIMITED
-        SPOTIFY_SEARCH_RATE_LIMITED = True
-        _spotify_search_cooldown.trigger(SPOTIFY_SEARCH_RATE_LIMIT_COOLDOWN_SECONDS)
-        log(
-            f"  [Spotify] Rate limited (HTTP 429: {response.text[:200]}) - pausing Spotify search "
-            "for the rest of this scan."
-        )
-        if on_rate_limited:
-            on_rate_limited()
-        return None, []
-
-    if response.status_code != 200:
-        log(f"  [Spotify] Search failed: HTTP {response.status_code} - {response.text[:300]}")
-        return None, []
-
-    results = response.json().get("tracks", {}).get("items", [])
-    if not results:
-        return None, []
-
-    title_normalized = strip_feature_suffix(strip_generic_qualifier_modifiers(strip_generic_mix_suffix(title)))
-
-    for result in results:
-        returned_artist = unicodedata.normalize(
-            "NFC", ", ".join(a.get("name", "") for a in result.get("artists", []))
-        )
-        returned_title = unicodedata.normalize("NFC", result.get("name", ""))
-        # See search_cover_itunes's identical normalization for why -
-        # Spotify commonly credits a remix as "Title - X Remix" (dash)
-        # rather than our own "Title (X Remix)" convention, and/or drops a
-        # droppable "Extended"/"Radio" modifier one side has and the other
-        # doesn't (see strip_generic_qualifier_modifiers).
-        # strip_slash_credit() drops an inline "/ Name" original-artist
-        # credit some stores insert right into the title (see its own
-        # docstring) - applied only for this title comparison, not to
-        # returned_title itself (still used above as an artist-match
-        # signal and for logging).
-        returned_title_reformatted = reformat_trailing_dash_mix(strip_slash_credit(returned_title))
-        returned_title_normalized = strip_feature_suffix(
-            strip_generic_qualifier_modifiers(strip_generic_mix_suffix(returned_title_reformatted))
-        )
-
-        artist_ok = (
-            artist_sets_match(artist, returned_artist, returned_title)
-            and exact_match(title_normalized, returned_title_normalized)
-        )
-        swapped_ok = exact_match(title, returned_artist) and artist_sets_match(artist, returned_title_normalized)
-
-        loose_ok = False
-        if (
-            not (artist_ok or swapped_ok) and allow_loose_remix_match
-            and loose_remix_match(title, returned_title_reformatted, expected_artist=artist)
-        ):
-            _, returned_groups = strip_all_trailing_groups(returned_title_reformatted)
-            returned_artist_set = split_artist_names(returned_artist) | extract_feature_names_from_groups(returned_groups)
-            loose_ok = split_artist_names(artist) <= returned_artist_set
-
-        if not (artist_ok or swapped_ok or loose_ok):
-            continue
-
-        images = result.get("album", {}).get("images", [])
-        if not images:
-            log(f"  [Spotify] Match found for '{artist} - {title}' but it has no artwork.")
-            continue
-
-        # Spotify lists images largest-first already; the first one is
-        # typically 640x640, more than enough for an embedded cover.
-        cover_url = images[0].get("url")
-        image_response = requests.get(cover_url, timeout=10)
-
-        if image_response.status_code == 200:
-            if is_banned_cover_image(image_response.content):
-                log(f"  [Spotify] Match found for '{artist} - {title}' but its cover is a known placeholder - skipping.")
-                continue
-            return (image_response.content, returned_artist, returned_title), results
-
-        log(f"  [Spotify] Image download failed (HTTP {image_response.status_code}) for '{artist} - {title}'")
-
-    return None, results
-
-
-def search_cover_spotify(artist, title, token, log=safe_print, allow_loose_remix_match=False, on_rate_limited=None):
-    """
-    Checks up to 10 candidates (not just the top one), mirroring
-    search_cover_itunes()/search_cover_soundcloud().
-
-    A single query only (per request, to cut Spotify's request budget per
-    track - see _search_one_source's own two calls, one plain and one
-    remix-qualified, which is the actual "one without correction, one
-    with correction" budget now) - this used to also retry title-only on
-    a miss (real report: "Raven Maize, Dave Lee ZR - Forever Together
-    (CASSIMM Remix)", a multi-artist credit with a garbled handle-style
-    name that derailed Spotify's own ranking when combined with the
-    title), which could double every call's request count. Accepted
-    tradeoff: that specific kind of match is missed again now, in
-    exchange for roughly half the Spotify requests per track.
-
-    allow_loose_remix_match: see search_cover_itunes's identical parameter.
-    on_rate_limited: see _search_cover_spotify_query's identical parameter.
-    """
-    if not token:
-        return None
-
-    try:
-        match, results = _search_cover_spotify_query(
-            build_search_query(artist, title), artist, title, token, log,
-            allow_loose_remix_match=allow_loose_remix_match, on_rate_limited=on_rate_limited,
-        )
-        if match:
-            return match
-
-        if not results:
-            log(f"  [Spotify] No result at all for '{artist} - {title}'")
-        else:
-            top_result = results[0]
-            top_artist = unicodedata.normalize("NFC", ", ".join(a.get("name", "") for a in top_result.get("artists", [])))
-            top_title = unicodedata.normalize("NFC", top_result.get("name", ""))
-            log(
-                f"  [Spotify] Match rejected (not an exact match among {len(results)} candidate(s)): "
-                f"expected '{artist} - {title}', got '{top_artist} - {top_title}'"
-            )
-
-        return None
-
-    except Exception as error:
-        log(f"  [Spotify] Error while searching for cover: {error}")
-        return None
-
-
 ACOUSTID_MIN_SCORE = 0.5  # AcoustID scores range 0-1; below this, not worth trusting
 
 # pyacoustid defaults to plain HTTP for the lookup API - confirmed the
@@ -4875,7 +4514,7 @@ def _run_without_console_window(func, *args, **kwargs):
 
 # Best-effort text match against a WebServiceError's own message - pyacoustid
 # doesn't expose a distinct exception type or the API's numeric error code
-# for a rate limit specifically (unlike Spotify/iTunes, which give a clean
+# for a rate limit specifically (unlike iTunes, which gives a clean
 # HTTP 429), so this is a heuristic, not a guaranteed detection.
 ACOUSTID_RATE_LIMIT_MESSAGE_KEYWORDS = ("rate limit", "too many requests", "429", "quota")
 
@@ -4883,12 +4522,12 @@ ACOUSTID_RATE_LIMIT_COOLDOWN_SECONDS = 60
 _acoustid_cooldown = _SourceCooldown()
 
 # Paces every AcoustID lookup the same way _itunes_throttle()/
-# _spotify_throttle()/_soundcloud_throttle() pace their own sources (see
-# there) - same shared-key exposure as SoundCloud/Spotify
-# (ACOUSTID_API_KEY is a single embedded key, not per-user), and it's
-# tried for every file the text-based search couldn't resolve at all, so
-# a big scan can fire many of these back-to-back with no pacing before
-# now. 1.5s apart, matching the other three.
+# _soundcloud_throttle() pace their own sources (see there) - same
+# shared-key exposure as SoundCloud (ACOUSTID_API_KEY is a single
+# embedded key, not per-user), and it's tried for every file the text-
+# based search couldn't resolve at all, so a big scan can fire many of
+# these back-to-back with no pacing before now. 1.5s apart, matching the
+# other two.
 ACOUSTID_MIN_REQUEST_INTERVAL_SECONDS = 1.5
 _acoustid_throttle = _SourceThrottle(ACOUSTID_MIN_REQUEST_INTERVAL_SECONDS)
 
@@ -4967,19 +4606,18 @@ def identify_via_acoustid(file_path, log=safe_print, on_rate_limited=None):
 
 def check_source_credentials(log=safe_print):
     """
-    Verifies the SHARED credentials behind SoundCloud/Spotify/AcoustID
-    actually authenticate, once per app launch - SoundCloud/AcoustID can't
-    be turned off from Settings (see the comment above USE_ITUNES), so a
-    revoked/expired credential would otherwise silently degrade cover
-    matching with nothing visible to explain why. Spotify (USE_SPOTIFY)
-    IS a user-facing toggle now, and is skipped entirely here while it's
-    off. iTunes needs no credentials, so it's not checked here (see
-    ITUNES_RATE_LIMIT_COOLDOWN_SECONDS/search_cover_itunes's
-    on_rate_limited instead for iTunes-specific trouble).
+    Verifies the SHARED credentials behind SoundCloud/AcoustID actually
+    authenticate, once per app launch - neither can be turned off from
+    Settings (see the comment above USE_ITUNES), so a revoked/expired
+    credential would otherwise silently degrade cover matching with
+    nothing visible to explain why. iTunes needs no credentials, so it's
+    not checked here (see ITUNES_RATE_LIMIT_COOLDOWN_SECONDS/
+    search_cover_itunes's on_rate_limited instead for iTunes-specific
+    trouble).
 
-    Returns a list of source names ("SoundCloud"/"Spotify"/"AcoustID")
-    whose credentials were confirmed broken - never raises, and a source
-    is only reported here on a CONFIRMED rejection (invalid/revoked
+    Returns a list of source names ("SoundCloud"/"AcoustID") whose
+    credentials were confirmed broken - never raises, and a source is
+    only reported here on a CONFIRMED rejection (invalid/revoked
     credentials), not on a transient rate limit or network hiccup, so
     this doesn't cry wolf over an ordinary flaky connection.
     """
@@ -4992,16 +4630,6 @@ def check_source_credentials(log=safe_print):
     )
     if not soundcloud_token and not soundcloud_rate_limited["value"] and SOUNDCLOUD_CLIENT_ID and SOUNDCLOUD_CLIENT_SECRET:
         broken.append("SoundCloud")
-
-    # Skipped entirely while the user has Spotify turned off (see the
-    # comment above USE_SPOTIFY) - checking a source they've deliberately
-    # disabled would just spend a request against its own real rate limit
-    # for nothing actionable.
-    if USE_SPOTIFY:
-        invalidate_spotify_token()
-        spotify_token = get_spotify_token(log=log)
-        if not spotify_token and SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
-            broken.append("Spotify")
 
     if ACOUSTID_API_KEY:
         # acoustid.lookup() talks to the same web service as identify_via_acoustid()

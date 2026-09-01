@@ -76,8 +76,6 @@ jobs:
           IS_RELEASE: ${{ github.ref_type == 'tag' }}
           SOUNDCLOUD_CLIENT_ID: ${{ secrets.SOUNDCLOUD_CLIENT_ID }}
           SOUNDCLOUD_CLIENT_SECRET: ${{ secrets.SOUNDCLOUD_CLIENT_SECRET }}
-          SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
-          SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           ACOUSTID_API_KEY: ${{ secrets.ACOUSTID_API_KEY }}
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
@@ -86,16 +84,14 @@ jobs:
             jq -n \
               --arg soundcloud_client_id "$SOUNDCLOUD_CLIENT_ID" \
               --arg soundcloud_client_secret "$SOUNDCLOUD_CLIENT_SECRET" \
-              --arg spotify_client_id "$SPOTIFY_CLIENT_ID" \
-              --arg spotify_client_secret "$SPOTIFY_CLIENT_SECRET" \
               --arg discord_webhook_url "$DISCORD_WEBHOOK_URL" \
               --arg acoustid_api_key "$ACOUSTID_API_KEY" \
               --arg discord_bot_token "$DISCORD_BOT_TOKEN" \
-              '{soundcloud_client_id: $soundcloud_client_id, soundcloud_client_secret: $soundcloud_client_secret, spotify_client_id: $spotify_client_id, spotify_client_secret: $spotify_client_secret, discord_webhook_url: $discord_webhook_url, acoustid_api_key: $acoustid_api_key, discord_bot_token: $discord_bot_token}' \
+              '{soundcloud_client_id: $soundcloud_client_id, soundcloud_client_secret: $soundcloud_client_secret, discord_webhook_url: $discord_webhook_url, acoustid_api_key: $acoustid_api_key, discord_bot_token: $discord_bot_token}' \
               > default_credentials.json
           else
             jq -n \
-              '{soundcloud_client_id: "ci-placeholder", soundcloud_client_secret: "ci-placeholder", spotify_client_id: "ci-placeholder", spotify_client_secret: "ci-placeholder", discord_webhook_url: "https://discord.com/api/webhooks/0/ci-placeholder", acoustid_api_key: "ci-placeholder", discord_bot_token: "ci-placeholder"}' \
+              '{soundcloud_client_id: "ci-placeholder", soundcloud_client_secret: "ci-placeholder", discord_webhook_url: "https://discord.com/api/webhooks/0/ci-placeholder", acoustid_api_key: "ci-placeholder", discord_bot_token: "ci-placeholder"}' \
               > default_credentials.json
           fi
 

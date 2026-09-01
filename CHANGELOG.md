@@ -3,6 +3,25 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.28]
+
+### Removed
+- Spotify as a cover source, entirely (Settings toggle, credentials,
+  the priority-order search step, the Discord "Spotify matches" report
+  field). It never got past Spotify's Development Mode rate limit and
+  had been off by default since 0.20; live usage data confirmed it was
+  contributing almost nothing (~1% of found covers) while off for
+  nearly every user. Cover search priority is now iTunes -> SoundCloud.
+
+### Fixed
+- Quality's progress bar moved to the bottom of the tab (matching
+  Tagger), and two related bugs where it silently had nowhere to render
+  at all (a missing window-resize call, both on its own and once the
+  green/orange/red summary strip also appeared during the same scan).
+- Old installs (v0.19 and earlier) permanently unable to detect updates
+  after the `track-tidy-releases` repo they were still pointed at was
+  deleted - a placeholder release there now redirects them.
+
 ## [0.27]
 
 ### Added

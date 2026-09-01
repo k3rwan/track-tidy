@@ -292,7 +292,7 @@ class TaggerTabMixin:
     def _notify_scan_complete(
         self, number_new, number_removed, total, number_no_cover=0,
         number_rate_limited_sources=0, auth_error_sources=None, cancelled=False,
-        number_itunes=0, number_spotify=0, number_soundcloud=0, number_acoustid_used=0,
+        number_itunes=0, number_soundcloud=0, number_acoustid_used=0,
     ):
         """Pings Discord once per finished scan (including a scan the user
         cancelled partway through - cancelled=True just relabels the
@@ -312,7 +312,7 @@ class TaggerTabMixin:
                 total=total, number_no_cover=number_no_cover,
                 number_rate_limited_sources=number_rate_limited_sources,
                 auth_error_sources=auth_error_sources, cancelled=cancelled,
-                number_itunes=number_itunes, number_spotify=number_spotify,
+                number_itunes=number_itunes,
                 number_soundcloud=number_soundcloud, number_acoustid_used=number_acoustid_used,
             )
 
@@ -681,7 +681,6 @@ class TaggerTabMixin:
         same reset and had drifted into 4 hand-copied blocks."""
         self.soundcloud_rate_limit_warned = False
         self.itunes_rate_limit_warned = False
-        self.spotify_rate_limit_warned = False
         self.acoustid_rate_limit_warned = False
         self._rate_limited_messages_this_scan = []  # shown as one combined dialog in _finalize_scan
         self.source_auth_error_warned = {}  # "SoundCloud" -> already warned this scan
@@ -939,7 +938,6 @@ class TaggerTabMixin:
                 should_cancel=self.cancel_requested.is_set,
                 on_auth_error=self._on_source_auth_error,
                 on_itunes_rate_limited=lambda: self.message_queue.put(("itunes_rate_limited", None)),
-                on_spotify_rate_limited=lambda: self.message_queue.put(("spotify_rate_limited", None)),
                 on_acoustid_rate_limited=lambda: self.message_queue.put(("acoustid_rate_limited", None)),
             )
 
@@ -1411,7 +1409,6 @@ class TaggerTabMixin:
                     auth_error_sources=sorted(self.source_auth_error_warned),
                     cancelled=self.cancel_requested.is_set(),
                     number_itunes=sum(1 for i in searched_infos if i.get("cover_source") == "iTunes"),
-                    number_spotify=sum(1 for i in searched_infos if i.get("cover_source") == "Spotify"),
                     number_soundcloud=sum(1 for i in searched_infos if i.get("cover_source") == "SoundCloud"),
                     number_acoustid_used=sum(1 for i in searched_infos if i.get("acoustid_identified")),
                 )
@@ -1495,15 +1492,10 @@ class TaggerTabMixin:
                 soundcloud_token = tagger.get_soundcloud_token(
                     log=self._append_to_journal, on_auth_error=self._on_source_auth_error,
                 )
-            spotify_token = None
-            if tagger.USE_SPOTIFY and tagger.SPOTIFY_CLIENT_ID and tagger.SPOTIFY_CLIENT_SECRET:
-                spotify_token = tagger.get_spotify_token(
-                    log=self._append_to_journal, on_auth_error=self._on_source_auth_error,
-                )
             for info, artist, title in to_search:
                 self._append_to_journal(f"Rescanning '{artist} - {title}'...")
                 found_cover_image, cover_source, returned_artist, returned_title = tagger.search_cover_manual(
-                    artist, title, soundcloud_token, log=self._append_to_journal, spotify_token=spotify_token,
+                    artist, title, soundcloud_token, log=self._append_to_journal,
                 )
                 self.message_queue.put((
                     "fix_row_search_result",

@@ -296,14 +296,12 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
         self.auto_convert_var = tk.BooleanVar(value=saved_settings.get("auto_convert_mp3", False))
         self.auto_convert_wav_aiff_var = tk.BooleanVar(value=saved_settings.get("auto_convert_wav_to_aiff", True))
         self.fix_track_file_name_var = tk.BooleanVar(value=saved_settings.get("fix_track_file_name", True))
-        self.use_spotify_var = tk.BooleanVar(value=saved_settings.get("use_spotify", False))
         self.show_log_var = tk.BooleanVar(value=saved_settings.get("show_log_section", False))
         self.use_telemetry_var = tk.BooleanVar(value=saved_settings.get("send_usage_telemetry", True))
         self._tagger_resize_pending = False
         tagger.AUTO_CONVERT_MP3 = self.auto_convert_var.get()
         tagger.AUTO_CONVERT_WAV_TO_AIFF = self.auto_convert_wav_aiff_var.get()
         tagger.FIX_TRACK_FILE_NAME = self.fix_track_file_name_var.get()
-        tagger.USE_SPOTIFY = self.use_spotify_var.get()
         tagger.SEND_USAGE_TELEMETRY = self.use_telemetry_var.get()
 
         self._build_interface()
@@ -1222,14 +1220,12 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
 
     def _check_source_health_on_startup(self):
         """Runs two background checks at most once every 24h (not every
-        single launch - these force a fresh SoundCloud/Spotify token
-        request each time against a real, limited rate limit, so re-
-        running this on every relaunch was pure waste on top of normal
-        scanning usage; skipped entirely for Spotify while it's turned
-        off, see tagger.check_source_credentials): whether the shared
-        SoundCloud/Spotify/AcoustID credentials still authenticate, and
-        whether iTunes/Spotify's own domains are reachable at all (a
-        restrictive firewall/network filter blocking just those, while
+        single launch - these force a fresh SoundCloud token request each
+        time against a real, limited rate limit, so re-running this on
+        every relaunch was pure waste on top of normal scanning usage):
+        whether the shared SoundCloud/AcoustID credentials still
+        authenticate, and whether iTunes' own domain is reachable at all
+        (a restrictive firewall/network filter blocking just that, while
         general internet access still works, would otherwise look
         identical to "nothing found" with no explanation)."""
         last_checked = tagger.load_settings().get("last_source_health_check", 0)
@@ -1649,21 +1645,6 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
                             f"{tagger.ITUNES_RATE_LIMIT_COOLDOWN_SECONDS}s."
                         )
                         self._notify_rate_limited("iTunes")
-
-                elif message_type == "spotify_rate_limited":
-                    # Logged only, no popup (unlike the other 3 sources
-                    # below) - per request, this one was showing up too
-                    # often to be worth interrupting the user for; Spotify
-                    # is the last-resort source anyway (see USE_SPOTIFY),
-                    # so the scan just keeps going on iTunes/SoundCloud
-                    # without it.
-                    if not self.spotify_rate_limit_warned:
-                        self.spotify_rate_limit_warned = True
-                        self._append_to_journal(
-                            "Spotify's request limit has been reached - no cover will be fetched from it "
-                            "for the rest of this scan."
-                        )
-                        self._notify_rate_limited("Spotify")
 
                 elif message_type == "acoustid_rate_limited":
                     if not self.acoustid_rate_limit_warned:

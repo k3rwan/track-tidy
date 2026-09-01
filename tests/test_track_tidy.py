@@ -2528,12 +2528,11 @@ class ScanCompleteNotificationTests(unittest.TestCase):
         tagger.requests.post = fake_post
         tagger.send_scan_complete_notification(
             reporter_name="someuser", number_new=5,
-            number_itunes=2, number_spotify=1, number_soundcloud=1, number_acoustid_used=1,
+            number_itunes=2, number_soundcloud=1, number_acoustid_used=1,
         )
 
         fields = captured["json"]["embeds"][0]["fields"]
         self.assertIn({"name": "iTunes matches", "value": "2", "inline": True}, fields)
-        self.assertIn({"name": "Spotify matches", "value": "1", "inline": True}, fields)
         self.assertIn({"name": "SoundCloud matches", "value": "1", "inline": True}, fields)
         self.assertIn({"name": "AcoustID fallback used", "value": "1", "inline": True}, fields)
 

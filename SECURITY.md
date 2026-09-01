@@ -29,8 +29,8 @@ Track Tidy is a free, open-source desktop app - not a service handling
 sensitive data at scale. Realistic areas of interest include (but aren't
 limited to):
 - The auto-updater (download/checksum verification, installer execution)
-- Local credential storage (SoundCloud/Spotify tokens via the OS keyring)
-- Handling of data from external sources (iTunes/Spotify/SoundCloud/AcoustID
+- Local credential storage (SoundCloud tokens via the OS keyring)
+- Handling of data from external sources (iTunes/SoundCloud/AcoustID
   responses, Discord webhook payloads)
 
 Third-party dependencies (Pillow, mutagen, requests, etc.) should be

@@ -16,10 +16,10 @@ Track Tidy posts a small notification to a Discord channel the developer
 |---|---|
 | First launch on a new Windows account, or an update to a new version | Your Windows username, your OS (e.g. "Windows 11"), app version |
 | Uninstalling on Windows | Your Windows username, "Windows", the version being removed |
-| After a scan finishes (including a cancelled one) | Windows username, new/removed/total file counts, no-cover-match count, how many tracks matched via each of iTunes/Spotify/SoundCloud, how many needed the AcoustID audio-fingerprint fallback, app version - no track/file names |
+| After a scan finishes (including a cancelled one) | Windows username, new/removed/total file counts, no-cover-match count, how many tracks matched via each of iTunes/SoundCloud, how many needed the AcoustID audio-fingerprint fallback, app version - no track/file names |
 | After an extraction finishes | Windows username, files-moved/folders-removed counts, app version |
 | After a quality analysis finishes | Windows username, green/orange/red counts, app version |
-| A cover source (iTunes/Spotify/SoundCloud/AcoustID) gets rate-limited | Windows username, which source, app version |
+| A cover source (iTunes/SoundCloud/AcoustID) gets rate-limited | Windows username, which source, app version |
 | A scan comes back with an unusually high no-cover-match rate | Windows username, the affected files' names and current/detected tags |
 | The app crashes (an unhandled error) | Windows username, your OS, app version, and a full error traceback (which may include file paths from your library if the crash happened while processing a specific file) |
 
@@ -57,7 +57,7 @@ the no-cover-match batch report above) any filenames from a normal scan.
 ## Third-party services used to do the app's job
 
 Looking up artist/title/cover art means Track Tidy talks to iTunes,
-Spotify, SoundCloud, and (as a last resort) AcoustID's audio-fingerprinting
+SoundCloud, and (as a last resort) AcoustID's audio-fingerprinting
 service - each request includes only what's needed to search (a filename-
 derived artist/title guess, or a short audio fingerprint for AcoustID), sent
 directly from your machine to that service, not routed through the
