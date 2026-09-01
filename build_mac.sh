@@ -76,7 +76,7 @@ else
     echo "Generate one from assets/track-tidy_icon.png with 'iconutil' (see Apple's docs) if you want one."
 fi
 
-pyinstaller --windowed --noconfirm \
+pyinstaller --windowed --noconfirm --noupx \
   --name "Track-Tidy" \
   "${ICON_ARGS[@]}" \
   --add-data "assets/track-tidy_icon.ico:assets" \
