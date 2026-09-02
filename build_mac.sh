@@ -153,7 +153,22 @@ echo
 echo "Building the .dmg..."
 mkdir -p installer_output
 APP_VERSION="$(python3 -c "import sys; sys.path.insert(0, 'src'); import track_tidy; print(track_tidy.APP_VERSION)")"
-DMG_NAME="installer_output/Track-Tidy-Setup-${APP_VERSION}.dmg"
+# uname -m reports the arch of the CURRENTLY EXECUTING process - under
+# Rosetta translation (e.g. this whole script invoked as
+# `arch -x86_64 ./build_mac.sh`, see build-macos.yml's intel leg) that's
+# genuinely "x86_64", not the host's real arm64. Mapped to the same
+# "apple-silicon"/"intel" naming the CI workflow's own matrix.arch and
+# check_for_update() use, rather than the raw uname value, so the two
+# stay in sync. Required now that a single release can carry BOTH a
+# native Apple Silicon and an Intel .dmg side by side - without this
+# suffix they'd share the exact same filename and one would silently
+# clobber the other on upload.
+case "$(uname -m)" in
+    arm64) ARCH_SUFFIX="apple-silicon" ;;
+    x86_64) ARCH_SUFFIX="intel" ;;
+    *) ARCH_SUFFIX="$(uname -m)" ;;
+esac
+DMG_NAME="installer_output/Track-Tidy-Setup-${APP_VERSION}-${ARCH_SUFFIX}.dmg"
 rm -f "$DMG_NAME"
 # hdiutil create can fail with a transient "Resource busy" right after
 # PyInstaller finishes writing the .app (seen in CI - something else, e.g.

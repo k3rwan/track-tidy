@@ -319,14 +319,13 @@ jobs:
         # (CLAUDE.md's ".sha256 checksum" note) so check_for_update's
         # verification works the same way on both platforms.
         #
-        # build_mac.sh names the .dmg with no architecture suffix
-        # (Track-Tidy-Setup-<version>.dmg) - fine as long as a given
-        # release only ever publishes ONE macOS .dmg (true today, since
-        # `target` restricts a dispatch to a single arch). If a future
-        # release ever needs to publish BOTH arm64 and intel .dmgs
-        # together, they'd collide on this exact filename and --clobber
-        # would silently let one overwrite the other - revisit the naming
-        # then.
+        # build_mac.sh names the .dmg with an architecture suffix
+        # (Track-Tidy-Setup-<version>-apple-silicon.dmg /
+        # -intel.dmg, derived from uname -m) specifically so BOTH legs'
+        # .dmg can be dispatched separately (`target` restricts each
+        # dispatch to one arch) and uploaded to the SAME release without
+        # colliding - check_for_update() matches the running
+        # architecture's own suffix when picking which one to offer.
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

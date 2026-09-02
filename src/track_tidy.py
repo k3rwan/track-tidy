@@ -391,13 +391,32 @@ def check_for_update(log=safe_print, timeout=5):
 
         installer_extension = ".dmg" if sys.platform == "darwin" else ".exe"
         assets = data.get("assets", [])
+        matching_assets = [
+            asset for asset in assets if asset.get("name", "").lower().endswith(installer_extension)
+        ]
+        if sys.platform == "darwin":
+            # A release built for both Mac architectures (see
+            # build_mac.sh's ARCH_SUFFIX) ships two .dmg assets side by
+            # side, e.g. "Track-Tidy-Setup-0.28.3-apple-silicon.dmg" and
+            # "...-intel.dmg" - match THIS install's own currently-running
+            # architecture (not just the hardware - platform.machine()
+            # correctly reports "x86_64" even for an Intel build running
+            # under Rosetta on Apple Silicon hardware), so the updater
+            # never silently switches someone off the build they're
+            # actually running. Falls back to whatever's there for an
+            # older release logged before the arch suffix existed (see
+            # build_mac.sh) - a single, unambiguous .dmg asset.
+            mac_arch_suffix = "apple-silicon" if platform.machine() == "arm64" else "intel"
+            arch_matches = [
+                asset for asset in matching_assets if mac_arch_suffix in asset.get("name", "").lower()
+            ]
+            if arch_matches:
+                matching_assets = arch_matches
         installer_url = None
         installer_name = None
-        for asset in assets:
-            if asset.get("name", "").lower().endswith(installer_extension):
-                installer_url = asset.get("browser_download_url")
-                installer_name = asset.get("name", "")
-                break
+        if matching_assets:
+            installer_url = matching_assets[0].get("browser_download_url")
+            installer_name = matching_assets[0].get("name", "")
 
         expected_sha256 = None
         if installer_name:
