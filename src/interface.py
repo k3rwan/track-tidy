@@ -76,9 +76,11 @@ from ui_common import (
     AUTO_THEME_DARK_START_HOUR,
     AUTO_THEME_RECHECK_INTERVAL_MS,
     TABLE_ROW_HEIGHT,
+    TAGGER_TABLE_ROW_HEIGHT,
     DARK_COLORS,
     LIGHT_COLORS,
     INDICATOR_CHECKED_BG,
+    LINK_ACCENT_COLOR,
 )
 
 
@@ -223,6 +225,13 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
         # Same reasoning as extract_cancel_requested above - the Quality
         # tab's own scan is a third independent background action.
         self.quality_cancel_requested = threading.Event()
+        # Same reasoning again - Tagger's own "Find duplicates" is a
+        # fourth independent background action, separate from Scan/
+        # Apply's own cancel_requested even though it lives in the same
+        # tab (can't run at the same time as a scan either way, but
+        # keeping the Event separate avoids any risk of one run's Cancel
+        # click accidentally cancelling the other).
+        self.find_duplicates_cancel_requested = threading.Event()
         # The folder a Quality scan's results are relative to, and a map of
         # each result row's item id -> its absolute path - both needed to
         # resolve a double-clicked row back to a real file for the spectrum
@@ -297,10 +306,31 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
         self.auto_convert_wav_aiff_var = tk.BooleanVar(value=saved_settings.get("auto_convert_wav_to_aiff", True))
         self.fix_track_file_name_var = tk.BooleanVar(value=saved_settings.get("fix_track_file_name", True))
         self.show_log_var = tk.BooleanVar(value=saved_settings.get("show_log_section", False))
+        self.detect_bpm_key_var = tk.BooleanVar(value=saved_settings.get("detect_bpm_key", True))
+        self.clear_comment_tag_var = tk.BooleanVar(value=saved_settings.get("clear_comment_tag", True))
+        self.clear_album_tag_var = tk.BooleanVar(value=saved_settings.get("clear_album_tag", True))
+        self.clear_track_number_tag_var = tk.BooleanVar(value=saved_settings.get("clear_track_number_tag", True))
+        self.clear_album_artist_tag_var = tk.BooleanVar(value=saved_settings.get("clear_album_artist_tag", True))
+        self.clear_composer_tag_var = tk.BooleanVar(value=saved_settings.get("clear_composer_tag", True))
+        self.clear_disc_number_tag_var = tk.BooleanVar(value=saved_settings.get("clear_disc_number_tag", True))
+        # Pure window-manager concern (see _toggle_always_on_top) - no
+        # tagger.XXX module constant to mirror, unlike the settings above.
+        # Deliberately NOT restored from saved_settings (Kevin's call) -
+        # always starts unpinned on launch, even if it was left pinned when
+        # the app last closed, so a forgotten pin from a previous session
+        # can never surprise you by keeping the window on top unexpectedly.
+        self.always_on_top_var = tk.BooleanVar(value=False)
         self._tagger_resize_pending = False
         tagger.AUTO_CONVERT_MP3 = self.auto_convert_var.get()
         tagger.AUTO_CONVERT_WAV_TO_AIFF = self.auto_convert_wav_aiff_var.get()
         tagger.FIX_TRACK_FILE_NAME = self.fix_track_file_name_var.get()
+        tagger.DETECT_BPM_KEY = self.detect_bpm_key_var.get()
+        tagger.CLEAR_COMMENT_TAG = self.clear_comment_tag_var.get()
+        tagger.CLEAR_ALBUM_TAG = self.clear_album_tag_var.get()
+        tagger.CLEAR_TRACK_NUMBER_TAG = self.clear_track_number_tag_var.get()
+        tagger.CLEAR_ALBUM_ARTIST_TAG = self.clear_album_artist_tag_var.get()
+        tagger.CLEAR_COMPOSER_TAG = self.clear_composer_tag_var.get()
+        tagger.CLEAR_DISC_NUMBER_TAG = self.clear_disc_number_tag_var.get()
 
         self._build_interface()
         # Tagger's folder may already be pre-filled from a saved setting
@@ -792,6 +822,13 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
             "Table.Treeview", rowheight=TABLE_ROW_HEIGHT,
             font=(self._table_font.actual("family"), self._table_font.actual("size")),
         )
+        # Own style (not "Table.Treeview") so Tagger's taller rows (BPM/Key
+        # line under the title) don't also stretch Quality/History's
+        # single-line tables - see TAGGER_TABLE_ROW_HEIGHT's own comment.
+        style.configure(
+            "TaggerTable.Treeview", rowheight=TAGGER_TABLE_ROW_HEIGHT,
+            font=(self._table_font.actual("family"), self._table_font.actual("size")),
+        )
 
         # Same reasoning as Table.Treeview above, but for Radiobutton: pull
         # clam's own indicator element into whichever theme is active
@@ -994,6 +1031,17 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
             # the moment the table actually gets used.
             bordercolor=[("focus", colors["bg"])], lightcolor=[("focus", colors["bg"])],
         )
+        # Same colors as "Table.Treeview" above, just under the separate
+        # style name Tagger's own table uses (see TAGGER_TABLE_ROW_HEIGHT).
+        style.configure(
+            "TaggerTable.Treeview", background=colors["tree_bg"], fieldbackground=colors["tree_bg"],
+            foreground=colors["tree_fg"], bordercolor=colors["bg"], lightcolor=colors["bg"],
+        )
+        style.map(
+            "TaggerTable.Treeview",
+            background=[("selected", colors["select_bg"])], foreground=[("selected", colors["select_fg"])],
+            bordercolor=[("focus", colors["bg"])], lightcolor=[("focus", colors["bg"])],
+        )
         style.configure(
             "Treeview.Heading", background=colors["tree_heading_bg"], foreground=colors["fg"],
             bordercolor=colors["border"], lightcolor=colors["tree_heading_bg"], darkcolor=colors["tree_heading_bg"],
@@ -1034,6 +1082,11 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
             canvas.itemconfig(canvas.progress_text, fill=colors["progress_text"])
         self.table.tag_configure("odd_row", background=colors["tree_odd_row"], foreground=colors["tree_fg"])
         self.table.tag_configure("even_row", background=colors["tree_bg"], foreground=colors["tree_fg"])
+        # Duplicate-track row highlight (see find_duplicate_tracks() /
+        # _duplicate_marker()) - a muted amber in both themes, distinct
+        # from the plain striping so a duplicate stands out without being
+        # as alarming as a Quality "red" verdict.
+        self.table.tag_configure("dup_row", background="#5c4a2a" if dark else "#FBE7C6", foreground=colors["tree_fg"])
         self.quality_table.tag_configure(
             "odd_row", background=colors["tree_odd_row"], foreground=colors["tree_fg"],
         )
@@ -1352,6 +1405,19 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
         version_label = ttk.Label(self.window, text=tagger.APP_VERSION, foreground="#999999")
         version_label.place(relx=1.0, rely=1.0, x=-6, y=-4, anchor="se")
 
+        # "Always on top" toggle - placed directly on the window (like
+        # version_label above), overlapping the Notebook's own tab strip
+        # to the right of the last tab (blank space there, so nothing to
+        # collide with) rather than adding a dedicated top bar just for
+        # this one button. Lets Track Tidy stay visible over Rekordbox/
+        # Serato/etc. instead of getting buried behind them.
+        self.pin_button = ttk.Label(self.window, text="📌", cursor="hand2", font=("TkDefaultFont", 16))
+        self.pin_button.place(relx=1.0, x=-8, y=1, anchor="ne")
+        self.pin_button.bind("<Button-1>", lambda event: self._toggle_always_on_top())
+        self.pin_button.bind("<Enter>", lambda event: self._show_tooltip("Always on top", event))
+        self.pin_button.bind("<Leave>", lambda event: self._hide_tooltip())
+        self._apply_always_on_top()
+
         tagger_tab = ttk.Frame(self.notebook)
         extractor_tab = ttk.Frame(self.notebook)
         quality_tab = ttk.Frame(self.notebook)
@@ -1530,6 +1596,26 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
     # final tags include one, that foreground stays visible through the
     # flash instead of the plain row color (see _flash_new_row).
     _VERDICT_TAG_NAMES = ("verdict_green", "verdict_orange", "verdict_red")
+
+    # --- Always on top toggle ---
+
+    def _toggle_always_on_top(self):
+        self.always_on_top_var.set(not self.always_on_top_var.get())
+        self._apply_always_on_top()
+
+    def _apply_always_on_top(self):
+        """Applies always_on_top_var's current value to the actual window
+        attribute and tints pin_button to show which state it's in (accent
+        blue when pinned, muted grey otherwise - same colors info icons/
+        the version label already use elsewhere in this file). Deliberately
+        does NOT persist the choice (see always_on_top_var's own comment) -
+        session-only, always starts back at False on the next launch.
+        Called both from the toggle handler and once at startup (see
+        _build_interface)."""
+        enabled = self.always_on_top_var.get()
+        self.window.attributes("-topmost", enabled)
+        self.pin_button.configure(foreground=LINK_ACCENT_COLOR if enabled else "#999999")
+        tagger.log_action(f"Always on top: {enabled}")
 
     # --- Truncated-text tooltip ---
 
@@ -1788,6 +1874,13 @@ class TaggerInterface(TaggerTabMixin, ExtractorTabMixin, QualityTabMixin, Settin
                             else:
                                 status_label.pack_forget()
                                 self._draw_quality_spectrogram(canvas, data)
+
+                elif message_type == "duplicates_progress":
+                    index, total = content
+                    self.find_duplicates_button.configure(text=f"Find duplicates - {index}/{total}")
+
+                elif message_type == "duplicates_done":
+                    self._finalize_find_duplicates(content)
 
                 elif message_type == "internet_status":
                     is_online, is_startup_check = content

@@ -67,7 +67,7 @@ from mutagen.mp3 import MP3
 from mutagen.wave import WAVE
 from mutagen.aiff import AIFF
 from mutagen.flac import FLAC, Picture
-from mutagen.id3 import TIT2, TPE1, APIC
+from mutagen.id3 import TIT2, TPE1, APIC, COMM, TALB, TRCK, TPE2, TCOM, TPOS
 
 
 def safe_print(text=""):
@@ -1118,6 +1118,13 @@ DEFAULT_SETTINGS = {
     "fix_track_file_name": True,
     "show_log_section": False,
     "music_folder": "",
+    "detect_bpm_key": True,
+    "clear_comment_tag": True,
+    "clear_album_tag": True,
+    "clear_track_number_tag": True,
+    "clear_album_artist_tag": True,
+    "clear_composer_tag": True,
+    "clear_disc_number_tag": True,
 }
 
 
@@ -1178,7 +1185,8 @@ _HISTORY_FILE_LOCK = threading.Lock()
 
 
 def log_history_entry(old_file, new_file, old_artist, old_title, new_artist, new_title,
-                       cover_updated, converted, folder=None, old_cover_bytes=None, run_id=None):
+                       cover_updated, converted, folder=None, old_cover_bytes=None, run_id=None,
+                       old_extra_tags=None):
     """
     Appends one line of JSON to HISTORY_FILE for a file that was actually
     processed (tags written and/or renamed), keeping a permanent record of
@@ -1192,6 +1200,13 @@ def log_history_entry(old_file, new_file, old_artist, old_title, new_artist, new
     restore_history_entry() possible later - MUSIC_FOLDER itself isn't
     reliable for that since the user may since have scanned a different
     folder entirely.
+
+    old_extra_tags (from read_extra_tag_fields, captured at scan time before
+    Apply ever touched the file) is the comment/album/track-number/album-
+    artist/composer/disc-number values to put back on restore - None or {}
+    for an entry logged before this existed, or for a format
+    read_extra_tag_fields doesn't cover, in which case restore just leaves
+    those fields alone (see write_tags' extra_tag_values).
 
     run_id is shared by every entry logged from the same process_files()
     call (see there) - lets the History window group tracks from the same
@@ -1212,6 +1227,7 @@ def log_history_entry(old_file, new_file, old_artist, old_title, new_artist, new
         "cover_updated": cover_updated,
         "converted": converted,
         "old_cover_b64": base64.b64encode(old_cover_bytes).decode("ascii") if old_cover_bytes else None,
+        "old_extra_tags": old_extra_tags or {},
     }
     try:
         with _HISTORY_FILE_LOCK, open(HISTORY_FILE, "a", encoding="utf-8") as f:
@@ -1255,8 +1271,10 @@ def _find_file_by_name(folder, basename):
 
 def restore_history_entry(entry, log=safe_print, override_path=None):
     """
-    Restores a file's artist/title/cover to what they were before a previous
-    run changed them (a history.jsonl entry from load_history_entries()).
+    Restores a file's artist/title/cover (and, when logged, its comment/
+    album/track-number/album-artist/composer/disc-number - see
+    read_extra_tag_fields) to what they were before a previous run changed
+    them (a history.jsonl entry from load_history_entries()).
 
     Locates the file via the entry's own logged folder + its current
     (new_file) relative path - NOT the global MUSIC_FOLDER, since the user
@@ -1338,6 +1356,14 @@ def restore_history_entry(entry, log=safe_print, override_path=None):
         # delall branch), not skip touching it and leave Apply's tags in
         # place - a real user-reported bug (fixed 2026-08-22).
         update_title=True, update_artist=True, update_cover=True,
+        # Puts comment/album/track-number/album-artist/composer/disc-number
+        # back to their exact pre-Apply values (captured by
+        # read_extra_tag_fields at scan time, see log_history_entry) -
+        # falls back to leaving them alone (clear_extra_tags=False) for an
+        # entry logged before this existed, or a format not covered (see
+        # write_tags' extra_tag_values docstring).
+        clear_extra_tags=False,
+        extra_tag_values=entry.get("old_extra_tags") or {},
         log=log,
     )
     log(f"  Restored tags on: '{full_path}'")
@@ -1474,6 +1500,7 @@ MUSIC_FOLDER = ""
 # the rest of the pipeline simple and consistent.
 SUPPORTED_EXTENSIONS = (
     ".mp3", ".wav", ".flac", ".aac", ".m4a", ".ogg", ".wma", ".aiff", ".opus",
+    ".mpeg", ".mpg",
 )
 
 # List of mentions to automatically strip out (add more if needed)
@@ -1530,6 +1557,22 @@ AUTO_CONVERT_WAV_TO_AIFF = True
 # of this setting - it only controls the FILENAME itself, for a user who'd
 # rather keep their own existing file naming untouched.
 FIX_TRACK_FILE_NAME = True
+
+# Whether write_tags() strips each of these fields on every Apply (set by
+# the UI, each independently toggleable, all on by default - Kevin's
+# call). Real DJ downloads (SoundCloud rips, YouTube converts, random
+# torrents...) very often carry junk in exactly these fields - a
+# "Downloaded from ..." comment, an "album" of "YouTube", a composer/
+# track/disc number left over from some unrelated compilation the file
+# was originally ripped from - which then shows up as clutter in
+# Rekordbox/Serato's browser columns. Distinct from title/artist/cover,
+# which this app is actively trying to GET RIGHT rather than blank out.
+CLEAR_COMMENT_TAG = True
+CLEAR_ALBUM_TAG = True
+CLEAR_TRACK_NUMBER_TAG = True
+CLEAR_ALBUM_ARTIST_TAG = True
+CLEAR_COMPOSER_TAG = True
+CLEAR_DISC_NUMBER_TAG = True
 
 
 # ============================================================================
@@ -2324,6 +2367,67 @@ def read_current_info(file_path):
     return has_cover, current_artist, current_title, cover_bytes
 
 
+# (canonical key, ID3 frame id, Vorbis comment key) - shared between
+# read_extra_tag_fields (captures the "old" values before Apply touches
+# them), _clear_unwanted_tag_fields (wipes them per the CLEAR_*_TAG
+# settings) and _restore_extra_tag_fields (puts the captured values back
+# on a history restore).
+_EXTRA_TAG_FIELD_SPECS = (
+    ("comment", "COMM", "comment"),
+    ("album", "TALB", "album"),
+    ("track_number", "TRCK", "tracknumber"),
+    ("album_artist", "TPE2", "albumartist"),
+    ("composer", "TCOM", "composer"),
+    ("disc_number", "TPOS", "discnumber"),
+)
+
+
+def read_extra_tag_fields(file_path):
+    """
+    READ-ONLY read of the comment/album/track-number/album-artist/composer/
+    disc-number fields _clear_unwanted_tag_fields() strips on Apply (see its
+    own docstring) - captured at scan time, before Apply ever touches the
+    file, so restore_history_entry() can put back the EXACT original values
+    later (via _restore_extra_tag_fields) instead of leaving whatever's
+    currently in the file alone.
+
+    Only implemented for the two tag systems _clear_unwanted_tag_fields()
+    itself handles (ID3 for mp3/wav/aiff, Vorbis comments for flac) -
+    returns {} for every other format (m4a/mpeg get force-converted to mp3
+    before Apply ever writes to them - see _resolve_conversion_target - so
+    there's no ID3 frame set on the pre-conversion file to attribute to the
+    post-conversion one anyway). An empty dict means "nothing captured",
+    which write_tags' extra_tag_values treats as "leave these fields
+    alone" on restore - graceful degradation for a format this doesn't
+    cover, not a wrong answer.
+    """
+    try:
+        audio = MutagenFile(file_path)
+    except Exception:
+        return {}
+
+    if audio is None or audio.tags is None:
+        return {}
+
+    tags = audio.tags
+    try:
+        if isinstance(audio, FLAC):
+            return {
+                key: (str(tags[vorbis_key][0]) if tags.get(vorbis_key) else None)
+                for key, _frame, vorbis_key in _EXTRA_TAG_FIELD_SPECS
+            }
+        if hasattr(tags, "getall"):
+            values = {}
+            for key, frame, _vorbis_key in _EXTRA_TAG_FIELD_SPECS:
+                frames = tags.getall(frame)
+                values[key] = str(frames[0].text[0]) if frames and frames[0].text else None
+            return values
+    except Exception:
+        return {}
+
+    return {}
+
+
 EXTRACTABLE_AUDIO_EXTENSIONS = SUPPORTED_EXTENSIONS + (".alac",)
 
 
@@ -2442,20 +2546,24 @@ def list_audio_files():
     of relative paths of the audio files found (without reading any tags).
     Fast: useful for detecting new files without rescanning everything.
 
-    Skips formats other than MP3/WAV/AIFF/FLAC/M4A when AUTO_CONVERT_MP3 is
-    off - those are the only formats with something usable to do without
-    the user opting into converting everything: MP3/WAV/AIFF/FLAC can all
-    be tagged directly (see open_audio_file), and M4A - common enough
-    (iTunes/Apple Music purchases) to warrant it - always converts to MP3
-    to be taggable at all, the same way WAV always has a path forward via
-    AUTO_CONVERT_WAV_TO_AIFF (see _resolve_conversion_target). The
-    remaining formats (AAC/OGG/WMA/opus) still need AUTO_CONVERT_MP3 on to
-    show up at all.
+    Skips formats other than MP3/WAV/AIFF/FLAC/M4A/MPEG/MPG when
+    AUTO_CONVERT_MP3 is off - those are the only formats with something
+    usable to do without the user opting into converting everything:
+    MP3/WAV/AIFF/FLAC can all be tagged directly (see open_audio_file),
+    and M4A/MPEG/MPG - M4A common enough (iTunes/Apple Music purchases) to
+    warrant it, MPEG/MPG having no direct-tagging path at all - always
+    convert to MP3 to be taggable at all, the same way WAV always has a
+    path forward via AUTO_CONVERT_WAV_TO_AIFF (see
+    _resolve_conversion_target). The remaining formats (AAC/OGG/WMA/opus)
+    still need AUTO_CONVERT_MP3 on to show up at all.
     """
     if not os.path.isdir(MUSIC_FOLDER):
         return []
 
-    extensions = SUPPORTED_EXTENSIONS if AUTO_CONVERT_MP3 else (".mp3", ".wav", ".aiff", ".flac", ".m4a")
+    extensions = (
+        SUPPORTED_EXTENSIONS if AUTO_CONVERT_MP3
+        else (".mp3", ".wav", ".aiff", ".flac", ".m4a", ".mpeg", ".mpg")
+    )
 
     audio_files = []
     for current_folder, _, file_names in os.walk(MUSIC_FOLDER):
@@ -2925,6 +3033,7 @@ def _prepare_scan(file_name, log=safe_print, on_new_mention=None, history_lookup
         on_new_mention(fuviclan_mention)
 
     has_cover, current_artist, current_title, current_cover_bytes = read_current_info(full_path)
+    current_extra_tags = read_extra_tag_fields(full_path)
     needs_conversion = not file_name.lower().endswith(".mp3")
 
     detected_artist, detected_title, tags_already_present = resolve_artist_title(
@@ -2965,6 +3074,7 @@ def _prepare_scan(file_name, log=safe_print, on_new_mention=None, history_lookup
         "current_artist": current_artist,
         "current_title": current_title,
         "current_cover_bytes": current_cover_bytes,
+        "current_extra_tags": current_extra_tags,
         "needs_conversion": needs_conversion,
         "detected_artist": detected_artist,
         "detected_title": detected_title,
@@ -3068,8 +3178,19 @@ def _finish_scan(prepared, match_result, cover_source, log=safe_print):
     else:
         cover_source = None
 
+    # Independent of the cover/tag search above - runs even for an
+    # already_applied file, since BPM/key is about the audio itself, not
+    # its tags. Never blocks/aborts the scan on failure (see
+    # estimate_bpm_and_key's own try/except).
+    bpm, camelot_key = (
+        estimate_bpm_and_key(os.path.join(MUSIC_FOLDER, file_name), log=log)
+        if DETECT_BPM_KEY else (None, None)
+    )
+
     return {
         "file": file_name,
+        "bpm": bpm,
+        "camelot_key": camelot_key,
         "format": os.path.splitext(file_name)[1].lstrip(".").upper(),
         "detected_artist": detected_artist,
         "detected_title": detected_title,
@@ -3120,8 +3241,10 @@ def _finish_scan(prepared, match_result, cover_source, log=safe_print):
         "found_cover_image": found_cover_image,
         "cover_source": cover_source,
         "current_cover_bytes": prepared["current_cover_bytes"],
+        "current_extra_tags": prepared["current_extra_tags"],
         "title_override": None,
         "artist_override": None,
+        "duplicate_of": None,
         "processed": False,
         "final_path": None,
         # So the UI knows NOT to re-derive detected_artist/detected_title
@@ -4690,11 +4813,18 @@ def find_fpcalc():
     return _find_bundled_tool("fpcalc")
 
 
-def convert_to_mp3(source_path):
+def convert_to_mp3(source_path, log=safe_print):
     """
     Converts ANY audio file (wav, flac, aac, m4a, ogg, wma, aiff, opus...) to
     .mp3 at 320 kbps using FFmpeg, which reads the input format automatically -
     no per-format handling needed here. Removes the original file on success.
+
+    Returns (mp3_path, None) on success, (None, error_detail) on failure -
+    error_detail used to just go to a bare print(), invisible in a
+    --windowed build with no console (real report: a failure surfaced only
+    as a generic "Conversion failed" with no way to tell why, not even in
+    the log). log defaults to safe_print for CLI/test callers; the GUI
+    passes its own journal logger through process_files().
     """
     mp3_path = os.path.splitext(source_path)[0] + ".mp3"
     try:
@@ -4705,27 +4835,32 @@ def convert_to_mp3(source_path):
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if result.returncode != 0:
-            print(f"  FFmpeg error during conversion: {result.stderr[-300:]}")
-            return None
+            error_detail = result.stderr[-300:].strip() or "unknown FFmpeg error"
+            log(f"  FFmpeg error during conversion: {error_detail}")
+            return None, error_detail
 
         os.remove(source_path)
-        return mp3_path
+        return mp3_path, None
 
     except FileNotFoundError:
-        print("  FFmpeg was not found. Check that it's installed and in the PATH.")
-        return None
+        error_detail = "FFmpeg was not found - check that it's installed and in the PATH."
+        log(f"  {error_detail}")
+        return None, error_detail
     except Exception as error:
         print(f"  Error during conversion: {error}")
         return None
 
 
-def convert_wav_to_aiff(source_path):
+def convert_wav_to_aiff(source_path, log=safe_print):
     """
     Converts a WAV file to AIFF using FFmpeg - purely a lossless PCM
     byte-order swap (little-endian -> big-endian), not a re-encode, so
     there's no quality loss. Exists only for cover-art compatibility with
     software that doesn't read embedded artwork from WAV (confirmed:
     Rekordbox) but does from AIFF. Removes the original file on success.
+
+    Returns (aiff_path, None) on success, (None, error_detail) on failure -
+    same reasoning as convert_to_mp3()'s return shape.
 
     FFmpeg's plain conversion drops every existing tag (genre, year,
     etc.) - confirmed live: its WAV demuxer doesn't surface the ID3 chunk
@@ -4741,7 +4876,7 @@ def convert_wav_to_aiff(source_path):
         source_audio = WAVE(source_path)
         source_tags = source_audio.tags
     except Exception as error:
-        print(f"  Could not read existing tags before conversion: {error}")
+        log(f"  Could not read existing tags before conversion: {error}")
 
     aiff_path = os.path.splitext(source_path)[0] + ".aiff"
     try:
@@ -4752,8 +4887,9 @@ def convert_wav_to_aiff(source_path):
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if result.returncode != 0:
-            print(f"  FFmpeg error during conversion: {result.stderr[-300:]}")
-            return None
+            error_detail = result.stderr[-300:].strip() or "unknown FFmpeg error"
+            log(f"  FFmpeg error during conversion: {error_detail}")
+            return None, error_detail
 
         if source_tags:
             try:
@@ -4771,17 +4907,19 @@ def convert_wav_to_aiff(source_path):
                     aiff_audio.tags.add(frame)
                 aiff_audio.save()
             except Exception as error:
-                print(f"  Could not carry over existing tags after conversion: {error}")
+                log(f"  Could not carry over existing tags after conversion: {error}")
 
         os.remove(source_path)
-        return aiff_path
+        return aiff_path, None
 
     except FileNotFoundError:
-        print("  FFmpeg was not found. Check that it's installed and in the PATH.")
-        return None
+        error_detail = "FFmpeg was not found - check that it's installed and in the PATH."
+        log(f"  {error_detail}")
+        return None, error_detail
     except Exception as error:
-        print(f"  Error during conversion: {error}")
-        return None
+        error_detail = str(error)
+        log(f"  Error during conversion: {error_detail}")
+        return None, error_detail
 
 
 def convert_aiff_to_wav(source_path):
@@ -4845,14 +4983,14 @@ def _resolve_conversion_target(file_name):
     AUTO_CONVERT_MP3 always wins when it's on, for any format, including
     WAV - it's the broader, more deliberate setting. AUTO_CONVERT_WAV_TO_AIFF
     only ever applies to WAV specifically, and only when AUTO_CONVERT_MP3
-    is off. M4A always converts to MP3 regardless of either setting - unlike
-    WAV/AIFF/FLAC, there's no direct-tagging path for it at all (see
-    open_audio_file), so leaving AUTO_CONVERT_MP3 off must not make M4A
-    files un-processable the way it does for AAC/OGG/WMA/opus.
+    is off. M4A/MPEG/MPG always convert to MP3 regardless of either
+    setting - unlike WAV/AIFF/FLAC, there's no direct-tagging path for them
+    at all (see open_audio_file), so leaving AUTO_CONVERT_MP3 off must not
+    make them un-processable the way it does for AAC/OGG/WMA/opus.
     """
     if file_name.lower().endswith(".mp3"):
         return None
-    if file_name.lower().endswith(".m4a"):
+    if file_name.lower().endswith((".m4a", ".mpeg", ".mpg")):
         return "mp3"
     if AUTO_CONVERT_MP3:
         return "mp3"
@@ -4982,13 +5120,112 @@ def _write_wav_riff_info(file_path, artist, title, update_artist, update_title, 
             os.remove(temp_path)
 
 
+def _clear_unwanted_tag_fields(tags, is_flac):
+    """
+    Strips comment/album/track-number/album-artist/composer/disc-number
+    per the CLEAR_*_TAG settings (each independently toggleable in
+    Settings' "Clear metadata" section, all on by default) - real DJ
+    downloads very often carry junk in exactly these fields (see the
+    constants' own comment). Runs on whatever's CURRENTLY in the file,
+    not just freshly-scanned info - so a file that already had junk here
+    long before Track Tidy ever touched it gets cleaned up too, the same
+    as one scanned for the first time today.
+    """
+    if is_flac:
+        # NOT tags.pop(key, None) - VCFLACDict subclasses list (its
+        # DictMixin base doesn't override pop()), so .pop() actually
+        # resolves to list.pop(index) and raises "pop expected at most
+        # 1 argument" the moment it's ever really exercised (confirmed:
+        # this exact bug was already latent in this file's own title/
+        # artist-clearing branch below, just never hit in practice since
+        # process_files() skips a row with an empty title before
+        # write_tags() is even called, and artist is rarely cleared to
+        # "" - same fix applied there too). __delitem__/__contains__ ARE
+        # real dict-like methods here, unlike pop().
+        for key, enabled in (
+            ("comment", CLEAR_COMMENT_TAG), ("album", CLEAR_ALBUM_TAG),
+            ("tracknumber", CLEAR_TRACK_NUMBER_TAG), ("albumartist", CLEAR_ALBUM_ARTIST_TAG),
+            ("composer", CLEAR_COMPOSER_TAG), ("discnumber", CLEAR_DISC_NUMBER_TAG),
+        ):
+            if enabled and key in tags:
+                del tags[key]
+    else:
+        if CLEAR_COMMENT_TAG:
+            tags.delall("COMM")
+        if CLEAR_ALBUM_TAG:
+            tags.delall("TALB")
+        if CLEAR_TRACK_NUMBER_TAG:
+            tags.delall("TRCK")
+        if CLEAR_ALBUM_ARTIST_TAG:
+            tags.delall("TPE2")
+        if CLEAR_COMPOSER_TAG:
+            tags.delall("TCOM")
+        if CLEAR_DISC_NUMBER_TAG:
+            tags.delall("TPOS")
+
+
+# Simple ID3 text-frame classes (encoding + text, like TIT2/TPE1) for every
+# _EXTRA_TAG_FIELD_SPECS frame except COMM, which additionally needs a
+# lang/desc pair - restore_history_entry() only ever captured the comment's
+# TEXT (see read_extra_tag_fields), so it's rebuilt with the same lang/desc
+# ("eng"/"") this app would use if it ever wrote a comment itself.
+_ID3_EXTRA_TEXT_FRAME_CLASSES = {"TALB": TALB, "TRCK": TRCK, "TPE2": TPE2, "TCOM": TCOM, "TPOS": TPOS}
+
+
+def _restore_extra_tag_fields(tags, is_flac, old_values):
+    """
+    Sets comment/album/track-number/album-artist/composer/disc-number back
+    to their EXACT pre-Apply values (old_values, from log_history_entry's
+    old_extra_tags - see read_extra_tag_fields) - used by
+    restore_history_entry() via write_tags' extra_tag_values instead of
+    _clear_unwanted_tag_fields()'s always-clear behavior, since a restore
+    should put the file back exactly how it was, not blank these fields the
+    way a fresh Apply does.
+
+    old_values is expected to carry all six keys (or be empty - see
+    write_tags' extra_tag_values docstring for why an empty dict never
+    reaches this function). A value of None/"" for a key means the field
+    was absent before Apply, so it's cleared here too, not skipped.
+    """
+    if is_flac:
+        for key, _frame, vorbis_key in _EXTRA_TAG_FIELD_SPECS:
+            value = old_values.get(key)
+            if value:
+                tags[vorbis_key] = [value]
+            elif vorbis_key in tags:
+                del tags[vorbis_key]
+    else:
+        for key, frame, _vorbis_key in _EXTRA_TAG_FIELD_SPECS:
+            value = old_values.get(key)
+            if not value:
+                tags.delall(frame)
+            elif frame == "COMM":
+                tags.delall("COMM")
+                tags.add(COMM(encoding=3, lang="eng", desc="", text=[value]))
+            else:
+                tags.setall(frame, [_ID3_EXTRA_TEXT_FRAME_CLASSES[frame](encoding=3, text=[value])])
+
+
 def write_tags(file_path, artist, title, cover_image, force_remove_if_missing,
-                update_title=True, update_artist=True, update_cover=True, log=safe_print):
+                update_title=True, update_artist=True, update_cover=True,
+                clear_extra_tags=True, extra_tag_values=None, log=safe_print):
     """
     Writes the chosen tags:
     - update_title / update_artist: True to write, False to leave as-is
     - update_cover: True to apply the cover logic (replace/remove/keep),
       False to leave the cover untouched entirely
+    - clear_extra_tags: True to also strip comment/album/track-number/
+      album-artist/composer/disc-number per the CLEAR_*_TAG settings
+      (see _clear_unwanted_tag_fields) - False for an unchecked row
+      (nothing about it should change).
+    - extra_tag_values: when given a non-empty dict (from
+      log_history_entry's old_extra_tags, via restore_history_entry), sets
+      those six fields back to their EXACT pre-Apply values instead of
+      either clearing or leaving them alone - takes priority over
+      clear_extra_tags entirely. An empty dict (nothing was captured - an
+      old history entry, or a format read_extra_tag_fields doesn't cover)
+      falls back to leaving these fields untouched, same as
+      clear_extra_tags=False.
     """
     if file_path.lower().endswith(".wav") and (update_title or update_artist):
         _write_wav_riff_info(file_path, artist, title, update_artist, update_title, log=log)
@@ -5004,13 +5241,15 @@ def write_tags(file_path, artist, title, cover_image, force_remove_if_missing,
         if update_title:
             if title:
                 tags["title"] = [title]
-            else:
-                tags.pop("title", None)
+            elif "title" in tags:
+                # NOT tags.pop("title", None) - see _clear_unwanted_tag_fields's
+                # own comment on why VCFLACDict.pop() actually crashes.
+                del tags["title"]
         if update_artist:
             if artist:
                 tags["artist"] = [artist]
-            else:
-                tags.pop("artist", None)
+            elif "artist" in tags:
+                del tags["artist"]
 
         if update_cover:
             if cover_image:
@@ -5030,6 +5269,11 @@ def write_tags(file_path, artist, title, cover_image, force_remove_if_missing,
             elif force_remove_if_missing:
                 audio.clear_pictures()
             # otherwise: leave the existing cover untouched
+
+        if extra_tag_values:
+            _restore_extra_tag_fields(tags, is_flac=True, old_values=extra_tag_values)
+        elif clear_extra_tags:
+            _clear_unwanted_tag_fields(tags, is_flac=True)
     else:
         tags = audio.tags
 
@@ -5051,6 +5295,11 @@ def write_tags(file_path, artist, title, cover_image, force_remove_if_missing,
             elif force_remove_if_missing:
                 tags.delall("APIC")
             # otherwise: leave the existing cover untouched
+
+        if extra_tag_values:
+            _restore_extra_tag_fields(tags, is_flac=False, old_values=extra_tag_values)
+        elif clear_extra_tags:
+            _clear_unwanted_tag_fields(tags, is_flac=False)
 
     save_audio(audio)
 
@@ -5150,10 +5399,10 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
                 source_extension = os.path.splitext(file_name)[1].lstrip(".").upper()
                 if target_format == "mp3":
                     log(f"  Converting .{source_extension.lower()} -> .mp3 (320 kbps)...")
-                    new_path = convert_to_mp3(full_path)
+                    new_path, conversion_error = convert_to_mp3(full_path, log=log)
                 else:
                     log(f"  Converting .{source_extension.lower()} -> .aiff...")
-                    new_path = convert_wav_to_aiff(full_path)
+                    new_path, conversion_error = convert_wav_to_aiff(full_path, log=log)
 
                 if not new_path:
                     log("  Conversion failed, file skipped.\n")
@@ -5161,7 +5410,8 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
                     if on_progress:
                         on_progress(index, total)
                     if on_file_processed:
-                        on_file_processed(identifier, False, "Conversion failed")
+                        reason = f"Conversion failed: {conversion_error}" if conversion_error else "Conversion failed"
+                        on_file_processed(identifier, False, reason)
                     continue
 
                 full_path = new_path
@@ -5214,6 +5464,10 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
             write_tags(
                 full_path, artist, title, cover_image, force_remove_if_missing,
                 update_title=update_title, update_artist=update_artist, update_cover=update_cover,
+                # Tied to apply_changes, same as the three above - an
+                # unchecked row means "leave this file exactly as-is",
+                # which must include not stripping its comment/album/etc.
+                clear_extra_tags=update_cover,
                 log=log,
             )
 
@@ -5248,6 +5502,7 @@ def process_files(plan, log=safe_print, on_progress=None, on_file_processed=None
                     folder=os.path.abspath(MUSIC_FOLDER) if MUSIC_FOLDER else None,
                     old_cover_bytes=info.get("current_cover_bytes") if info.get("has_cover") else None,
                     run_id=run_id,
+                    old_extra_tags=info.get("current_extra_tags"),
                 )
 
             if update_cover and cover_image:
@@ -5932,6 +6187,302 @@ def analyze_folder_quality(folder, log=safe_print, on_progress=None, on_result=N
         if on_progress:
             on_progress(index, total)
     return results
+
+
+# ============================================================================
+# 15. BPM / KEY DETECTION
+# ============================================================================
+
+# Opt-out flag - toggled by Settings' "Detect BPM/key when scanning"
+# checkbox. On by default, matching the Tagger table's own BPM/Key
+# display (shown as a second line under the title - see
+# tab_tagger.py's _build_row_values()).
+DETECT_BPM_KEY = True
+
+BPM_ANALYSIS_SEGMENT_SECONDS = 45
+BPM_ANALYSIS_SKIP_SECONDS = 5
+BPM_ANALYSIS_SAMPLE_RATE = 11025
+
+BPM_MIN = 70
+BPM_MAX = 180
+
+# Camelot wheel notation - the DJ-standard way to express a key for
+# harmonic mixing (adjacent numbers/letters = compatible keys), more
+# useful at a glance for this audience than "A minor". Index = pitch
+# class (0=C, 1=C#, ... 11=B); inner arrays give the Camelot code for
+# that pitch class as a major vs. minor tonic.
+_CAMELOT_MAJOR = ["8B", "3B", "10B", "5B", "12B", "7B", "2B", "9B", "4B", "11B", "6B", "1B"]
+_CAMELOT_MINOR = ["5A", "12A", "7A", "2A", "9A", "4A", "11A", "6A", "1A", "8A", "3A", "10A"]
+
+# Krumhansl-Schmuckler key profiles - published, widely-used constants
+# for key detection by correlating a track's own pitch-class energy
+# distribution (chroma vector) against these, not something invented
+# for this app.
+_MAJOR_KEY_PROFILE = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
+_MINOR_KEY_PROFILE = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
+
+
+def _onset_envelope(samples, frame_size=1024, hop_size=512):
+    """Per-frame RMS energy -> half-wave-rectified first difference - a
+    simple, standard percussive-onset-strength proxy (a bigger value
+    means a bigger jump in energy, i.e. a likely drum/beat hit)."""
+    frame_count = 1 + (len(samples) - frame_size) // hop_size
+    if frame_count < 2:
+        return np.array([])
+    energy = np.empty(frame_count)
+    for i in range(frame_count):
+        start = i * hop_size
+        frame = samples[start:start + frame_size]
+        energy[i] = np.sqrt(np.mean(frame ** 2)) if len(frame) else 0.0
+    onset = np.diff(energy)
+    onset[onset < 0] = 0.0
+    return onset
+
+
+def _estimate_bpm(samples, sample_rate):
+    """
+    Autocorrelation-based tempo estimate - finds the strongest
+    periodicity in the onset envelope within a plausible dance-music BPM
+    range (BPM_MIN-BPM_MAX). Simple and fast (FFT-based autocorrelation,
+    no external library), but a from-scratch approach: expect occasional
+    octave errors (half/double tempo) on ambiguous material, not
+    professional (e.g. Mixed In Key)-grade accuracy. Returns None if
+    there isn't enough signal to make even a rough estimate.
+    """
+    hop_size = 512
+    onset = _onset_envelope(samples, hop_size=hop_size)
+    if len(onset) < 8:
+        return None
+
+    onset = onset - onset.mean()
+    # FFT-based autocorrelation - pad to 2x length to avoid circular
+    # wraparound contaminating the result.
+    spectrum = np.fft.rfft(onset, n=2 * len(onset))
+    autocorr = np.fft.irfft(spectrum * np.conj(spectrum))[:len(onset)]
+
+    frame_rate = sample_rate / hop_size  # onset frames per second
+    min_lag = max(1, int(frame_rate * 60 / BPM_MAX))
+    max_lag = min(len(autocorr) - 1, int(frame_rate * 60 / BPM_MIN))
+    if max_lag <= min_lag:
+        return None
+
+    search_window = autocorr[min_lag:max_lag + 1]
+    best_lag = min_lag + int(np.argmax(search_window))
+    if autocorr[best_lag] <= 0:
+        return None
+
+    bpm = frame_rate * 60 / best_lag
+
+    # Octave-preference heuristic: the autocorrelation peak is
+    # inherently ambiguous between a tempo and its harmonics/
+    # subharmonics - fold a double/half candidate into the "typical"
+    # dance-music range when it lands there, since that's the more
+    # likely intended tempo.
+    for candidate in (bpm, bpm * 2, bpm / 2):
+        if 85 <= candidate <= 175:
+            bpm = candidate
+            break
+
+    return round(bpm, 1)
+
+
+def _estimate_key(samples, sample_rate):
+    """
+    Chromagram (12 pitch-class energy bins) + Krumhansl-Schmuckler
+    template correlation -> best-matching (tonic, mode) -> Camelot
+    notation. Same "estimate, not certainty" caveat as _estimate_bpm -
+    electronic/heavily-processed material in particular can easily
+    confuse a chroma-based approach like this one. Returns None if
+    there isn't enough signal to make even a rough estimate.
+    """
+    frame_size = 4096
+    hop_size = 2048
+    frame_count = 1 + (len(samples) - frame_size) // hop_size
+    if frame_count < 1:
+        return None
+
+    window = np.hanning(frame_size)
+    freqs = np.fft.rfftfreq(frame_size, d=1 / sample_rate)
+    # Map each FFT bin to a pitch class (0=C..11=B) via the standard
+    # MIDI-note formula. Bins below ~40Hz are excluded so sub-bass/
+    # rumble energy (rarely tonally meaningful) can't dominate the
+    # profile.
+    with np.errstate(divide="ignore"):
+        midi_note = 69 + 12 * np.log2(np.maximum(freqs, 1e-9) / 440.0)
+    pitch_class = np.mod(np.round(midi_note), 12).astype(int)
+    valid_bins = freqs > 40
+
+    chroma = np.zeros(12)
+    for i in range(frame_count):
+        start = i * hop_size
+        frame = samples[start:start + frame_size]
+        if len(frame) < frame_size:
+            break
+        spectrum = np.abs(np.fft.rfft(frame * window))
+        for pitch in range(12):
+            chroma[pitch] += spectrum[valid_bins & (pitch_class == pitch)].sum()
+
+    if chroma.sum() <= 0:
+        return None
+    chroma = chroma / chroma.sum()
+
+    best_score, best_tonic, best_is_major = -np.inf, 0, True
+    for tonic in range(12):
+        major_score = np.corrcoef(chroma, np.roll(_MAJOR_KEY_PROFILE, tonic))[0, 1]
+        minor_score = np.corrcoef(chroma, np.roll(_MINOR_KEY_PROFILE, tonic))[0, 1]
+        if major_score > best_score:
+            best_score, best_tonic, best_is_major = major_score, tonic, True
+        if minor_score > best_score:
+            best_score, best_tonic, best_is_major = minor_score, tonic, False
+
+    return (_CAMELOT_MAJOR if best_is_major else _CAMELOT_MINOR)[best_tonic]
+
+
+def estimate_bpm_and_key(file_path, log=safe_print):
+    """
+    Best-effort BPM + Camelot-notation key estimate for file_path, shown
+    as a second line under the title in the Tagger table. Pure numpy -
+    deliberately NOT using a full audio-analysis library (librosa/
+    essentia): those pull in scipy/numba-sized dependencies that would
+    meaningfully bloat the installer and risk reintroducing antivirus
+    false positives (numba especially - see the 0.28.2 VirusTotal
+    investigation), for a feature that's explicitly presented as an
+    estimate rather than something needing professional accuracy.
+    Returns (None, None) on any failure - must never abort a scan.
+    """
+    try:
+        samples = _decode_pcm_segment(
+            file_path, duration=BPM_ANALYSIS_SEGMENT_SECONDS,
+            skip=BPM_ANALYSIS_SKIP_SECONDS, sample_rate=BPM_ANALYSIS_SAMPLE_RATE,
+        )
+        if len(samples) < BPM_ANALYSIS_SAMPLE_RATE * 3:  # under ~3s decoded - too little to analyze
+            return None, None
+        bpm = _estimate_bpm(samples, BPM_ANALYSIS_SAMPLE_RATE)
+        key = _estimate_key(samples, BPM_ANALYSIS_SAMPLE_RATE)
+        return bpm, key
+    except Exception as error:
+        log(f"  [BPM/Key] Could not analyze '{file_path}': {error}")
+        return None, None
+
+
+# ============================================================================
+# 16. DUPLICATE DETECTION
+# ============================================================================
+
+# How much audio to fingerprint per file - the same default fpcalc uses
+# for AcoustID identification (its own internal MAX_AUDIO_LENGTH),
+# reused here for consistency; long enough to reliably tell two
+# different tracks apart without fingerprinting entire (possibly very
+# long) files.
+DUPLICATE_FINGERPRINT_LENGTH_SECONDS = 120
+
+# Similarity score (0-1, see _fingerprint_similarity) at or above which
+# two tracks are considered the same underlying recording. A starting
+# point, not empirically tuned against a large real-world dataset -
+# revisit if real usage turns up false positives/negatives.
+DUPLICATE_SIMILARITY_THRESHOLD = 0.95
+
+# How far one fingerprint is allowed to slide against the other while
+# searching for the best alignment (in fingerprint frames, each ~1/8s) -
+# covers a silent intro/outro length difference between two rips of the
+# same track without an unbounded (and much slower) search.
+_DUPLICATE_MAX_ALIGNMENT_OFFSET = 80
+
+
+def _compute_raw_fingerprint(file_path, log=safe_print):
+    """
+    Runs the bundled fpcalc directly with -raw -json to get the
+    UNCOMPRESSED Chromaprint fingerprint as a plain list of 32-bit
+    integers - entirely local, no network call, no API key needed.
+    Deliberately bypasses pyacoustid's own chromaprint.py wrapper here:
+    that needs a libchromaprint shared library this app doesn't bundle
+    (only fpcalc.exe, for AcoustID identification in
+    identify_via_acoustid()) - going straight to fpcalc's own CLI flags
+    needs nothing extra bundled.
+    """
+    try:
+        result = subprocess.run(
+            [find_fpcalc(), "-raw", "-json", "-length", str(DUPLICATE_FINGERPRINT_LENGTH_SECONDS), file_path],
+            capture_output=True, text=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode != 0:
+            log(f"  [Duplicates] fpcalc failed on '{file_path}': {result.stderr.strip()}")
+            return None
+        return json.loads(result.stdout).get("fingerprint")
+    except FileNotFoundError:
+        log("  [Duplicates] fpcalc was not found - check it's bundled or installed.")
+        return None
+    except Exception as error:
+        log(f"  [Duplicates] Could not fingerprint '{file_path}': {error}")
+        return None
+
+
+def _fingerprint_similarity(fingerprint_a, fingerprint_b):
+    """
+    Similarity score (0-1) between two raw Chromaprint fingerprints -
+    the same audio re-encoded at a different bitrate/format produces a
+    fingerprint that's mostly, but not bit-for-bit, identical, so this
+    looks for the best-aligned bit-error-rate rather than exact
+    equality. Slides the shorter fingerprint across the longer one
+    (bounded by _DUPLICATE_MAX_ALIGNMENT_OFFSET), and at each offset
+    XORs the overlapping region and counts differing bits (popcount via
+    np.unpackbits) - returns 1 minus the best (lowest) bit-error-rate
+    found across every offset tried.
+    """
+    shorter = np.asarray(fingerprint_a, dtype=np.uint32)
+    longer = np.asarray(fingerprint_b, dtype=np.uint32)
+    if len(shorter) == 0 or len(longer) == 0:
+        return 0.0
+    if len(shorter) > len(longer):
+        shorter, longer = longer, shorter
+
+    best_bit_error_rate = 1.0
+    max_offset = min(_DUPLICATE_MAX_ALIGNMENT_OFFSET, len(longer) - 1)
+    for offset in range(0, max_offset + 1):
+        window = longer[offset:offset + len(shorter)]
+        overlap = min(len(shorter), len(window))
+        if overlap < 10:  # too little overlap for a meaningful comparison
+            continue
+        xor = np.bitwise_xor(shorter[:overlap], window[:overlap])
+        differing_bits = np.unpackbits(xor.view(np.uint8)).sum()
+        bit_error_rate = differing_bits / (overlap * 32)
+        if bit_error_rate < best_bit_error_rate:
+            best_bit_error_rate = bit_error_rate
+
+    return 1.0 - best_bit_error_rate
+
+
+def find_duplicate_tracks(file_paths, log=safe_print, on_progress=None, should_cancel=None):
+    """
+    Fingerprints every file in file_paths once, then compares every pair
+    for similarity - returns a list of (file_a, file_b, similarity)
+    triples for pairs at or above DUPLICATE_SIMILARITY_THRESHOLD.
+    O(n^2) comparisons (fine at realistic per-scan batch sizes), so this
+    is a deliberate, separate on-demand action in the Tagger tab ("Find
+    duplicates"), not something run automatically on every scan the way
+    BPM/Key detection is.
+    """
+    total = len(file_paths)
+    fingerprints = {}
+    for index, path in enumerate(file_paths, start=1):
+        if should_cancel and should_cancel():
+            return []
+        fingerprints[path] = _compute_raw_fingerprint(path, log=log)
+        if on_progress:
+            on_progress(index, total)
+
+    duplicates = []
+    fingerprinted_paths = [path for path in file_paths if fingerprints.get(path)]
+    for i in range(len(fingerprinted_paths)):
+        if should_cancel and should_cancel():
+            break
+        for j in range(i + 1, len(fingerprinted_paths)):
+            path_a, path_b = fingerprinted_paths[i], fingerprinted_paths[j]
+            similarity = _fingerprint_similarity(fingerprints[path_a], fingerprints[path_b])
+            if similarity >= DUPLICATE_SIMILARITY_THRESHOLD:
+                duplicates.append((path_a, path_b, similarity))
+    return duplicates
 
 
 def process_folder(log=safe_print, on_progress=None):

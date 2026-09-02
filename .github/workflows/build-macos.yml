@@ -1,13 +1,33 @@
 name: Build macOS app
 
 # Manual trigger only: run it by hand from the Actions tab, or
-# `gh workflow run build-macos.yml` for an ad-hoc smoke-test build off a
-# branch, or `gh workflow run build-macos.yml --ref <tag>` for a real
-# release build - see the credentials step below for how the two differ
-# (real secrets + a GitHub Release upload only happen for the latter,
-# detected via github.ref_type == 'tag').
+# `gh workflow run build-macos.yml -f target=apple-silicon` for an ad-hoc
+# smoke-test build off a branch, or `gh workflow run build-macos.yml --ref
+# <tag> -f target=...` for a real release build - see the credentials step
+# below for how the two differ (real secrets + a GitHub Release upload
+# only happen for the latter, detected via github.ref_type == 'tag').
+#
+# `target` picks exactly ONE architecture to build per dispatch (required,
+# no default) - a physical Intel runner (macos-13) was tried once for the
+# `intel` leg, but GitHub's Intel macOS runners are chronically
+# unavailable (every attempt sat queued 19-24h before being auto-
+# cancelled, never actually running). The `intel` leg below instead
+# builds a genuine x86_64 binary on the same Apple-Silicon (macos-14)
+# runner, forced through Rosetta 2 emulation (`arch -x86_64` / a
+# translated shell) - a local capability of the runner itself, not
+# dependent on GitHub's runner-allocation queue. UNVERIFIED on real Intel
+# Mac hardware (none available) - treat the first real dispatch of this
+# leg as a test, not a guaranteed one-shot success.
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: "Which architecture to build"
+        required: true
+        type: choice
+        options:
+          - apple-silicon
+          - intel
 
 jobs:
   build:
@@ -17,26 +37,30 @@ jobs:
     # 403: Resource not accessible by integration").
     permissions:
       contents: write
-    # macos-13 (Intel) was tried here too, but GitHub's Intel macOS
-    # runners are chronically unavailable - every attempt sat queued for
-    # 19-24h before being auto-cancelled, never actually running (see run
-    # history). Apple Silicon (macos-14) runs reliably in ~1 minute, so
-    # that's the only leg for now - revisit Intel if GitHub's runner
-    # availability ever improves.
+    # Both legs run on the SAME (Apple Silicon) runner - the `intel` leg
+    # gets there via Rosetta 2 emulation instead of a separate runner OS
+    # (see the top-of-file comment). Gated below so a single dispatch only
+    # actually builds the one architecture `target` asked for - keeps a
+    # release for one arch from also spending CI time (and risk) on the
+    # other.
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: macos-14
             arch: apple-silicon
+          - os: macos-14
+            arch: intel
+    if: matrix.arch == github.event.inputs.target
     runs-on: ${{ matrix.os }}
     # Hard backstop, same reasoning as gui-smoke-test.yml's own cap: this
     # job is far more prone to hanging (brew install, a curl fetch, hdiutil
     # create, gh release upload) than that one was even before it got its
     # own timeout after a real incident - and this is the job used for
     # actual release builds, so a silent hang here is the costliest one to
-    # leave uncapped.
-    timeout-minutes: 30
+    # leave uncapped. The intel leg's extra Rosetta/x86_64-Homebrew setup
+    # needs more headroom than the apple-silicon leg ever did.
+    timeout-minutes: ${{ matrix.arch == 'intel' && 45 || 30 }}
     steps:
       - uses: actions/checkout@v4
 
@@ -44,7 +68,25 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install Rosetta 2 (intel leg only)
+        # Not assumed pre-installed on this runner image. A local,
+        # same-runner install - unlike the abandoned physical Intel-runner
+        # attempt (see top-of-file comment), this isn't gated behind
+        # GitHub's runner-allocation queue at all.
+        if: matrix.arch == 'intel'
+        run: softwareupdate --install-rosetta --agree-to-license
+
       - name: Create build venv and install dependencies
+        # actions/setup-python's installed 3.12 is a universal2 build
+        # (covers both arm64 and x86_64) - for the intel leg, this whole
+        # step runs through a Rosetta-translated shell (see `shell:`
+        # below), so `python3` here resolves that build's x86_64 slice,
+        # and every package pip installs into this venv is an x86_64
+        # wheel. Everything spawned from within an already-translated
+        # shell inherits x86_64 automatically - a translated shell for
+        # THIS step alone doesn't carry over to later steps, so the build
+        # step further down needs the same treatment.
+        shell: ${{ matrix.arch == 'intel' && 'arch -x86_64 /bin/bash --noprofile --norc -eo pipefail {0}' || 'bash' }}
         run: |
           python3 -m venv venv_build
           source venv_build/bin/activate
@@ -119,10 +161,29 @@ jobs:
         # dependency into ./ffmpeg-libs and rewrites ffmpeg's own link
         # paths to look for them next to itself instead - the standard
         # tool for exactly this "redistribute a Homebrew binary" case.
+        #
+        # For the intel leg: this runner's default Homebrew prefix
+        # (/opt/homebrew) only ever has arm64 formula binaries - a second,
+        # parallel x86_64 Homebrew at the traditional Intel prefix
+        # (/usr/local), installed and run under Rosetta, is the standard
+        # way to get an x86_64 ffmpeg build on an Apple Silicon host.
+        # dylibbundler itself doesn't need to match the target arch (it's
+        # just rewriting the ffmpeg binary's Mach-O link paths, not
+        # executing as part of the app) - the arm64 one from the default
+        # Homebrew is fine for that.
         run: |
-          which ffmpeg || brew install ffmpeg
+          if [ "${{ matrix.arch }}" = "intel" ]; then
+            if [ ! -x /usr/local/bin/brew ]; then
+              arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+            fi
+            arch -x86_64 /usr/local/bin/brew install ffmpeg
+            FFMPEG_BIN=/usr/local/bin/ffmpeg
+          else
+            which ffmpeg || brew install ffmpeg
+            FFMPEG_BIN="$(which ffmpeg)"
+          fi
           brew install dylibbundler
-          cp "$(which ffmpeg)" ./ffmpeg
+          cp "$FFMPEG_BIN" ./ffmpeg
           chmod +w ./ffmpeg
           dylibbundler -od -b -x ./ffmpeg -d ./ffmpeg-libs -p "@executable_path/ffmpeg-libs/"
           echo "--- ffmpeg link dependencies after bundling (should show no /opt/homebrew or /usr/local paths left) ---"
@@ -143,9 +204,20 @@ jobs:
         # Unlike Homebrew's ffmpeg, Chromaprint's own official release
         # build is statically linked - no dylibbundler treatment needed,
         # confirmed below by otool -L showing no /opt/homebrew or
-        # /usr/local paths to begin with.
+        # /usr/local paths to begin with. Picks the arch-matching release
+        # asset directly (confirmed both exist for v1.6.1) - running the
+        # downloaded binary below (./fpcalc -version) works for the intel
+        # leg without any extra `arch` handling, since macOS transparently
+        # routes an x86_64 executable through Rosetta once it's installed
+        # (see the Rosetta-install step above), the same as any other
+        # direct invocation of the bundled x86_64 binary later in this job.
         run: |
-          curl -L -o fpcalc.tar.gz "https://github.com/acoustid/chromaprint/releases/download/v1.6.1/chromaprint-fpcalc-1.6.1-macos-arm64.tar.gz"
+          if [ "${{ matrix.arch }}" = "intel" ]; then
+            FPCALC_URL="https://github.com/acoustid/chromaprint/releases/download/v1.6.1/chromaprint-fpcalc-1.6.1-macos-x86_64.tar.gz"
+          else
+            FPCALC_URL="https://github.com/acoustid/chromaprint/releases/download/v1.6.1/chromaprint-fpcalc-1.6.1-macos-arm64.tar.gz"
+          fi
+          curl -L -o fpcalc.tar.gz "$FPCALC_URL"
           mkdir fpcalc_extracted
           tar -xzf fpcalc.tar.gz -C fpcalc_extracted
           find fpcalc_extracted -type f -name fpcalc -exec cp {} ./fpcalc \;
@@ -155,11 +227,13 @@ jobs:
           ./fpcalc -version
 
       - name: Run the test suite
+        shell: ${{ matrix.arch == 'intel' && 'arch -x86_64 /bin/bash --noprofile --norc -eo pipefail {0}' || 'bash' }}
         run: |
           source venv_build/bin/activate
           python -m unittest discover -s tests
 
       - name: Build .app and .dmg
+        shell: ${{ matrix.arch == 'intel' && 'arch -x86_64 /bin/bash --noprofile --norc -eo pipefail {0}' || 'bash' }}
         run: |
           source venv_build/bin/activate
           chmod +x build_mac.sh
@@ -244,6 +318,15 @@ jobs:
         # Matches the Windows installer's own <name>.sha256 convention
         # (CLAUDE.md's ".sha256 checksum" note) so check_for_update's
         # verification works the same way on both platforms.
+        #
+        # build_mac.sh names the .dmg with no architecture suffix
+        # (Track-Tidy-Setup-<version>.dmg) - fine as long as a given
+        # release only ever publishes ONE macOS .dmg (true today, since
+        # `target` restricts a dispatch to a single arch). If a future
+        # release ever needs to publish BOTH arm64 and intel .dmgs
+        # together, they'd collide on this exact filename and --clobber
+        # would silently let one overwrite the other - revisit the naming
+        # then.
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

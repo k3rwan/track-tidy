@@ -213,6 +213,115 @@ def check_tagger_row_logic(app):
     app._apply_table_filter()
 
 
+def check_bpm_key_display(app):
+    """Regression guard for the BPM/Key feature's display: it's rendered
+    as a SECOND LINE inside the Title cell (no new table column, no
+    window-width change - see TAGGER_TABLE_ROW_HEIGHT), not a suffix on
+    the same line like the ⚠️/🎧 markers. Exercises _build_row_values()
+    directly rather than a real scan (no ffmpeg/analysis needed here -
+    that's covered separately in test_track_tidy.py's
+    EstimateBpmAndKeyTests)."""
+    info = {
+        "file": "__gui_smoke_test_bpm_row__.mp3", "format": "MP3", "processed": False,
+        "apply_changes": True, "convert": False,
+        "current_title": "old title", "current_artist": "old artist",
+        "detected_title": "Real Title", "detected_artist": "Real Artist",
+        "title_override": None, "artist_override": None,
+        "found_cover_image": b"not empty", "already_applied": False,
+        "acoustid_identified": False, "original_order": 0,
+        "bpm": 128.0, "camelot_key": "8A", "duplicate_of": None,
+    }
+    displayed_title = app._build_row_values(info)[1]
+    if "\n128 BPM - 8A" not in displayed_title:
+        raise AssertionError(f"expected a '128 BPM - 8A' second line in the title, got {displayed_title!r}")
+
+    # No bpm/key detected (or feature off) -> no second line at all, so a
+    # plain row looks exactly like it did before this feature existed.
+    info["bpm"] = None
+    info["camelot_key"] = None
+    displayed_title = app._build_row_values(info)[1]
+    if "\n" in displayed_title:
+        raise AssertionError(f"expected no second line when bpm/key are None, got {displayed_title!r}")
+
+
+def check_duplicate_marker_and_row_tag(app):
+    """Regression guard for the duplicate-detection UI: a row with
+    duplicate_of set gets the "\U0001f501" marker on the title (NOT
+    cleared by a title edit, unlike ⚠️/\U0001f3a7 - see
+    _duplicate_marker's own docstring) and the "dup_row" background tag,
+    applied the same way _finalize_find_duplicates does (not a real
+    fingerprinting pass - that's covered separately in
+    test_track_tidy.py's DuplicateDetectionTests)."""
+    info = {
+        "file": "__gui_smoke_test_dup_row__.mp3", "format": "MP3", "processed": False,
+        "apply_changes": True, "convert": False,
+        "current_title": "old title", "current_artist": "old artist",
+        "detected_title": "Real Title", "detected_artist": "Real Artist",
+        "title_override": None, "artist_override": None,
+        "found_cover_image": b"not empty", "already_applied": False,
+        "acoustid_identified": False, "original_order": 0,
+        "bpm": None, "camelot_key": None, "duplicate_of": None,
+    }
+    app.scanned_plan.append(info)
+    image_tk = app._create_thumbnail(info)
+    app.tk_images[info["file"]] = image_tk
+    app.table.insert(
+        "", "end", iid=info["file"], image=image_tk if image_tk else "",
+        values=app._build_row_values(info), tags=("even_row",),
+    )
+
+    displayed_title = app._build_row_values(info)[1]
+    if "\U0001f501" in displayed_title:
+        raise AssertionError("duplicate marker present before duplicate_of was even set")
+
+    # Mirrors _finalize_find_duplicates's own row-marking logic.
+    info["duplicate_of"] = "some_other_track.mp3"
+    app._refresh_row(info)
+    current_tags = app.table.item(info["file"], "tags")
+    if "dup_row" not in current_tags:
+        app.table.item(info["file"], tags=tuple(current_tags) + ("dup_row",))
+
+    displayed_title = app._build_row_values(info)[1]
+    if "\U0001f501" not in displayed_title:
+        raise AssertionError(f"expected the duplicate marker once duplicate_of is set, got {displayed_title!r}")
+
+    final_tags = app.table.item(info["file"], "tags")
+    if "dup_row" not in final_tags:
+        raise AssertionError(f"expected 'dup_row' among the row's tags, got {final_tags}")
+
+    # Unlike ⚠️/\U0001f3a7, a title edit must NOT clear the duplicate marker -
+    # it's a fact about the audio, not something a title override "resolves".
+    info["title_override"] = "Real Title"
+    displayed_title_after_edit = app._build_row_values(info)[1]
+    if "\U0001f501" not in displayed_title_after_edit:
+        raise AssertionError("duplicate marker incorrectly cleared by a title edit")
+
+
+def check_always_on_top_toggle(app):
+    """Pin button (_toggle_always_on_top) flips the window's real
+    -topmost attribute, its pin_button color, and always_on_top_var in
+    lockstep. always_on_top_var is deliberately never restored from
+    settings.json (Kevin's call - a forgotten pin from a previous session
+    should never carry over), so it must always start False here,
+    regardless of whatever this machine's real, un-isolated settings.json
+    (see this file's own known limitation) happens to hold."""
+    initial = bool(app.window.attributes("-topmost"))
+    if initial:
+        raise AssertionError("always_on_top should always start False - it must never be restored from settings.json")
+
+    app._toggle_always_on_top()
+    flipped = bool(app.window.attributes("-topmost"))
+    if flipped == initial:
+        raise AssertionError("toggling the pin button should flip the window's -topmost attribute")
+    if bool(app.always_on_top_var.get()) != flipped:
+        raise AssertionError("always_on_top_var should match the window's actual -topmost attribute")
+
+    app._toggle_always_on_top()
+    restored = bool(app.window.attributes("-topmost"))
+    if restored != initial:
+        raise AssertionError("toggling back should restore the original -topmost state")
+
+
 def check_quality_row_logic(app):
     """Regression guard for two real reports: (1) analysis results used to
     just sit in scan/arrival order, leaving the tracks that most need a
@@ -318,8 +427,16 @@ def check_quality_progress_bar_placement(app):
             raise AssertionError("progress bar never became visible after starting a scan")
         if app.quality_progress_canvas.winfo_width() <= 1:
             raise AssertionError(f"progress bar has no real width ({app.quality_progress_canvas.winfo_width()}px) - never laid out")
-        if app.window.winfo_height() <= height_before:
-            raise AssertionError("window should grow to make room for the progress bar")
+        # Was strictly "<=" (must grow) before Tagger's own table got
+        # taller rows for the BPM/Key second line - the window (one
+        # shared height across every tab) can now already be tall enough
+        # from Tagger's own content alone to fit Quality's progress bar
+        # with no further growth needed. What actually matters is that it
+        # never SHRINKS to make room (still checked below via a real
+        # mapped/positioned bar) - confirmed empirically that this can
+        # legitimately be an equality now, not just a fluke.
+        if app.window.winfo_height() < height_before:
+            raise AssertionError("window should not shrink when the progress bar appears")
 
         canvas_top = app.quality_progress_canvas.winfo_rooty()
         table_bottom = app.quality_table_frame.winfo_rooty() + app.quality_table_frame.winfo_height()
@@ -355,6 +472,54 @@ def check_quality_progress_bar_placement(app):
         raise AssertionError("progress bar should be hidden again after _reset_quality")
     if app.window.winfo_height() != height_before:
         raise AssertionError("window should shrink back to its original height after _reset_quality")
+
+
+def check_quality_incremental_add(app):
+    """Regression guard for a real report: dropping one more track into an
+    already-analyzed Quality folder wiped every existing row first,
+    instead of just adding to them - _start_quality_scan unconditionally
+    cleared the table/counts/sort state on every call, whether it was a
+    fresh folder scan or just one more file dropped onto the same
+    folder. Fixed by only resetting when explicit_files is absent (a
+    real fresh scan) or the folder actually changed."""
+    tmp_dir = tempfile.mkdtemp()
+
+    app._reset_quality()
+    pump(app.window, 0.1)
+    app.quality_folder_var.set(tmp_dir)
+    app.quality_last_scanned_folder = tmp_dir
+    app._add_quality_row({
+        "file": "existing.mp3", "format": "MP3", "verdict": tagger.QUALITY_GREEN,
+        "bitrate_kbps": 320, "lufs": -10,
+    })
+    pump(app.window, 0.3)
+
+    original_run_scan = app._run_quality_scan
+    app._run_quality_scan = lambda *a, **kw: None  # avoid a real background analysis
+    try:
+        app._start_quality_scan(explicit_files=[os.path.join(tmp_dir, "new.mp3")])
+        pump(app.window, 0.1)
+        rows = app.quality_table.get_children()
+        if len(rows) != 1:
+            raise AssertionError(f"expected the existing row to survive an incremental add, got {len(rows)} row(s)")
+        if app.quality_table.item(rows[0], "values")[0] != "existing.mp3":
+            raise AssertionError("the surviving row isn't the pre-existing one - table was rebuilt, not appended to")
+
+        # A scan with NO explicit_files (a real fresh "Analyze" click) must
+        # still reset - only the incremental-drop path should preserve rows.
+        app._finalize_quality_scan(([], False, None))
+        pump(app.window, 0.1)
+        app._start_quality_scan()
+        pump(app.window, 0.1)
+        if app.quality_table.get_children():
+            raise AssertionError("a fresh whole-folder scan should still clear previous rows")
+    finally:
+        app._run_quality_scan = original_run_scan
+        app.quality_browse_button.configure(state="normal")
+        app.quality_reset_button.configure(state="normal")
+        app._set_tabs_locked(False)
+        app._reset_quality()
+        pump(app.window, 0.1)
 
 
 def check_quality_drag_and_drop(app):
@@ -501,6 +666,27 @@ def main():
         print(f"FAIL tagger row logic: {error}")
 
     try:
+        check_bpm_key_display(app)
+        print("OK   tagger BPM/Key second-line display")
+    except Exception as error:
+        failures.append(f"BPM/Key display: {error}")
+        print(f"FAIL BPM/Key display: {error}")
+
+    try:
+        check_duplicate_marker_and_row_tag(app)
+        print("OK   tagger duplicate marker/row tag")
+    except Exception as error:
+        failures.append(f"duplicate marker/row tag: {error}")
+        print(f"FAIL duplicate marker/row tag: {error}")
+
+    try:
+        check_always_on_top_toggle(app)
+        print("OK   always-on-top pin button")
+    except Exception as error:
+        failures.append(f"always-on-top pin button: {error}")
+        print(f"FAIL always-on-top pin button: {error}")
+
+    try:
         app.notebook.select(2)  # Quality tab
         pump(root, 0.3)
         check_quality_row_logic(app)
@@ -515,6 +701,13 @@ def main():
     except Exception as error:
         failures.append(f"quality progress bar placement: {error}")
         print(f"FAIL quality progress bar placement: {error}")
+
+    try:
+        check_quality_incremental_add(app)
+        print("OK   quality tab incremental add (drop doesn't reset existing rows)")
+    except Exception as error:
+        failures.append(f"quality incremental add: {error}")
+        print(f"FAIL quality incremental add: {error}")
 
     try:
         check_quality_drag_and_drop(app)

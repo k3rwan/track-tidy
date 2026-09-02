@@ -121,6 +121,12 @@ AUTO_THEME_RECHECK_INTERVAL_MS = 30 * 60 * 1000
 
 THUMBNAIL_SIZE = (44, 44)
 TABLE_ROW_HEIGHT = 48
+# Tagger's own table needs a taller row than Quality/History (shared
+# TABLE_ROW_HEIGHT/"Table.Treeview" above) to fit the BPM/Key line under
+# the title - its own style name ("TaggerTable.Treeview", see
+# interface.py's _apply_theme and tab_tagger.py) so bumping this doesn't
+# also stretch Quality/History's single-line rows.
+TAGGER_TABLE_ROW_HEIGHT = 60
 # Data columns. The cover is shown via the native "#0" column (dedicated, on the left),
 # the "apply" checkbox is a separate column right after it.
 # "format" combines the format AND the conversion (e.g. "MP3", "WAV ☑")
