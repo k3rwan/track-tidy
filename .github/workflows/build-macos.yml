@@ -78,19 +78,29 @@ jobs:
 
       - name: Create build venv and install dependencies
         # actions/setup-python's installed 3.12 is a universal2 build
-        # (covers both arm64 and x86_64) - for the intel leg, this whole
-        # step runs through a Rosetta-translated shell (see `shell:`
-        # below), so `python3` here resolves that build's x86_64 slice,
-        # and every package pip installs into this venv is an x86_64
-        # wheel. Everything spawned from within an already-translated
-        # shell inherits x86_64 automatically - a translated shell for
-        # THIS step alone doesn't carry over to later steps, so the build
-        # step further down needs the same treatment.
-        shell: ${{ matrix.arch == 'intel' && 'arch -x86_64 /bin/bash --noprofile --norc -eo pipefail {0}' || 'bash' }}
+        # (covers both arm64 and x86_64) - for the intel leg, the script
+        # below runs through `arch -x86_64 bash -c "..."` (the `matrix`
+        # context isn't available in a step's `shell:` field, only in
+        # `run:`/`if:` - confirmed by a real dispatch failure - so the
+        # Rosetta translation has to be applied inside the script itself
+        # instead of via a dynamic `shell:` override), so `python3` here
+        # resolves that build's x86_64 slice, and every package pip
+        # installs into this venv is an x86_64 wheel. Everything spawned
+        # from within an already-translated shell inherits x86_64
+        # automatically - a translated invocation for THIS step alone
+        # doesn't carry over to later steps, so the build step further
+        # down needs the same treatment.
         run: |
+          SCRIPT='
           python3 -m venv venv_build
           source venv_build/bin/activate
           pip install -r requirements.txt pyinstaller
+          '
+          if [ "${{ matrix.arch }}" = "intel" ]; then
+            arch -x86_64 /bin/bash --noprofile --norc -eo pipefail -c "$SCRIPT"
+          else
+            bash -c "$SCRIPT"
+          fi
 
       - name: Write default credentials
         # Same file load_default_credentials() reads on Kevin's own local
@@ -227,17 +237,29 @@ jobs:
           ./fpcalc -version
 
       - name: Run the test suite
-        shell: ${{ matrix.arch == 'intel' && 'arch -x86_64 /bin/bash --noprofile --norc -eo pipefail {0}' || 'bash' }}
         run: |
+          SCRIPT='
           source venv_build/bin/activate
           python -m unittest discover -s tests
+          '
+          if [ "${{ matrix.arch }}" = "intel" ]; then
+            arch -x86_64 /bin/bash --noprofile --norc -eo pipefail -c "$SCRIPT"
+          else
+            bash -c "$SCRIPT"
+          fi
 
       - name: Build .app and .dmg
-        shell: ${{ matrix.arch == 'intel' && 'arch -x86_64 /bin/bash --noprofile --norc -eo pipefail {0}' || 'bash' }}
         run: |
+          SCRIPT='
           source venv_build/bin/activate
           chmod +x build_mac.sh
           ./build_mac.sh
+          '
+          if [ "${{ matrix.arch }}" = "intel" ]; then
+            arch -x86_64 /bin/bash --noprofile --norc -eo pipefail -c "$SCRIPT"
+          else
+            bash -c "$SCRIPT"
+          fi
 
       - name: Verify the bundled ffmpeg actually runs
         # otool -L only proves the link PATHS look right - this proves the
