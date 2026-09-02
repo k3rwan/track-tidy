@@ -28,6 +28,11 @@ on [Keep a Changelog](https://keepachangelog.com/).
   buried behind them. Always starts unpinned - resets off every time
   the app closes, so it can't stay on top unexpectedly if you forget
   to unpin it.
+- Native Intel Mac build, alongside the existing Apple Silicon one - the
+  README's macOS download button is now two buttons (Apple Silicon /
+  Intel). The in-app update checker now offers whichever matches the
+  Mac you're actually running, rather than picking whichever .dmg
+  happens to be listed first.
 
 ### Fixed
 - Embedded Windows version metadata (publisher, product name,

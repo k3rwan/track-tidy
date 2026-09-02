@@ -3105,6 +3105,44 @@ class UpdateChecksumTests(unittest.TestCase):
 
         self.assertIsNone(result[4])
 
+    def test_check_for_update_picks_matching_mac_arch_dmg(self):
+        """A release built for both Mac architectures (see build_mac.sh's
+        ARCH_SUFFIX) ships two .dmg assets side by side - must pick the
+        one matching THIS install's own running architecture
+        (platform.machine()), not just the first .dmg found."""
+        release_data = {
+            "tag_name": "v99.0",
+            "html_url": "https://example.com/release",
+            "assets": [
+                {
+                    "name": "Track-Tidy-Setup-99.0-apple-silicon.dmg",
+                    "browser_download_url": "https://example.com/arm",
+                },
+                {"name": "Track-Tidy-Setup-99.0-intel.dmg", "browser_download_url": "https://example.com/intel"},
+            ],
+        }
+        tagger.requests.get = lambda url, timeout=None: self.FakeResponse(200, payload=release_data)
+        with unittest.mock.patch.object(tagger.sys, "platform", "darwin"), \
+                unittest.mock.patch.object(tagger.platform, "machine", return_value="x86_64"):
+            result = tagger.check_for_update()
+        self.assertEqual(result[3], "https://example.com/intel")
+
+    def test_check_for_update_falls_back_to_single_mac_dmg_without_arch_suffix(self):
+        """An older release logged before the arch suffix existed still
+        resolves correctly - a single, unambiguous .dmg asset."""
+        release_data = {
+            "tag_name": "v99.0",
+            "html_url": "https://example.com/release",
+            "assets": [
+                {"name": "Track-Tidy-Setup-99.0.dmg", "browser_download_url": "https://example.com/installer"},
+            ],
+        }
+        tagger.requests.get = lambda url, timeout=None: self.FakeResponse(200, payload=release_data)
+        with unittest.mock.patch.object(tagger.sys, "platform", "darwin"), \
+                unittest.mock.patch.object(tagger.platform, "machine", return_value="arm64"):
+            result = tagger.check_for_update()
+        self.assertEqual(result[3], "https://example.com/installer")
+
     def test_compute_sha256_matches_known_hash(self):
         path = os.path.join(self._tmp_dir.name, "file.bin")
         with open(path, "wb") as f:
