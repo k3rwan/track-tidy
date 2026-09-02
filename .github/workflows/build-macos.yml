@@ -168,34 +168,48 @@ jobs:
         # tool for exactly this "redistribute a Homebrew binary" case.
         #
         # For the intel leg: this runner's default Homebrew prefix
-        # (/opt/homebrew) only ever has arm64 formula binaries - a second,
-        # parallel x86_64 Homebrew at the traditional Intel prefix
-        # (/usr/local), installed and run under Rosetta, is the standard
-        # way to get an x86_64 ffmpeg build on an Apple Silicon host.
-        # dylibbundler itself doesn't need to match the target arch (it's
-        # just rewriting the ffmpeg binary's Mach-O link paths, not
-        # executing as part of the app) - the arm64 one from the default
-        # Homebrew is fine for that.
+        # (/opt/homebrew) only ever has arm64 formula binaries. A first
+        # attempt bootstrapped a second, parallel x86_64 Homebrew at the
+        # traditional Intel prefix (/usr/local) under Rosetta and `brew
+        # install ffmpeg`'d from there - technically workable, but slow
+        # (bootstrapping a whole second package manager plus a bottle/
+        # source build) and another moving part that can fail on its own.
+        # Switched to evermeet.cx's official static ffmpeg build for macOS
+        # (x86_64-only, statically linked - build_mac.sh's own "no ffmpeg
+        # found" warning already names it as the recommended source) - a
+        # single small download, no Homebrew involved at all, no
+        # dylibbundler needed since there are no external dylib deps to
+        # resolve. Same shape as the fpcalc step right below, which
+        # already downloads a prebuilt release asset instead of building
+        # anything. dylibbundler itself doesn't need to match the target
+        # arch (it's just rewriting the ffmpeg binary's Mach-O link paths,
+        # not executing as part of the app) - the arm64 one from the
+        # default Homebrew is fine for the apple-silicon leg below.
         run: |
           if [ "${{ github.event.inputs.target }}" = "intel" ]; then
-            if [ ! -x /usr/local/bin/brew ]; then
-              arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-            fi
-            arch -x86_64 /usr/local/bin/brew install ffmpeg
-            FFMPEG_BIN=/usr/local/bin/ffmpeg
+            RELEASE_JSON="$(curl -fsSL https://evermeet.cx/ffmpeg/info/ffmpeg/release)"
+            FFMPEG_ZIP_URL="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["download"]["zip"]["url"])' <<< "$RELEASE_JSON")"
+            curl -fsSL -o ffmpeg.zip "$FFMPEG_ZIP_URL"
+            unzip -o ffmpeg.zip -d ffmpeg_extracted
+            cp ffmpeg_extracted/ffmpeg ./ffmpeg
+            chmod +x ./ffmpeg
+            echo "--- ffmpeg link dependencies (statically linked - should show no /opt/homebrew or /usr/local paths) ---"
+            otool -L ./ffmpeg
+            echo "--- ffmpeg binary size ---"
+            du -sh ./ffmpeg
           else
             which ffmpeg || brew install ffmpeg
             FFMPEG_BIN="$(which ffmpeg)"
+            brew install dylibbundler
+            cp "$FFMPEG_BIN" ./ffmpeg
+            chmod +w ./ffmpeg
+            dylibbundler -od -b -x ./ffmpeg -d ./ffmpeg-libs -p "@executable_path/ffmpeg-libs/"
+            echo "--- ffmpeg link dependencies after bundling (should show no /opt/homebrew or /usr/local paths left) ---"
+            otool -L ./ffmpeg
+            echo "--- bundled dylib count and total size ---"
+            ls -la ./ffmpeg-libs | wc -l
+            du -sh ./ffmpeg ./ffmpeg-libs
           fi
-          brew install dylibbundler
-          cp "$FFMPEG_BIN" ./ffmpeg
-          chmod +w ./ffmpeg
-          dylibbundler -od -b -x ./ffmpeg -d ./ffmpeg-libs -p "@executable_path/ffmpeg-libs/"
-          echo "--- ffmpeg link dependencies after bundling (should show no /opt/homebrew or /usr/local paths left) ---"
-          otool -L ./ffmpeg
-          echo "--- bundled dylib count and total size ---"
-          ls -la ./ffmpeg-libs | wc -l
-          du -sh ./ffmpeg ./ffmpeg-libs
 
       - name: Bundle a macOS fpcalc binary
         # Same gap as ffmpeg above, never closed for fpcalc: build_mac.sh
