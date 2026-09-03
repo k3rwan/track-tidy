@@ -3,6 +3,19 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.29] (Windows only)
+
+### Fixed
+- The window's title-bar icon, the Extractor tab's before/after preview
+  images, and both sound effects (the "no file found" honk, the
+  scan-complete chime) were all silently missing from the installed app
+  since 0.28.3 - a PyInstaller packaging bug (wrong bundling destination
+  for these files) meant the app could never find them at runtime, with
+  no visible error either way.
+- History's "Restore" crashed on every single file ("expected str,
+  bytes or os.PathLike object, not tuple") after using "Locate the
+  folder..." to point it at a moved/reorganized library - a real report.
+
 ## [0.28.3]
 
 ### Added
