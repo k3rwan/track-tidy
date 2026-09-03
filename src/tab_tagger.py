@@ -2523,8 +2523,10 @@ class TaggerTabMixin:
                     expected_name = os.path.basename(entry.get("new_file") or entry.get("old_file") or "")
 
                     if locate and self._history_restore_located_folder and expected_name:
-                        auto_found = tagger._find_file_by_name(self._history_restore_located_folder, expected_name)
-                        if auto_found:
+                        auto_found, auto_ambiguous = tagger._find_file_by_name(
+                            self._history_restore_located_folder, expected_name
+                        )
+                        if auto_found and not auto_ambiguous:
                             chosen = auto_found
                             self._append_to_journal(
                                 f"  Found '{display_name}' automatically in the same folder."
@@ -2543,9 +2545,18 @@ class TaggerTabMixin:
                         )
                         if picked_folder:
                             self._history_restore_located_folder = picked_folder
-                            chosen = tagger._find_file_by_name(picked_folder, expected_name) if expected_name else None
-                            if chosen is None:
-                                failures.append((display_name, f"Not found in '{picked_folder}'"))
+                            found_path, is_ambiguous = (
+                                tagger._find_file_by_name(picked_folder, expected_name)
+                                if expected_name else (None, False)
+                            )
+                            if found_path and not is_ambiguous:
+                                chosen = found_path
+                            else:
+                                reason = (
+                                    f"Multiple files named '{expected_name}' found in '{picked_folder}'"
+                                    if is_ambiguous else f"Not found in '{picked_folder}'"
+                                )
+                                failures.append((display_name, reason))
                                 continue
                     if chosen:
                         try:
