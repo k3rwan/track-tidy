@@ -3,14 +3,14 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/k3rwan/track-tidy/releases/download/0.28.3/Track-Tidy-Setup-0.28.3.exe"><img src="https://img.shields.io/badge/Download-0078D6?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iI2ZmZmZmZiIgZD0iTTMgM2g4LjV2OC41SDN6bTkuNSAwSDIxdjguNWgtOC41ek0zIDEyLjVoOC41VjIxSDN6bTkuNSAwSDIxVjIxaC04LjV6Ii8+PC9zdmc+" alt="Download for Windows"></a>
+  <a href="https://github.com/k3rwan/track-tidy/releases/download/0.29/Track-Tidy-Setup-0.29.exe"><img src="https://img.shields.io/badge/Download-0078D6?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iI2ZmZmZmZiIgZD0iTTMgM2g4LjV2OC41SDN6bTkuNSAwSDIxdjguNWgtOC41ek0zIDEyLjVoOC41VjIxSDN6bTkuNSAwSDIxVjIxaC04LjV6Ii8+PC9zdmc+" alt="Download for Windows"></a>
   &nbsp;
   <a href="https://github.com/k3rwan/track-tidy/releases/download/0.28.3/Track-Tidy-Setup-0.28.3-apple-silicon.dmg"><img src="https://img.shields.io/badge/macOS-Apple_Silicon-000000?style=for-the-badge&logo=apple&logoColor=white" alt="Download for macOS (Apple Silicon)"></a>
   &nbsp;
   <a href="https://github.com/k3rwan/track-tidy/releases/download/0.28.3/Track-Tidy-Setup-0.28.3-intel.dmg"><img src="https://img.shields.io/badge/macOS-Intel-0068B5?style=for-the-badge&logo=apple&logoColor=white" alt="Download for macOS (Intel)"></a>
 </p>
 <p align="center">
-  <sub>Windows 0.28.3, macOS (Apple Silicon) 0.28.3, macOS (Intel) 0.28.3 - see <a href="../../releases/latest">Releases</a> for older versions.</sub>
+  <sub>Windows 0.29, macOS (Apple Silicon) 0.28.3, macOS (Intel) 0.28.3 - see <a href="../../releases/latest">Releases</a> for older versions.</sub>
 </p>
 <p align="center">
   <sub>Not sure which Mac download you need? Apple Silicon (M1/M2/M3/M4) covers every Mac sold since late 2020; pick Intel if your Mac predates that, or check the Apple menu &gt; About This Mac.</sub>
