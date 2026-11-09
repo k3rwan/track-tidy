@@ -187,8 +187,8 @@ def read_credential(key):
 
 def load_default_credentials():
     """
-    The shared default app credentials (SoundCloud, Discord webhook,
-    AcoustID) used to be embedded directly in this file (base64,
+    The shared default app credentials (SoundCloud, AcoustID, and the
+    telemetry relay URL) used to be embedded directly in this file (base64,
     then AES-256-GCM, then - for AcoustID specifically, since it was never
     treated as sensitive - a bare literal) - fine while the compiled
     binary was the only thing
@@ -527,130 +527,20 @@ def download_installer(url, dest_path, on_progress=None, timeout=30, expected_sh
 
 # --- Reporting a track (user -> developer, via Discord) ---
 
-# A Discord webhook URL is a bearer token with no other auth - see
-# load_default_credentials()'s docstring for why this comes from a local,
-# gitignored file instead of being embedded here now that the source is
-# public. send_track_report/send_new_install_notification/
-# send_scan_complete_notification all no-op harmlessly (see their own
-# early-return on a falsy URL) when that file isn't present.
-DISCORD_REPORT_WEBHOOK_URL = _default_credentials.get("discord_webhook_url", "")
-
-# Same "not embedded in public source" reasoning as the webhook URL above,
-# but a bot token is more sensitive still (read access to the whole
-# channel's history, not just permission to post) - see
-# count_unique_discord_users(). The channel ID itself isn't sensitive (just
-# a numeric identifier, useless without the token), so it's a plain
-# constant rather than another default_credentials.json entry.
-DISCORD_BOT_TOKEN = _default_credentials.get("discord_bot_token", "")
-DISCORD_LOG_CHANNEL_ID = "1536761049410306201"
-
-MAX_DISCORD_HISTORY_PAGES = 50
-
-# "User" values in the channel history that are test/CI artifacts, not a
-# real person who ever ran the app - excluded from the unique-user count
-# specifically (unlike DISCORD_NOTIFICATION_EXCLUDED_USERS, which gates
-# whether a notification gets SENT at all, this only affects what already-
-# sent history counts as "a real user"). "runner" is GitHub Actions' own
-# username on every CI test run; "test-install-verification" was an
-# explicit manual test string, not an install by anyone.
-DISCORD_UNIQUE_USER_COUNT_EXCLUDED = {"runner", "test-install-verification"}
-
-# Where count_unique_discord_users() remembers how far it's already read -
-# see its own docstring for why this only meaningfully helps repeat calls
-# on THE SAME machine (mainly Kevin's own dev/testing use), not the
-# population of real users overall (each of whom calls this only a
-# handful of times in their install's whole lifetime).
-DISCORD_USER_COUNT_CACHE_SETTINGS_KEY = "discord_user_count_cache"
-
-
-def count_unique_discord_users(log=safe_print):
-    """
-    Returns the set of every distinct "User" embed-field value ever posted
-    in the Discord report channel (lowercased) - every notification
-    function in this module (send_track_report,
-    send_new_install_notification, send_scan_complete_notification,
-    send_no_cover_report, send_rate_limit_report) includes that field, so
-    this naturally counts a unique person the first time ANY of them fired
-    for that person, not just "New install" specifically.
-
-    Incremental: remembers the newest message ID it's already accounted
-    for (see DISCORD_USER_COUNT_CACHE_SETTINGS_KEY) and only walks
-    (paginated, 100 at a time, newest first) as far back as that ID before
-    stopping, instead of re-reading the entire channel every time - a full
-    read only happens the first time this is ever called (empty cache).
-    Bounded to MAX_DISCORD_HISTORY_PAGES pages either way, so a runaway
-    pagination loop can't hang a "New install" notification or hammer
-    Discord's API.
-
-    Returns None on any failure (no bot token configured, network error,
-    Discord API error/rate limit) rather than an empty set, so a caller can
-    tell "couldn't determine this" apart from "genuinely nobody yet" and
-    skip showing a count instead of showing a wrong one - the cache is only
-    updated on a fully successful read, never on a partial/failed one.
-    """
-    if not DISCORD_BOT_TOKEN or not DISCORD_LOG_CHANNEL_ID:
-        return None
-
-    cache = load_settings().get(DISCORD_USER_COUNT_CACHE_SETTINGS_KEY) or {}
-    cached_last_id = cache.get("last_message_id")
-    usernames = set(cache.get("usernames") or [])
-
-    headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
-    before = None
-    newest_id_seen = None
-
-    try:
-        for _page in range(MAX_DISCORD_HISTORY_PAGES):
-            params = {"limit": 100}
-            if before:
-                params["before"] = before
-
-            response = requests.get(
-                f"https://discord.com/api/v10/channels/{DISCORD_LOG_CHANNEL_ID}/messages",
-                headers=headers, params=params, timeout=10,
-            )
-            if response.status_code != 200:
-                log(f"  [Discord] Could not read channel history: HTTP {response.status_code}")
-                return None
-
-            messages = response.json()
-            if not messages:
-                break
-
-            if newest_id_seen is None:
-                newest_id_seen = messages[0].get("id")
-
-            reached_cache_boundary = False
-            for message in messages:
-                message_id = message.get("id")
-                if cached_last_id and message_id and int(message_id) <= int(cached_last_id):
-                    reached_cache_boundary = True
-                    break
-                for embed in message.get("embeds", []):
-                    for field in embed.get("fields", []):
-                        if field.get("name") == "User":
-                            value = (field.get("value") or "").strip().lower()
-                            if value and value != "(unknown)" and value not in DISCORD_UNIQUE_USER_COUNT_EXCLUDED:
-                                usernames.add(value)
-
-            if reached_cache_boundary:
-                break
-
-            before = messages[-1].get("id")
-            if len(messages) < 100 or not before:
-                break
-
-        if newest_id_seen:
-            save_setting(DISCORD_USER_COUNT_CACHE_SETTINGS_KEY, {
-                "last_message_id": newest_id_seen,
-                "usernames": sorted(usernames),
-            })
-
-        return usernames
-
-    except Exception as error:
-        log(f"  [Discord] Error while reading channel history: {error}")
-        return None
+# Every report/notification below goes to Track Tidy's own telemetry relay
+# (relay/worker.js, a Cloudflare Worker), which forwards it to the Discord
+# log channel. Until 0.30 the app posted straight to a Discord webhook whose
+# URL shipped inside every installer - on 2026-11-06 someone pulled it out
+# of a public release, spammed the channel and deleted the webhook. The real
+# webhook URL now only exists on the relay, which only lets through events
+# shaped like the ones built here (known titles/field names, plain text, no
+# mentions/links, only the app's own attachments).
+#
+# The relay URL isn't a secret, but it still comes from the local, gitignored
+# default_credentials.json rather than being hardcoded: a build from the
+# public source without that file sends no telemetry at all, same as before.
+# Every send_* function below no-ops on an empty URL.
+TELEMETRY_RELAY_URL = _default_credentials.get("telemetry_relay_url", "")
 
 
 def _os_description():
@@ -665,7 +555,7 @@ def _os_description():
 
 
 def _post_discord_payload(payload, files=None, timeout=10):
-    """Lowest-level shared POST to DISCORD_REPORT_WEBHOOK_URL - every
+    """Lowest-level shared POST to TELEMETRY_RELAY_URL - every
     send_*_report/notification function below builds its own embed/
     attachment(s) and calls this (usually via _post_discord_embed) instead
     of each hand-rolling the same files-vs-plain-JSON POST. Returns the
@@ -674,9 +564,9 @@ def _post_discord_payload(payload, files=None, timeout=10):
     error; everything else collapses both into a single bool)."""
     if files:
         return requests.post(
-            DISCORD_REPORT_WEBHOOK_URL, data={"payload_json": json.dumps(payload)}, files=files, timeout=timeout,
+            TELEMETRY_RELAY_URL, data={"payload_json": json.dumps(payload)}, files=files, timeout=timeout,
         )
-    return requests.post(DISCORD_REPORT_WEBHOOK_URL, json=payload, timeout=timeout)
+    return requests.post(TELEMETRY_RELAY_URL, json=payload, timeout=timeout)
 
 
 def _post_discord_embed(embed, files=None, timeout=10):
@@ -696,7 +586,8 @@ def _post_discord_embed(embed, files=None, timeout=10):
 
 def send_track_report(info, reporter_name=None, timeout=10):
     """
-    Posts this track's info to a Discord webhook, so the developer gets a
+    Posts this track's info to the Discord log channel (through the
+    telemetry relay), so the developer gets a
     notification for tracks users flag as wrong/problematic (e.g. no cover
     found) - a lightweight way to collect real-world matching failures to
     fix later. Attaches the existing cover (as a thumbnail) and/or the
@@ -710,7 +601,7 @@ def send_track_report(info, reporter_name=None, timeout=10):
     Discord - a real connectivity problem). Kept distinct so the UI doesn't
     blame "no internet connection" for what's actually a Discord-side issue.
     """
-    if not DISCORD_REPORT_WEBHOOK_URL:
+    if not TELEMETRY_RELAY_URL:
         return False, "network_error"
 
     fields = [
@@ -801,7 +692,7 @@ def send_no_cover_report(no_cover_infos, total, reporter_name=None, timeout=10):
     False without posting anything for an excluded account (see
     DISCORD_NOTIFICATION_EXCLUDED_USERS) or an empty list.
     """
-    if _is_discord_notification_excluded(reporter_name) or not DISCORD_REPORT_WEBHOOK_URL:
+    if _is_discord_notification_excluded(reporter_name) or not TELEMETRY_RELAY_URL:
         return False
     if not no_cover_infos:
         return False
@@ -842,14 +733,14 @@ def send_new_install_notification(reporter_name=None, previous_version=None, tim
     in interface.py, gated by a saved "last notified version" setting -
     only updated after a successful send, so a failed attempt is retried
     on the next launch instead of being silently given up on forever).
-    A genuinely new install also gets a running "Unique users" count (see
-    count_unique_discord_users) - not shown on an "app updated" ping, since
-    that's the same person, not a new one.
+    A genuinely new install also gets a running "Unique users" count, added
+    by the telemetry relay itself (see relay/worker.js) - not shown on an
+    "app updated" ping, since that's the same person, not a new one.
     Returns True on success, False on any failure (never raises) - also
     False without posting anything for an excluded account (see
     DISCORD_NOTIFICATION_EXCLUDED_USERS).
     """
-    if _is_discord_notification_excluded(reporter_name) or not DISCORD_REPORT_WEBHOOK_URL:
+    if _is_discord_notification_excluded(reporter_name) or not TELEMETRY_RELAY_URL:
         return False
     fields = [
         {"name": "User", "value": reporter_name or "(unknown)", "inline": True},
@@ -857,16 +748,6 @@ def send_new_install_notification(reporter_name=None, previous_version=None, tim
     ]
     if previous_version:
         fields.append({"name": "Previous version", "value": previous_version, "inline": True})
-    else:
-        # Unique-user count is only meaningful for a genuinely NEW install,
-        # not an existing user updating - and only shown when it could
-        # actually be determined (see count_unique_discord_users), so a
-        # missing/misconfigured bot token just quietly omits the field
-        # instead of showing a wrong number.
-        unique_users = count_unique_discord_users()
-        if unique_users is not None:
-            total = len(unique_users | ({reporter_name.strip().lower()} if reporter_name else set()))
-            fields.append({"name": "Unique users", "value": str(total), "inline": True})
     fields.append({"name": "App version", "value": APP_VERSION, "inline": True})
     embed = {
         "title": "App updated" if previous_version else "New install",
@@ -904,7 +785,7 @@ def send_scan_complete_notification(
     against - useful on its own to judge whether the fallback's cost
     (slow, real audio analysis) is worth keeping on by default.
     """
-    if _is_discord_notification_excluded(reporter_name) or not DISCORD_REPORT_WEBHOOK_URL:
+    if _is_discord_notification_excluded(reporter_name) or not TELEMETRY_RELAY_URL:
         return False
     embed = {
         "title": "Scan cancelled" if cancelled else "Scan complete",
@@ -943,7 +824,7 @@ def send_rate_limit_report(source, reporter_name=None, timeout=10):
     False without posting anything for an excluded account (see
     DISCORD_NOTIFICATION_EXCLUDED_USERS).
     """
-    if _is_discord_notification_excluded(reporter_name) or not DISCORD_REPORT_WEBHOOK_URL:
+    if _is_discord_notification_excluded(reporter_name) or not TELEMETRY_RELAY_URL:
         return False
     embed = {
         "title": "Rate limit reached",
@@ -974,7 +855,7 @@ def send_extraction_report(
     False without posting anything for an excluded account (see
     DISCORD_NOTIFICATION_EXCLUDED_USERS).
     """
-    if _is_discord_notification_excluded(reporter_name) or not DISCORD_REPORT_WEBHOOK_URL:
+    if _is_discord_notification_excluded(reporter_name) or not TELEMETRY_RELAY_URL:
         return False
     if error:
         title, color = "Extraction failed", 0xE74C3C
@@ -1011,7 +892,7 @@ def send_quality_scan_report(
     False without posting anything for an excluded account (see
     DISCORD_NOTIFICATION_EXCLUDED_USERS).
     """
-    if _is_discord_notification_excluded(reporter_name) or not DISCORD_REPORT_WEBHOOK_URL:
+    if _is_discord_notification_excluded(reporter_name) or not TELEMETRY_RELAY_URL:
         return False
     if error:
         title, color = "Quality scan failed", 0xE74C3C
@@ -1050,7 +931,7 @@ def send_crash_report(reporter_name=None, traceback_text="", context="unknown", 
     DISCORD_NOTIFICATION_EXCLUDED_USERS) - a crash report is automatic
     telemetry like the others above, not a user-initiated action.
     """
-    if _is_discord_notification_excluded(reporter_name) or not DISCORD_REPORT_WEBHOOK_URL:
+    if _is_discord_notification_excluded(reporter_name) or not TELEMETRY_RELAY_URL:
         return False
     embed = {
         "title": "Unhandled exception",

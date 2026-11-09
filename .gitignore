@@ -59,3 +59,7 @@ fpcalc.exe
 !fart.wav
 !success.wav
 !fart_low_bitrate.mp3
+
+# Telemetry relay deploy credentials (relay/deploy.py) - never commit
+relay/.cloudflare_api_token
+relay/.discord_webhook_url

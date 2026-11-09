@@ -10,7 +10,8 @@ your own machine.
 ## Automatic usage pings
 
 Track Tidy posts a small notification to a Discord channel the developer
-(Kevin) controls, via a webhook, in these cases:
+(Kevin) controls, through a small relay the developer runs on Cloudflare
+Workers, in these cases:
 
 | When | What's sent |
 |---|---|
@@ -33,10 +34,18 @@ infrastructure (Discord Inc., a US company) - the same as posting a message
 in any Discord server. Track Tidy has no database of its own; the message
 history in that channel *is* the record. Messages aren't deleted on any
 schedule, so treat them as kept indefinitely unless removed by hand (see
-"Deletion" below). One of these fields (a running "unique users" count on
-the "new install" ping) is computed by reading back that same channel's
-past messages - see `count_unique_discord_users()` in `track_tidy.py`. The
-uninstall ping is Windows-only - it's sent by the installer itself (see
+"Deletion" below).
+
+On the way, each ping goes through the developer's relay (`relay/worker.js`
+in this repo, hosted on Cloudflare Workers - Cloudflare Inc., a US company).
+Like any web request, Cloudflare sees your IP address. The relay checks the
+ping looks like one of the app's own (see the table above), forwards it to
+Discord, and keeps no log of it. To show a running "unique users" count on
+the "new install" ping, it keeps one thing: a SHA-256 hash of each Windows
+username it has seen (not the username itself), in Cloudflare's key-value
+storage. The relay exists because the app used to post to Discord directly
+with a link anyone could pull out of the installer, which was abused in
+November 2026 to spam the channel. The uninstall ping is Windows-only - it's sent by the installer itself (see
 `installer.iss`), not the app, since there's no equivalent hook on macOS
 (dragging the app to Trash runs no code at all).
 
@@ -69,7 +78,7 @@ their end. GitHub is contacted to check for app updates.
 
 Since there's no account or database, there's nothing to look up by
 "account" - but if you want the developer to remove past Discord messages
-that included your Windows username, open a
+that included your Windows username (and its hash on the relay), open a
 [GitHub Issue](https://github.com/k3rwan/track-tidy/issues) (or find another
 contact method on the repo) naming the username, and they'll be located and
 deleted by hand.
@@ -80,8 +89,8 @@ There's currently no in-app setting for this. Track Tidy is open source
 (GPL-2.0-or-later - see [LICENSE](LICENSE)) though: building it from source
 yourself, without the developer's shared credentials
 (`default_credentials.json` - see the README's "Setup" section), never
-talks to the developer's Discord channel at all, since the webhook URL
-would simply be empty.
+talks to the developer's relay or Discord channel at all, since the relay
+URL would simply be empty.
 
 ---
 
