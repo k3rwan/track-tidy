@@ -104,14 +104,18 @@ class Cloudflare:
                   json={"name": name, "text": value, "type": "secret_text"})
         print(f"Set secret {name}.")
 
-    def workers_dev_url(self, account):
+    def workers_dev_url(self, account, wanted_subdomain=None):
         try:
             subdomain = self.call("GET", f"/accounts/{account}/workers/subdomain")["result"]["subdomain"]
         except RuntimeError:
             subdomain = None
+        if not subdomain and wanted_subdomain:
+            self.call("PUT", f"/accounts/{account}/workers/subdomain", json={"subdomain": wanted_subdomain})
+            subdomain = wanted_subdomain
+            print(f"Registered workers.dev subdomain '{subdomain}'.")
         if not subdomain:
-            sys.exit("This Cloudflare account has no workers.dev subdomain yet - open Workers & Pages "
-                     "in the dashboard once to pick one, then rerun.")
+            sys.exit("This Cloudflare account has no workers.dev subdomain yet - rerun with "
+                     "--subdomain NAME (account-wide, globally unique).")
         self.call("POST", f"/accounts/{account}/workers/scripts/{SCRIPT_NAME}/subdomain",
                   json={"enabled": True, "previews_enabled": False})
         return f"https://{SCRIPT_NAME}.{subdomain}.workers.dev"
@@ -129,6 +133,7 @@ def main():
     parser.add_argument("--set-webhook", metavar="FILE", help="file containing the Discord webhook URL")
     parser.add_argument("--seed-users", metavar="FILE", help="file with one SHA-256 user hash per line")
     parser.add_argument("--check", action="store_true", help="only print the URL and hit the health check")
+    parser.add_argument("--subdomain", help="workers.dev subdomain to register if the account has none yet")
     args = parser.parse_args()
 
     cf = Cloudflare(load_token())
@@ -146,7 +151,7 @@ def main():
             hashes = [line.strip() for line in open(args.seed_users, encoding="utf-8") if line.strip()]
             cf.seed_users(account, namespace_id, hashes)
 
-    url = cf.workers_dev_url(account)
+    url = cf.workers_dev_url(account, args.subdomain)
     print("Relay URL:", url)
     try:
         health = requests.get(url + "/", timeout=20)
