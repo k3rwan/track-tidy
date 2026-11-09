@@ -47,7 +47,7 @@ jobs:
     # dispatch to exactly one arch anyway, so matrix bought nothing -
     # dropped it entirely in favor of reading `github.event.inputs.target`
     # directly everywhere below.
-    runs-on: macos-14
+    runs-on: macos-15
     # Hard backstop, same reasoning as gui-smoke-test.yml's own cap: this
     # job is far more prone to hanging (brew install, a curl fetch, hdiutil
     # create, gh release upload) than that one was even before it got its
@@ -123,22 +123,22 @@ jobs:
           IS_RELEASE: ${{ github.ref_type == 'tag' }}
           SOUNDCLOUD_CLIENT_ID: ${{ secrets.SOUNDCLOUD_CLIENT_ID }}
           SOUNDCLOUD_CLIENT_SECRET: ${{ secrets.SOUNDCLOUD_CLIENT_SECRET }}
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           ACOUSTID_API_KEY: ${{ secrets.ACOUSTID_API_KEY }}
-          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          # Not a secret (the relay URL ships in every installer by design,
+          # see relay/worker.js) - a plain repo variable.
+          TELEMETRY_RELAY_URL: ${{ vars.TELEMETRY_RELAY_URL }}
         run: |
           if [ "$IS_RELEASE" = "true" ]; then
             jq -n \
               --arg soundcloud_client_id "$SOUNDCLOUD_CLIENT_ID" \
               --arg soundcloud_client_secret "$SOUNDCLOUD_CLIENT_SECRET" \
-              --arg discord_webhook_url "$DISCORD_WEBHOOK_URL" \
+              --arg telemetry_relay_url "$TELEMETRY_RELAY_URL" \
               --arg acoustid_api_key "$ACOUSTID_API_KEY" \
-              --arg discord_bot_token "$DISCORD_BOT_TOKEN" \
-              '{soundcloud_client_id: $soundcloud_client_id, soundcloud_client_secret: $soundcloud_client_secret, discord_webhook_url: $discord_webhook_url, acoustid_api_key: $acoustid_api_key, discord_bot_token: $discord_bot_token}' \
+              '{soundcloud_client_id: $soundcloud_client_id, soundcloud_client_secret: $soundcloud_client_secret, telemetry_relay_url: $telemetry_relay_url, acoustid_api_key: $acoustid_api_key}' \
               > default_credentials.json
           else
             jq -n \
-              '{soundcloud_client_id: "ci-placeholder", soundcloud_client_secret: "ci-placeholder", discord_webhook_url: "https://discord.com/api/webhooks/0/ci-placeholder", acoustid_api_key: "ci-placeholder", discord_bot_token: "ci-placeholder"}' \
+              '{soundcloud_client_id: "ci-placeholder", soundcloud_client_secret: "ci-placeholder", telemetry_relay_url: "https://relay.invalid/event", acoustid_api_key: "ci-placeholder"}' \
               > default_credentials.json
           fi
 
