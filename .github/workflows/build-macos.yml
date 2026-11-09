@@ -47,7 +47,7 @@ jobs:
     # dispatch to exactly one arch anyway, so matrix bought nothing -
     # dropped it entirely in favor of reading `github.event.inputs.target`
     # directly everywhere below.
-    runs-on: macos-14
+    runs-on: macos-15
     # Hard backstop, same reasoning as gui-smoke-test.yml's own cap: this
     # job is far more prone to hanging (brew install, a curl fetch, hdiutil
     # create, gh release upload) than that one was even before it got its
