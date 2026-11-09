@@ -3,6 +3,24 @@
 All notable changes to this project are documented here. Format loosely based
 on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.30] (Windows only)
+
+### Security
+- Usage pings, crash reports and "Report track" now go through a small
+  relay (Cloudflare Workers) instead of straight to a Discord webhook.
+  The webhook link used to be readable by anyone from the app's files
+  and from an old public commit - on 6 November it was used to spam the
+  developer's log channel and then deleted. The relay only forwards
+  messages shaped like the app's own (no free text, no pings, no links),
+  so its address leaking doesn't allow that again.
+- The app no longer ships a Discord bot token. The "unique users" count
+  on new-install pings is now kept by the relay, as hashed usernames.
+
+### Fixed
+- Usage pings, crash reports and "Report track" had silently stopped
+  working for every version since 6 November (the deleted webhook).
+  Updating to 0.30 brings them back.
+
 ## [0.29] (Windows only)
 
 ### Fixed
