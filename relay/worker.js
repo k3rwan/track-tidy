@@ -17,10 +17,18 @@
 //
 // It also keeps the "Unique users" count the app used to compute itself
 // by reading the channel's history with a Discord bot token (also shipped
-// in every installer, also exposed). Here it's a set of SHA-256 hashes of
-// each "User" field value, stored in Workers KV (binding USERS) - the
-// count is added to "New install" embeds on the way through. No bot
+// in every installer, also exposed). Here it's a set of keyed hashes
+// (HMAC-SHA-256 with the USER_HASH_KEY Worker secret) of each "User" field
+// value, stored in Workers KV (binding USERS), plus a running counter -
+// the count is added to "New install" embeds on the way through. No bot
 // token anywhere anymore.
+//
+// Keyed, not a plain SHA-256: Windows usernames are mostly first names, so
+// a plain hash is reversed by hashing a list of common names. Without
+// USER_HASH_KEY a stored key says nothing. The first 56 users were seeded
+// as plain SHA-256 ("u:<sha>") before this existed; each one is moved to
+// its keyed form ("h:<hmac>") the next time that user sends anything, and
+// `python relay/deploy.py --purge-legacy` drops whatever is left.
 
 const ALLOWED_TITLES = new Set([
   "Track reported",
@@ -72,13 +80,38 @@ const MAX_FIELD_VALUE = 1024;
 // username and a one-off manual test string, not real people.
 const UNIQUE_USER_EXCLUDED = new Set(["", "(unknown)", "runner", "test-install-verification"]);
 
-// Per-IP limit, per Worker isolate. Not a hard global guarantee (isolates
-// don't share memory), but enough to make flooding through one address
-// slow, on top of the strict shape checks below.
+// The relay URL is public, so anyone can post a well-formed event with a
+// made-up "User". These caps keep that from inflating the count much (or
+// burning the KV free tier's 1000 writes/day, which would silently stop
+// the count for real installs): a new user is only counted if this IP
+// hasn't already added NEW_USERS_PER_IP_PER_DAY today and the relay as a
+// whole hasn't added NEW_USERS_PER_DAY. The event itself is still
+// forwarded either way.
+const NEW_USERS_PER_IP_PER_DAY = 3;
+const NEW_USERS_PER_DAY = 100;
+const DAY_SECONDS = 86400;
+const COUNT_KEY = "meta:count";
+
+// Per-IP limit. Uses the RATE_LIMITER binding (Cloudflare's Rate Limiting
+// API, shared across isolates) when deploy.py set it up; otherwise falls
+// back to this isolate's own memory, which only slows down a flood from
+// one address.
 const RATE_LIMIT_PER_MINUTE = 20;
 const recentRequests = new Map();
 
-function rateLimited(ip) {
+async function isRateLimited(env, ip) {
+  if (env.RATE_LIMITER) {
+    try {
+      const { success } = await env.RATE_LIMITER.limit({ key: ip });
+      return !success;
+    } catch (error) {
+      // Fall through to the in-memory limit.
+    }
+  }
+  return rateLimitedInMemory(ip);
+}
+
+function rateLimitedInMemory(ip) {
   const now = Date.now();
   const windowStart = now - 60_000;
   const timestamps = (recentRequests.get(ip) || []).filter((t) => t > windowStart);
@@ -140,61 +173,114 @@ function sanitizeEmbed(raw) {
   return embed;
 }
 
-function looksLikeImage(bytes) {
+// Returns the image's real MIME type, or null if it isn't JPEG/PNG/WebP.
+// (Embedded covers are sometimes PNG even though the app names every
+// attachment .jpg - Discord gets the real type.)
+function imageType(bytes) {
   const b = new Uint8Array(bytes.slice(0, 12));
-  const jpeg = b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff;
-  const png = b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47;
-  const webp = b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
-    b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50;
-  return jpeg || png || webp;
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg";
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return "image/png";
+  if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
+      b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return "image/webp";
+  return null;
+}
+
+function toHex(buffer) {
+  return [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 async function sha256Hex(text) {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return toHex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
+}
+
+async function hmacHex(secret, text) {
+  const key = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+  );
+  return toHex(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(text)));
+}
+
+async function readCount(env, key) {
+  const value = Number(await env.USERS.get(key));
+  return Number.isFinite(value) ? value : 0;
+}
+
+// Total distinct users. Kept as one counter key (one read) instead of
+// listing every user key on each install; rebuilt from a full listing only
+// if the counter is missing. KV has no atomic increment, so two brand-new
+// users in the same instant can undercount by one - fine for a ballpark
+// figure in a log channel.
+async function totalUsers(env) {
+  const stored = await env.USERS.get(COUNT_KEY);
+  if (stored !== null && Number.isFinite(Number(stored))) return Number(stored);
+  let total = 0;
+  for (const prefix of ["h:", "u:"]) {
+    let cursor;
+    do {
+      const page = await env.USERS.list({ prefix, cursor });
+      total += page.keys.length;
+      cursor = page.list_complete ? undefined : page.cursor;
+    } while (cursor);
+  }
+  await env.USERS.put(COUNT_KEY, String(total));
+  return total;
 }
 
 // Records this event's user (if any) and, for a "New install", returns
 // the total distinct-user count to show. Never throws: a KV problem just
-// means no count on this one event.
-async function trackUniqueUser(env, embed) {
-  if (!env.USERS) return null;
+// means no count on this one event. Without USER_HASH_KEY nothing is
+// stored at all (never falls back to an unkeyed hash).
+async function trackUniqueUser(env, embed, rawUser, ip) {
+  if (!env.USERS || !env.USER_HASH_KEY) return null;
   try {
-    const userField = embed.fields.find((f) => f.name === "User");
-    // Hash the raw value, not the neutralized one, so the same person
-    // always maps to the same key.
-    const raw = userField ? userField.rawValue : "";
-    const normalized = (raw || "").trim().toLowerCase();
-    let key = null;
-    let isNew = false;
+    const normalized = (rawUser || "").trim().toLowerCase();
     if (!UNIQUE_USER_EXCLUDED.has(normalized)) {
-      key = "u:" + (await sha256Hex(normalized));
+      const key = "h:" + (await hmacHex(env.USER_HASH_KEY, "user:" + normalized));
       if ((await env.USERS.get(key)) === null) {
-        await env.USERS.put(key, "1");
-        isNew = true;
+        const legacyKey = "u:" + (await sha256Hex(normalized));
+        if ((await env.USERS.get(legacyKey)) !== null) {
+          // Already counted under the old unkeyed hash: move it over.
+          await env.USERS.put(key, "1");
+          await env.USERS.delete(legacyKey);
+        } else {
+          await registerNewUser(env, key, ip);
+        }
       }
     }
     if (embed.title !== "New install") return null;
-
-    // KV listing is eventually consistent - a key written a moment ago may
-    // not show up yet, so count it explicitly if it's missing.
-    const seen = new Set();
-    let cursor;
-    do {
-      const page = await env.USERS.list({ prefix: "u:", cursor });
-      for (const k of page.keys) seen.add(k.name);
-      cursor = page.list_complete ? undefined : page.cursor;
-    } while (cursor);
-    if (key && isNew) seen.add(key);
-    return seen.size;
+    return await totalUsers(env);
   } catch (error) {
     return null;
   }
 }
 
-async function handleEvent(request, env) {
-  const length = Number(request.headers.get("content-length") || 0);
-  if (length > MAX_BODY_BYTES) return badRequest("too large");
+// Counts a never-seen user, unless this IP or the whole relay already hit
+// today's cap (see NEW_USERS_PER_IP_PER_DAY). Returns whether it counted.
+async function registerNewUser(env, key, ip) {
+  const today = new Date().toISOString().slice(0, 10);
+  const ipKey = `ip:${today}:` + (await hmacHex(env.USER_HASH_KEY, "ip:" + ip));
+  const dayKey = `day:${today}`;
+  const [fromIp, fromDay] = await Promise.all([readCount(env, ipKey), readCount(env, dayKey)]);
+  if (fromIp >= NEW_USERS_PER_IP_PER_DAY || fromDay >= NEW_USERS_PER_DAY) return false;
+
+  const total = await totalUsers(env);
+  await Promise.all([
+    env.USERS.put(key, "1"),
+    env.USERS.put(ipKey, String(fromIp + 1), { expirationTtl: DAY_SECONDS }),
+    env.USERS.put(dayKey, String(fromDay + 1), { expirationTtl: 2 * DAY_SECONDS }),
+    env.USERS.put(COUNT_KEY, String(total + 1)),
+  ]);
+  return true;
+}
+
+async function handleEvent(request, env, ip) {
+  // The app (requests, WinHttp) always sends Content-Length. Without it the
+  // size check could be skipped by a chunked upload, and formData() would
+  // buffer whatever arrives.
+  const lengthHeader = request.headers.get("content-length");
+  if (lengthHeader === null) return new Response("length required", { status: 411 });
+  const length = Number(lengthHeader);
+  if (!Number.isFinite(length) || length > MAX_BODY_BYTES) return badRequest("too large");
 
   const contentType = request.headers.get("content-type") || "";
   let payload;
@@ -220,8 +306,9 @@ async function handleEvent(request, env) {
       if (!kind) return badRequest("unexpected attachment");
       const bytes = await value.arrayBuffer();
       if (kind === "image") {
-        if (bytes.byteLength > MAX_IMAGE_BYTES || !looksLikeImage(bytes)) return badRequest("bad image");
-        files.push({ key, name: value.name, bytes, type: "image/jpeg" });
+        const type = bytes.byteLength <= MAX_IMAGE_BYTES ? imageType(bytes) : null;
+        if (!type) return badRequest("bad image");
+        files.push({ key, name: value.name, bytes, type });
       } else {
         if (bytes.byteLength > MAX_TEXT_BYTES) return badRequest("text too large");
         let text;
@@ -230,7 +317,11 @@ async function handleEvent(request, env) {
         } catch (error) {
           return badRequest("text not utf-8");
         }
-        files.push({ key, name: value.name, bytes: new TextEncoder().encode(text), type: "text/plain; charset=utf-8" });
+        // Same treatment as field values: Discord previews .txt attachments
+        // inline, so a fake crash report shouldn't carry a live link.
+        files.push({
+          key, name: value.name, bytes: new TextEncoder().encode(neutralize(text)), type: "text/plain; charset=utf-8",
+        });
       }
     }
   } else if (contentType.startsWith("application/json")) {
@@ -250,14 +341,13 @@ async function handleEvent(request, env) {
   const embed = sanitizeEmbed(rawEmbed);
   if (!embed) return badRequest("unknown event");
 
-  // Keep the raw (un-neutralized) User value around just for hashing.
-  const rawUser = (Array.isArray(rawEmbed.fields) ? rawEmbed.fields : [])
+  // Hash the raw (un-neutralized) User value, so the same person always
+  // maps to the same key.
+  const rawUserField = (Array.isArray(rawEmbed.fields) ? rawEmbed.fields : [])
     .find((f) => f && f.name === "User");
-  const userField = embed.fields.find((f) => f.name === "User");
-  if (userField) userField.rawValue = rawUser ? String(rawUser.value ?? "") : "";
+  const rawUser = rawUserField ? String(rawUserField.value ?? "") : "";
 
-  const uniqueUsers = await trackUniqueUser(env, embed);
-  for (const field of embed.fields) delete field.rawValue;
+  const uniqueUsers = await trackUniqueUser(env, embed, rawUser, ip);
   if (uniqueUsers !== null) {
     const versionIndex = embed.fields.findIndex((f) => f.name === "App version");
     const countField = { name: "Unique users", value: String(uniqueUsers), inline: true };
@@ -303,10 +393,10 @@ export default {
     if (!env.DISCORD_WEBHOOK_URL) return new Response("relay not configured", { status: 503 });
 
     const ip = request.headers.get("cf-connecting-ip") || "unknown";
-    if (rateLimited(ip)) return new Response("slow down", { status: 429 });
+    if (await isRateLimited(env, ip)) return new Response("slow down", { status: 429 });
 
     try {
-      return await handleEvent(request, env);
+      return await handleEvent(request, env, ip);
     } catch (error) {
       return new Response("relay error", { status: 500 });
     }

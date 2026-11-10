@@ -41,9 +41,12 @@ in this repo, hosted on Cloudflare Workers - Cloudflare Inc., a US company).
 Like any web request, Cloudflare sees your IP address. The relay checks the
 ping looks like one of the app's own (see the table above), forwards it to
 Discord, and keeps no log of it. To show a running "unique users" count on
-the "new install" ping, it keeps one thing: a SHA-256 hash of each Windows
-username it has seen (not the username itself), in Cloudflare's key-value
-storage. The relay exists because the app used to post to Discord directly
+the "new install" ping, it keeps one thing: a keyed hash (HMAC-SHA-256,
+with a secret key that only exists on the relay) of each Windows username it
+has seen - not the username itself, and not something that can be turned
+back into it by guessing common names without that key - in Cloudflare's
+key-value storage. To limit fake counts it also keeps, for one day only, how
+many new users each IP address (also hashed with that key) added. The relay exists because the app used to post to Discord directly
 with a link anyone could pull out of the installer, which was abused in
 November 2026 to spam the channel. The uninstall ping is Windows-only - it's sent by the installer itself (see
 `installer.iss`), not the app, since there's no equivalent hook on macOS

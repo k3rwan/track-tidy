@@ -3341,5 +3341,64 @@ class DuplicateDetectionTests(unittest.TestCase):
         self.assertEqual(tagger._fingerprint_similarity([], []), 0.0)
 
 
+
+class TelemetryRelayAllowlistTests(unittest.TestCase):
+    """relay/worker.js only forwards known embed titles and field names: an
+    unknown title gets the whole event rejected (HTTP 400), an unknown field
+    is silently dropped. This catches a send_* function gaining a field or
+    title the relay doesn't know about before it ships."""
+
+    @staticmethod
+    def _relay_set(source, name):
+        import re
+        block = re.search(r"const " + name + r" = new Set\(\[(.*?)\]\);", source, re.S)
+        return set(re.findall(r'"([^"]+)"', block.group(1)))
+
+    def test_every_event_the_app_sends_passes_the_relay_allowlist(self):
+        worker_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "relay", "worker.js")
+        with open(worker_path, encoding="utf-8") as f:
+            source = f.read()
+        allowed_titles = self._relay_set(source, "ALLOWED_TITLES")
+        allowed_fields = self._relay_set(source, "ALLOWED_FIELD_NAMES")
+
+        sent = []
+
+        class FakeResponse:
+            status_code = 204
+
+        def fake_post(payload, files=None, timeout=10):
+            sent.append((payload, files))
+            return FakeResponse()
+
+        info = {
+            "file": "a.mp3", "has_cover": True, "current_cover_bytes": b"x", "found_cover_image": b"y",
+        }
+        with unittest.mock.patch.object(tagger, "_post_discord_payload", fake_post),                 unittest.mock.patch.object(tagger, "TELEMETRY_RELAY_URL", "https://relay.invalid/event"),                 unittest.mock.patch.object(tagger, "DISCORD_NOTIFICATION_EXCLUDED_USERS", set()):
+            tagger.send_track_report(info, reporter_name="u")
+            tagger.send_no_cover_report([{"file": "a.mp3"}], 1, reporter_name="u")
+            tagger.send_new_install_notification(reporter_name="u")
+            tagger.send_new_install_notification(reporter_name="u", previous_version="0.1")
+            for cancelled in (False, True):
+                tagger.send_scan_complete_notification(reporter_name="u", cancelled=cancelled,
+                                                       auth_error_sources=["SoundCloud"])
+                tagger.send_extraction_report(reporter_name="u", cancelled=cancelled)
+                tagger.send_quality_scan_report(reporter_name="u", cancelled=cancelled)
+            tagger.send_extraction_report(reporter_name="u", error="boom")
+            tagger.send_quality_scan_report(reporter_name="u", error="boom")
+            tagger.send_rate_limit_report("iTunes", reporter_name="u")
+            tagger.send_crash_report(reporter_name="u", traceback_text="tb", context="test")
+
+        self.assertGreaterEqual(len(sent), 14)
+        attachment_names = {"current_cover.jpg", "suggested_cover.jpg", "no_cover_tracks.txt", "traceback.txt"}
+        for payload, files in sent:
+            embed = payload["embeds"][0]
+            self.assertIn(embed["title"], allowed_titles)
+            for field in embed.get("fields", []):
+                self.assertIn(field["name"], allowed_fields, f"{embed['title']}: unknown field")
+            for key, (filename, _content, _type) in (files or {}).items():
+                self.assertRegex(key, r"^files\[[01]\]$")
+                self.assertIn(filename, attachment_names)
+
+
 if __name__ == "__main__":
     unittest.main()
