@@ -297,6 +297,50 @@ def check_duplicate_marker_and_row_tag(app):
         raise AssertionError("duplicate marker incorrectly cleared by a title edit")
 
 
+def check_no_ghost_row_after_fade(app, root):
+    """Regression guard for 15 real "scan_reveal_loop" crash reports (one
+    user, 0.29): "TclError: Item <file>.mp3 already exists". A row being
+    faded out (Delete key, file removed on disk) only got deleted at the
+    end of the fade if its tags were still EXACTLY the fade tag - but any
+    _restripe_rows() during those ~200ms (one runs for every row a scan
+    reveals) adds a stripe tag next to it, so the row was never deleted:
+    a ghost, invisible to scanned_plan, that made the next scan's insert of
+    that same file crash."""
+    def make_info(name):
+        return {
+            "file": name, "format": "MP3", "processed": False,
+            "apply_changes": True, "convert": False,
+            "current_title": "t", "current_artist": "a",
+            "detected_title": "t", "detected_artist": "a",
+            "title_override": None, "artist_override": None,
+            "found_cover_image": None, "already_applied": False,
+            "acoustid_identified": False,
+        }
+
+    for row in app.table.get_children():
+        app.table.delete(row)
+    app.scanned_plan = []
+    ghost, other = "__ghost_row__.mp3", "__other_row__.mp3"
+    app._add_scan_row(make_info(other))
+    app._add_scan_row(make_info(ghost))
+    pump(root, 0.5)  # let both new-row flashes finish
+
+    app.scanned_plan = [info for info in app.scanned_plan if info["file"] != ghost]
+    app._fade_out_and_delete_rows([ghost])
+    app._restripe_rows()  # what a scan revealing another row does mid-fade
+    pump(root, 0.6)
+
+    if app.table.exists(ghost):
+        raise AssertionError("faded-out row is still in the table after its fade")
+    app._add_scan_row(make_info(ghost))  # used to raise TclError "already exists"
+    if not app.table.exists(ghost):
+        raise AssertionError("re-scanned row was not added back")
+
+    for row in app.table.get_children():
+        app.table.delete(row)
+    app.scanned_plan = []
+
+
 def check_always_on_top_toggle(app):
     """Pin button (_toggle_always_on_top) flips the window's real
     -topmost attribute, its pin_button color, and always_on_top_var in
@@ -678,6 +722,13 @@ def main():
     except Exception as error:
         failures.append(f"duplicate marker/row tag: {error}")
         print(f"FAIL duplicate marker/row tag: {error}")
+
+    try:
+        check_no_ghost_row_after_fade(app, root)
+        print("OK   faded-out row really deleted (no ghost row on rescan)")
+    except Exception as error:
+        failures.append(f"ghost row after fade: {error}")
+        print(f"FAIL ghost row after fade: {error}")
 
     try:
         check_always_on_top_toggle(app)

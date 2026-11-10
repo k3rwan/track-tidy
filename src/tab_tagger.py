@@ -1150,6 +1150,15 @@ class TaggerTabMixin:
             info["detected_artist"] = new_artist
             info["detected_title"] = new_title
 
+        if any(existing["file"] == info["file"] for existing in self.scanned_plan):
+            return  # already listed - inserting it again would raise TclError
+        # A row for this file may still be in the table without being in
+        # scanned_plan: mid fade-out (removed a moment ago), or left behind
+        # by an older bug. Clear it so the insert below can't collide.
+        self._force_finish_row_fade(info["file"])
+        if self.table.exists(info["file"]):
+            self.table.delete(info["file"])
+
         self.scanned_plan.insert(0, info)
         info["original_order"] = len(self.scanned_plan) - 1  # to be able to go back to scan order
         image_tk = self._create_thumbnail(info)
@@ -1261,8 +1270,14 @@ class TaggerTabMixin:
                 for item_id in alive:
                     # Only delete if still carrying OUR fade tag - a forced
                     # finish (see force_finish_row_fade) or a stale/replaced
-                    # row already handled it.
-                    if self.table.exists(item_id) and self.table.item(item_id, "tags") == (pending[item_id][0],):
+                    # row already handled it. "in", not "== (tag,)": a
+                    # _restripe_rows() mid-fade (one runs for every row a
+                    # scan reveals) adds a stripe tag next to the fade tag,
+                    # and an exact match then left the row in the table
+                    # forever - a ghost that crashed the next scan's insert
+                    # of that file ("Item ... already exists", 15 real
+                    # reports on 0.29).
+                    if self.table.exists(item_id) and pending[item_id][0] in self.table.item(item_id, "tags"):
                         self.table.delete(item_id)
                     self._fading_row_tags.pop(item_id, None)
                 if on_complete:
