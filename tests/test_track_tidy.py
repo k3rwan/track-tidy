@@ -3400,5 +3400,21 @@ class TelemetryRelayAllowlistTests(unittest.TestCase):
                 self.assertIn(filename, attachment_names)
 
 
+
+class SubprocessDecodingTests(unittest.TestCase):
+    def test_every_text_subprocess_call_decodes_explicitly(self):
+        # A text=True subprocess.run() with no encoding decodes with the
+        # Windows ANSI codepage and crashed on real ffmpeg output (see
+        # convert_to_mp3). Every such call must say encoding + errors.
+        import re
+        source = open(tagger.__file__, encoding="utf-8").read()
+        calls = re.findall(r"subprocess\.run\((.*?)\n\s*\)", source, re.S)
+        text_calls = [c for c in calls if "text=True" in c]
+        self.assertGreaterEqual(len(text_calls), 5)
+        for call in text_calls:
+            self.assertIn('encoding="utf-8"', call)
+            self.assertIn('errors="replace"', call)
+
+
 if __name__ == "__main__":
     unittest.main()

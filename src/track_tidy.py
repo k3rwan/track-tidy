@@ -4728,10 +4728,15 @@ def convert_to_mp3(source_path, log=safe_print):
     """
     mp3_path = os.path.splitext(source_path)[0] + ".mp3"
     try:
+        # encoding/errors on every ffmpeg/fpcalc call: without them Python
+        # decodes the tool's output with the Windows ANSI codepage (cp1252),
+        # and a byte it can't map (e.g. from a UTF-8 file name in ffmpeg's
+        # log) raised UnicodeDecodeError in subprocess's reader thread -
+        # 5 real crash reports from one user on 0.29.
         result = subprocess.run(
             [find_ffmpeg(), "-i", source_path, "-b:a", "320k", "-y", mp3_path],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if result.returncode != 0:
@@ -4783,7 +4788,7 @@ def convert_wav_to_aiff(source_path, log=safe_print):
         result = subprocess.run(
             [find_ffmpeg(), "-i", source_path, "-y", aiff_path],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if result.returncode != 0:
@@ -4842,7 +4847,7 @@ def convert_aiff_to_wav(source_path):
         result = subprocess.run(
             [find_ffmpeg(), "-i", source_path, "-y", wav_path],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if result.returncode != 0:
@@ -5002,7 +5007,7 @@ def _write_wav_riff_info(file_path, artist, title, update_artist, update_title, 
 
     try:
         result = subprocess.run(
-            command, capture_output=True, text=True,
+            command, capture_output=True, text=True, encoding="utf-8", errors="replace",
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if result.returncode != 0:
@@ -6303,7 +6308,7 @@ def _compute_raw_fingerprint(file_path, log=safe_print):
     try:
         result = subprocess.run(
             [find_fpcalc(), "-raw", "-json", "-length", str(DUPLICATE_FINGERPRINT_LENGTH_SECONDS), file_path],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if result.returncode != 0:
