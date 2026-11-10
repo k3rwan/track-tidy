@@ -114,8 +114,15 @@ def user_config_dir():
     is installed (e.g. Program Files, which needs admin rights to write into).
     Resolves to %APPDATA%\\Track-Tidy on Windows, ~/Library/Application
     Support/Track-Tidy on macOS, ~/.config/Track-Tidy on Linux.
+
+    TRACK_TIDY_CONFIG_DIR overrides it - the test suites set it to a temp
+    folder before importing this module, so they never write into the
+    developer's real settings/history (they used to: a GUI smoke test run
+    once left a deleted temp folder as the real app's music folder).
     """
-    config_dir = platformdirs.user_config_dir("Track-Tidy", appauthor=False, roaming=True)
+    config_dir = os.environ.get("TRACK_TIDY_CONFIG_DIR") or platformdirs.user_config_dir(
+        "Track-Tidy", appauthor=False, roaming=True,
+    )
     os.makedirs(config_dir, exist_ok=True)
     return config_dir
 

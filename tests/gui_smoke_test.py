@@ -51,6 +51,12 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "src"))
 import tkinter as tk
 from PIL import ImageGrab
 
+# Before importing the app (and before check_direct_launch's subprocess,
+# which inherits it): keep settings/history/logs out of the developer's
+# real config folder. Without this a run once saved one of this script's
+# temp folders as the real app's music folder.
+os.environ["TRACK_TIDY_CONFIG_DIR"] = tempfile.mkdtemp(prefix="track_tidy_gui_test_config_")
+
 import interface
 import track_tidy as tagger
 

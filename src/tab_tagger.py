@@ -3348,7 +3348,14 @@ class TaggerTabMixin:
         if not confirmed:
             return
 
-        folder = self.folder_variable.get().strip()
+        # The rows were scanned against last_scanned_folder - NOT
+        # necessarily the visible folder field: dropping a folder or files
+        # scans them without touching that field (see
+        # _start_dropped_folder_scan). Re-reading the field here used to
+        # point Apply at whatever folder was picked before the drop, so
+        # every file "failed" (not found there) - or, worse, a same-named
+        # file in that other folder got tagged instead.
+        folder = getattr(self, "last_scanned_folder", None) or self.folder_variable.get().strip()
         if folder:
             tagger.MUSIC_FOLDER = folder
         self._sync_mentions_to_remove()

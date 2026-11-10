@@ -22,6 +22,9 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+# Before importing the app: keep its settings/history/logs out of the
+# developer's real config folder (see user_config_dir()).
+os.environ["TRACK_TIDY_CONFIG_DIR"] = tempfile.mkdtemp(prefix="track_tidy_test_config_")
 import track_tidy as tagger
 
 # The send_* functions no-op on an empty TELEMETRY_RELAY_URL (a build
